@@ -1,0 +1,22 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": { "driver": { "name": "Tool1" } },
+      "results": [
+        {
+          "ruleId": "Rule1",
+          "message": { "text": "Issue 1" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "file1.go" },
+                "region": { "startLine": 1 }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

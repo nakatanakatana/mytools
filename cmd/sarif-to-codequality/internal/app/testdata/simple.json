@@ -1,0 +1,14 @@
+[
+  {
+    "check_name": "Rule1",
+    "description": "Issue 1",
+    "fingerprint": "f8b8d3ceaa10983cbc8e6b634350726965facbd3135f762f30c0e63519ad51e0",
+    "severity": "info",
+    "location": {
+      "path": "file1.go",
+      "lines": {
+        "begin": 1
+      }
+    }
+  }
+]

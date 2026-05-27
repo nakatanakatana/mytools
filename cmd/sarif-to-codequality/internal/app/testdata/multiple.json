@@ -1,0 +1,26 @@
+[
+  {
+    "check_name": "Rule1",
+    "description": "Issue 1",
+    "fingerprint": "f8b8d3ceaa10983cbc8e6b634350726965facbd3135f762f30c0e63519ad51e0",
+    "severity": "info",
+    "location": {
+      "path": "file1.go",
+      "lines": {
+        "begin": 1
+      }
+    }
+  },
+  {
+    "check_name": "Rule2",
+    "description": "Issue 2",
+    "fingerprint": "5609b6628c070e903c3fa290e555091019673c23af334fb463297adf8addbf59",
+    "severity": "info",
+    "location": {
+      "path": "file2.go",
+      "lines": {
+        "begin": 2
+      }
+    }
+  }
+]
