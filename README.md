@@ -18,6 +18,9 @@ It helps you merge security and analysis results into GitLab's code quality UI w
 ### 2. [nip05](file:///home/tanaka/repos/github.com/nakatanakatana/mytools/cmd/nip05/README.md)
 A standalone server for managing, generating, and serving `.well-known/nostr.json` files for Nostr's NIP-05 (user identifier and domain verification).
 
+### 3. [wsl-keyring](file:///home/tanaka/repos/github.com/nakatanakatana/mytools/cmd/wsl-keyring/README.md)
+A D-Bus Secret Service provider daemon that exposes the `org.freedesktop.secrets` interface and integrates with 1Password (`op.exe`) as the storage backend. Designed for WSL environments.
+
 ---
 
 ## Development and Build
@@ -64,6 +67,9 @@ docker build --target sarif-to-codequality -t sarif-to-codequality .
 
 # For nip05 only
 docker build --target nip05 -t nip05 .
+
+# For wsl-keyring only
+docker build --target wsl-keyring -t wsl-keyring .
 ```
 
 ### Build All Tools Image

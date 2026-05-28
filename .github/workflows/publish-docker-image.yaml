@@ -34,6 +34,9 @@ jobs:
           - name: nip05
             context: .
             target: nip05
+          - name: wsl-keyring
+            context: .
+            target: wsl-keyring
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - name: Prepare
@@ -87,6 +90,7 @@ jobs:
           - mytools
           - sarif-to-codequality
           - nip05
+          - wsl-keyring
     runs-on: ubuntu-latest
     needs:
       - build
