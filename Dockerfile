@@ -28,6 +28,11 @@ FROM base AS nip05
 COPY --from=builder-from /app/output/nip05 /app/
 ENTRYPOINT ["/app/nip05"]
 
+# wsl-keyring image
+FROM base AS wsl-keyring
+COPY --from=builder-from /app/output/wsl-keyring /app/
+ENTRYPOINT ["/app/wsl-keyring"]
+
 # all apps image
 FROM base AS mytools
 COPY --from=builder-from /app/output /app

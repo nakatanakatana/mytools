@@ -23,6 +23,17 @@ builds:
       - amd64
       - arm64
 
+  - id: wsl-keyring
+    main: ./cmd/wsl-keyring
+    binary: wsl-keyring
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
 archives:
   - formats:
     - tar.gz
