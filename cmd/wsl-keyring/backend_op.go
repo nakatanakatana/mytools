@@ -358,7 +358,6 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 			"item",
 			"create",
 			"-",
-			"--category", "login",
 			"--tags", "wsl-keyring",
 			"--title", item.Label,
 			"--format", "json",

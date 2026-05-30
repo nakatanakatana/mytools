@@ -99,6 +99,9 @@ func TestOnePasswordBackend_Save_Create(t *testing.T) {
 		if !strings.Contains(argsStr, "item create -") {
 			t.Errorf("expected stdin template marker, got: %s", argsStr)
 		}
+		if strings.Contains(argsStr, "--category") {
+			t.Errorf("category must be provided only in stdin template, got args: %s", argsStr)
+		}
 
 		var template opItem
 		if err := json.Unmarshal([]byte(stdin), &template); err != nil {
