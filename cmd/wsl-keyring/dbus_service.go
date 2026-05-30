@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
@@ -24,6 +25,8 @@ const (
 
 	AlgorithmPlain = "plain"
 	AlgorithmDH    = "dh-ietf1024-sha256-aes128-cbc-pkcs7"
+
+	ReplaceSearchTimeout = 250 * time.Millisecond
 )
 
 // DBusSecret represents the 'Secret' structure defined in Secret Service API spec.
@@ -275,6 +278,9 @@ func (s *ServiceObject) Set(iface, property string, value dbus.Variant) *dbus.Er
 }
 
 func (s *ServiceObject) ExportItem(item *SecretItem) error {
+	if s.conn == nil {
+		return nil
+	}
 	path := dbus.ObjectPath(ItemPathPrefix + item.ID)
 	itemObj := &ItemObject{
 		backend: s.backend,
@@ -333,7 +339,9 @@ func (c *CollectionObject) CreateItem(properties map[string]dbus.Variant, secret
 	// Try to find if we need to replace or update
 	var id string
 	if replace {
-		items, err := c.backend.Search(context.Background(), attributes)
+		searchCtx, cancel := context.WithTimeout(context.Background(), ReplaceSearchTimeout)
+		defer cancel()
+		items, err := c.backend.Search(searchCtx, attributes)
 		if err == nil && len(items) > 0 {
 			id = items[0].ID
 		}

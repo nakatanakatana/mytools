@@ -4,16 +4,21 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
 
 type recordingBackend struct {
-	item      *SecretItem
-	saveCalls int
+	item       *SecretItem
+	saveCalls  int
+	searchFunc func(ctx context.Context, attributes map[string]string) ([]*SecretItem, error)
 }
 
 func (b *recordingBackend) Search(ctx context.Context, attributes map[string]string) ([]*SecretItem, error) {
+	if b.searchFunc != nil {
+		return b.searchFunc(ctx, attributes)
+	}
 	return nil, nil
 }
 
@@ -96,6 +101,51 @@ func TestCollectionCreateItem_DecryptFailureDoesNotSave(t *testing.T) {
 	}
 	if backend.saveCalls != 0 {
 		t.Fatalf("Save was called %d times", backend.saveCalls)
+	}
+}
+
+func TestCollectionCreateItem_ReplaceSearchTimeoutStillSaves(t *testing.T) {
+	backend := &recordingBackend{}
+	searchStarted := make(chan struct{})
+	backend.searchFunc = func(ctx context.Context, attributes map[string]string) ([]*SecretItem, error) {
+		close(searchStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	service := NewServiceObject(nil, backend)
+	sessionPath := dbus.ObjectPath(SessionPath + "test")
+	service.sessions[sessionPath] = &SessionState{algorithm: AlgorithmPlain}
+	collection := NewCollectionObject(nil, backend, service)
+
+	start := time.Now()
+	itemPath, prompt, dbusErr := collection.CreateItem(
+		map[string]dbus.Variant{
+			ItemInterface + ".Label":      dbus.MakeVariant("label"),
+			ItemInterface + ".Attributes": dbus.MakeVariant(map[string]string{"service": "test"}),
+		},
+		DBusSecret{
+			Session: sessionPath,
+			Value:   []byte("secret"),
+		},
+		true,
+	)
+
+	if dbusErr != nil {
+		t.Fatalf("CreateItem failed: %v", dbusErr)
+	}
+	if itemPath == dbus.ObjectPath("/") || prompt != dbus.ObjectPath("/") {
+		t.Fatalf("unexpected paths: item=%s prompt=%s", itemPath, prompt)
+	}
+	if backend.saveCalls != 1 {
+		t.Fatalf("Save was called %d times", backend.saveCalls)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("CreateItem took %s, expected bounded replace search", elapsed)
+	}
+	select {
+	case <-searchStarted:
+	default:
+		t.Fatal("replace search was not attempted")
 	}
 }
 
