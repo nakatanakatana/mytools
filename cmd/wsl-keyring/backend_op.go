@@ -8,9 +8,17 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/awnumar/memguard"
 	"github.com/caarlos0/env/v11"
 	"golang.org/x/sync/errgroup"
+)
+
+const (
+	defaultSecretCacheTTL      = 60 * time.Second
+	defaultAuthCheckMinSpacing = 5 * time.Second
+	defaultAuthCheckTimeout    = 2 * time.Second
 )
 
 // opItem is the JSON structure returned by the 'op' CLI.
@@ -44,8 +52,25 @@ type OnePasswordBackend struct {
 	metaMu     sync.RWMutex
 	metaLoaded bool
 
+	secretCache          map[string]*cachedSecretItem
+	secretMu             sync.Mutex
+	secretCacheTTL       time.Duration
+	authCheckMinSpacing  time.Duration
+	authCheckTimeout     time.Duration
+	authCheckInFlight    bool
+	authCheckLastStarted time.Time
+	now                  func() time.Time
+
 	// runCmd is used to execute external commands. Placed here to allow mocking in tests.
 	runCmd func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error)
+}
+
+type cachedSecretItem struct {
+	id         string
+	label      string
+	attributes map[string]string
+	secret     *memguard.LockedBuffer
+	expiresAt  time.Time
 }
 
 type opConfig struct {
@@ -60,9 +85,14 @@ func NewOnePasswordBackend() (*OnePasswordBackend, error) {
 		return nil, err
 	}
 	return &OnePasswordBackend{
-		binary:    cfg.OPBinary,
-		vault:     cfg.Vault,
-		metaCache: make(map[string]*SecretItem),
+		binary:              cfg.OPBinary,
+		vault:               cfg.Vault,
+		metaCache:           make(map[string]*SecretItem),
+		secretCache:         make(map[string]*cachedSecretItem),
+		secretCacheTTL:      defaultSecretCacheTTL,
+		authCheckMinSpacing: defaultAuthCheckMinSpacing,
+		authCheckTimeout:    defaultAuthCheckTimeout,
+		now:                 time.Now,
 		runCmd: func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
 			if stdin != "" {
@@ -79,6 +109,24 @@ func (b *OnePasswordBackend) ensureInitialized() {
 		b.metaCache = make(map[string]*SecretItem)
 	}
 	b.metaMu.Unlock()
+
+	b.secretMu.Lock()
+	if b.secretCache == nil {
+		b.secretCache = make(map[string]*cachedSecretItem)
+	}
+	if b.secretCacheTTL == 0 {
+		b.secretCacheTTL = defaultSecretCacheTTL
+	}
+	if b.authCheckMinSpacing == 0 {
+		b.authCheckMinSpacing = defaultAuthCheckMinSpacing
+	}
+	if b.authCheckTimeout == 0 {
+		b.authCheckTimeout = defaultAuthCheckTimeout
+	}
+	if b.now == nil {
+		b.now = time.Now
+	}
+	b.secretMu.Unlock()
 }
 
 func (b *OnePasswordBackend) runOP(ctx context.Context, args ...string) ([]byte, error) {
@@ -90,6 +138,17 @@ func (b *OnePasswordBackend) runOPWithInput(ctx context.Context, stdin string, a
 		args = append(args, "--vault", b.vault)
 	}
 	out, err := b.runCmd(ctx, stdin, b.binary, args...)
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("op command failed: %w", err)
+		}
+		return nil, fmt.Errorf("failed to run op: %w", err)
+	}
+	return out, nil
+}
+
+func (b *OnePasswordBackend) runOPNoVault(ctx context.Context, args ...string) ([]byte, error) {
+	out, err := b.runCmd(ctx, "", b.binary, args...)
 	if err != nil {
 		if _, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("op command failed: %w", err)
@@ -233,6 +292,11 @@ func (b *OnePasswordBackend) Search(ctx context.Context, attributes map[string]s
 func (b *OnePasswordBackend) Get(ctx context.Context, id string) (*SecretItem, error) {
 	b.ensureInitialized()
 
+	if item, ok := b.getCachedSecret(id); ok {
+		b.checkAuthAfterCacheAccess()
+		return item, nil
+	}
+
 	out, err := b.runOP(ctx, "item", "get", id, "--format", "json")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, err.Error())
@@ -272,6 +336,7 @@ func (b *OnePasswordBackend) Get(ctx context.Context, id string) (*SecretItem, e
 		}
 	}
 
+	b.storeSecretCache(item)
 	return item, nil
 }
 
@@ -324,6 +389,8 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 		}
 		b.metaMu.Unlock()
 
+		b.storeSecretCache(item)
+
 		return nil
 	}
 
@@ -354,6 +421,8 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 		Secret:     nil,
 	}
 	b.metaMu.Unlock()
+
+	b.storeSecretCache(item)
 
 	return nil
 }
@@ -394,6 +463,7 @@ func (b *OnePasswordBackend) Delete(ctx context.Context, id string) error {
 		b.metaMu.Lock()
 		delete(b.metaCache, id)
 		b.metaMu.Unlock()
+		b.deleteSecretCache(id)
 	}
 	return err
 }
@@ -420,4 +490,121 @@ func (b *OnePasswordBackend) List(ctx context.Context) ([]*SecretItem, error) {
 		results = append(results, copied)
 	}
 	return results, nil
+}
+
+func (b *OnePasswordBackend) getCachedSecret(id string) (*SecretItem, bool) {
+	b.secretMu.Lock()
+	defer b.secretMu.Unlock()
+
+	entry, ok := b.secretCache[id]
+	if !ok {
+		return nil, false
+	}
+	now := b.now()
+	if !now.Before(entry.expiresAt) || entry.secret == nil || !entry.secret.IsAlive() {
+		entry.destroy()
+		delete(b.secretCache, id)
+		return nil, false
+	}
+
+	entry.expiresAt = now.Add(b.secretCacheTTL)
+	return entry.toSecretItem(), true
+}
+
+func (b *OnePasswordBackend) storeSecretCache(item *SecretItem) {
+	if item == nil || item.ID == "" || item.Secret == nil {
+		return
+	}
+
+	secretCopy := append([]byte(nil), item.Secret...)
+	buf := memguard.NewBufferFromBytes(secretCopy)
+	if buf == nil || !buf.IsAlive() || buf.Size() != len(item.Secret) {
+		if buf != nil {
+			buf.Destroy()
+		}
+		return
+	}
+
+	entry := &cachedSecretItem{
+		id:         item.ID,
+		label:      item.Label,
+		attributes: copyAttributes(item.Attributes),
+		secret:     buf,
+		expiresAt:  b.now().Add(b.secretCacheTTL),
+	}
+
+	b.secretMu.Lock()
+	if old := b.secretCache[item.ID]; old != nil {
+		old.destroy()
+	}
+	b.secretCache[item.ID] = entry
+	b.secretMu.Unlock()
+}
+
+func (b *OnePasswordBackend) deleteSecretCache(id string) {
+	b.secretMu.Lock()
+	if entry := b.secretCache[id]; entry != nil {
+		entry.destroy()
+		delete(b.secretCache, id)
+	}
+	b.secretMu.Unlock()
+}
+
+func (b *OnePasswordBackend) clearSecretCache() {
+	b.secretMu.Lock()
+	for id, entry := range b.secretCache {
+		entry.destroy()
+		delete(b.secretCache, id)
+	}
+	b.secretMu.Unlock()
+}
+
+func (b *OnePasswordBackend) checkAuthAfterCacheAccess() {
+	b.secretMu.Lock()
+	now := b.now()
+	if b.authCheckInFlight || now.Sub(b.authCheckLastStarted) < b.authCheckMinSpacing {
+		b.secretMu.Unlock()
+		return
+	}
+	b.authCheckInFlight = true
+	b.authCheckLastStarted = now
+	timeout := b.authCheckTimeout
+	b.secretMu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		_, err := b.runOPNoVault(ctx, "whoami", "--format", "json")
+		if err != nil {
+			b.clearSecretCache()
+		}
+
+		b.secretMu.Lock()
+		b.authCheckInFlight = false
+		b.secretMu.Unlock()
+	}()
+}
+
+func (c *cachedSecretItem) toSecretItem() *SecretItem {
+	return &SecretItem{
+		ID:         c.id,
+		Label:      c.label,
+		Attributes: copyAttributes(c.attributes),
+		Secret:     append([]byte(nil), c.secret.Bytes()...),
+	}
+}
+
+func (c *cachedSecretItem) destroy() {
+	if c.secret != nil && c.secret.IsAlive() {
+		c.secret.Destroy()
+	}
+}
+
+func copyAttributes(src map[string]string) map[string]string {
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
