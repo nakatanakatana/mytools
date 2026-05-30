@@ -71,21 +71,29 @@ func TestInMemoryBackend(t *testing.T) {
 	}
 }
 
-func TestOnePasswordBackend_Save_Create(t *testing.T) {
+func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary: "op.exe",
 		vault:  "test-vault",
 	}
 
-	called := false
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
-		called = true
 		if name != "op.exe" {
 			t.Errorf("expected op.exe, got %s", name)
 		}
 
 		// Check basic arguments
 		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			return []byte(`{"user_uuid":"user"}`), nil
+		}
+		if strings.Contains(argsStr, "item list") {
+			return []byte(`[]`), nil
+		}
+		close(started)
 
 		if !strings.Contains(argsStr, "item create") {
 			t.Errorf("expected item create, got: %s", argsStr)
@@ -136,6 +144,7 @@ func TestOnePasswordBackend_Save_Create(t *testing.T) {
 			ID:    "generated-uuid-5555",
 			Title: "My Label",
 		}
+		<-release
 		return json.Marshal(resp)
 	}
 
@@ -148,16 +157,65 @@ func TestOnePasswordBackend_Save_Create(t *testing.T) {
 		Secret: []byte("secret123"),
 	}
 
-	err := b.Save(context.Background(), item)
-	if err != nil {
-		t.Fatalf("Save failed: %v", err)
+	saveDone := make(chan error, 1)
+	go func() {
+		saveDone <- b.Save(context.Background(), item)
+	}()
+
+	select {
+	case err := <-saveDone:
+		if err != nil {
+			t.Fatalf("Save failed: %v", err)
+		}
+	case <-started:
+		select {
+		case err := <-saveDone:
+			if err != nil {
+				t.Fatalf("Save failed: %v", err)
+			}
+		case <-time.After(50 * time.Millisecond):
+			close(release)
+			t.Fatal("Save blocked waiting for op create")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("op create did not start")
+	}
+	if item.ID == "" {
+		t.Fatal("expected Save to assign a pending ID")
 	}
 
-	if !called {
-		t.Error("mock runCmd was not called")
+	got, err := b.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("Get from cache after Save failed: %v", err)
 	}
-	if item.ID != "generated-uuid-5555" {
-		t.Errorf("expected ID to be set to generated-uuid-5555, got %s", item.ID)
+	if string(got.Secret) != "secret123" {
+		t.Fatalf("cached secret = %q", string(got.Secret))
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background op create did not start")
+	}
+	close(release)
+	go func() {
+		for {
+			matches, err := b.Search(context.Background(), map[string]string{
+				"username": "bob",
+				"app":      "vscode",
+			})
+			if err == nil && len(matches) == 1 && matches[0].ID == "generated-uuid-5555" {
+				close(done)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for background op create to reconcile item ID")
 	}
 }
 
@@ -413,16 +471,18 @@ func TestOnePasswordBackend_Search_EmptyValueRequiresExactMatch(t *testing.T) {
 	}
 }
 
-func TestOnePasswordBackend_Save_Edit_Sync(t *testing.T) {
+func TestOnePasswordBackend_Save_EditPersistsInBackground(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary: "op.exe",
 		vault:  "test-vault",
 	}
 
-	editCompleted := false
+	started := make(chan struct{})
+	release := make(chan struct{})
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 		argsStr := strings.Join(args, " ")
 		if strings.Contains(argsStr, "item edit test-id") {
+			close(started)
 			if strings.Contains(argsStr, "password=new-secret") {
 				t.Fatalf("secret fields must be passed via stdin, got args: %s", argsStr)
 			}
@@ -445,8 +505,11 @@ func TestOnePasswordBackend_Save_Edit_Sync(t *testing.T) {
 			if fieldMeta["password"].Purpose != "PASSWORD" || fieldMeta["password"].Type != "CONCEALED" {
 				t.Fatalf("unexpected password field metadata: %+v", fieldMeta["password"])
 			}
-			editCompleted = true
+			<-release
 			return []byte(`{"id":"test-id","title":"My Label"}`), nil
+		}
+		if strings.Contains(argsStr, "whoami") {
+			return []byte(`{"user_uuid":"user"}`), nil
 		}
 		return nil, fmt.Errorf("unexpected command: %s", argsStr)
 	}
@@ -458,13 +521,38 @@ func TestOnePasswordBackend_Save_Edit_Sync(t *testing.T) {
 		Secret:     []byte("new-secret"),
 	}
 
-	err := b.Save(context.Background(), item)
+	saveDone := make(chan error, 1)
+	go func() {
+		saveDone <- b.Save(context.Background(), item)
+	}()
+
+	select {
+	case <-started:
+		select {
+		case err := <-saveDone:
+			if err != nil {
+				t.Fatalf("Save failed: %v", err)
+			}
+		case <-time.After(50 * time.Millisecond):
+			close(release)
+			t.Fatal("Save blocked waiting for op edit")
+		}
+	case err := <-saveDone:
+		if err != nil {
+			t.Fatalf("Save failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("op edit did not start")
+	}
+
+	got, err := b.Get(context.Background(), "test-id")
 	if err != nil {
-		t.Fatalf("Save failed: %v", err)
+		t.Fatalf("Get from cache after Save failed: %v", err)
 	}
-	if !editCompleted {
-		t.Fatal("Save returned before item edit completed")
+	if string(got.Secret) != "new-secret" {
+		t.Fatalf("cached secret = %q", string(got.Secret))
 	}
+	close(release)
 }
 
 func TestOnePasswordBackend_Get_UsesSecretCacheWithSlidingTTL(t *testing.T) {
