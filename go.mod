@@ -3,6 +3,7 @@ module github.com/nakatanakatana/mytools
 go 1.26.3
 
 require (
+	github.com/awnumar/memguard v0.23.0
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/godbus/dbus/v5 v5.2.2
 	golang.org/x/crypto v0.52.0
@@ -11,6 +12,7 @@ require (
 )
 
 require (
+	github.com/awnumar/memcall v0.4.0 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 )
