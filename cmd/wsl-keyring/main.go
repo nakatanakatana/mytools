@@ -49,7 +49,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to initialize 1Password backend: %v", err)
 		}
-		backend = opBackend
+		backend = NewCachedBackend(opBackend, BackendOptions{
+			CacheSecrets:  true,
+			CacheMetadata: true,
+			AsyncSave:     true,
+		})
 	}
 
 	// Create service object
