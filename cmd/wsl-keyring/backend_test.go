@@ -398,6 +398,109 @@ func TestOnePasswordBackend_Get_CoalescesConcurrentAuthChecks(t *testing.T) {
 	}
 }
 
+func TestOnePasswordBackend_CheckAuthAndGet_CoalesceAuthCheck(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary:       "op.exe",
+		vault:        "test-vault",
+		authCacheTTL: time.Minute,
+	}
+
+	whoamiStarted := make(chan struct{})
+	releaseWhoami := make(chan struct{})
+	var closeWhoamiStarted sync.Once
+
+	var mu sync.Mutex
+	whoamiCalls := 0
+	itemGetCalls := 0
+
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			mu.Lock()
+			whoamiCalls++
+			mu.Unlock()
+			closeWhoamiStarted.Do(func() { close(whoamiStarted) })
+			<-releaseWhoami
+			return []byte(`{"user_uuid":"user"}`), nil
+		}
+
+		if strings.Contains(argsStr, "item get") {
+			mu.Lock()
+			itemGetCalls++
+			mu.Unlock()
+			return json.Marshal(opItem{
+				ID:    args[2],
+				Title: "Secret",
+				Fields: []opItemField{
+					{ID: "password", Type: "CONCEALED", Value: "secret"},
+				},
+			})
+		}
+
+		return nil, fmt.Errorf("unexpected command: %s", argsStr)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := b.CheckAuth(context.Background()); err != nil {
+			errs <- err
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		item, err := b.Get(context.Background(), "id1")
+		if err != nil {
+			errs <- err
+			return
+		}
+		if item.ID != "id1" || string(item.Secret) != "secret" {
+			errs <- fmt.Errorf("unexpected item: %+v", item)
+		}
+	}()
+
+	close(start)
+	select {
+	case <-whoamiStarted:
+	case <-time.After(time.Second):
+		t.Fatal("op whoami did not start")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	gotWhoamiWhileBlocked := whoamiCalls
+	mu.Unlock()
+	if gotWhoamiWhileBlocked != 1 {
+		t.Fatalf("whoami calls while auth blocked = %d, want 1", gotWhoamiWhileBlocked)
+	}
+
+	close(releaseWhoami)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if whoamiCalls != 1 {
+		t.Fatalf("whoami calls = %d, want 1", whoamiCalls)
+	}
+	if itemGetCalls != 1 {
+		t.Fatalf("item get calls = %d, want 1", itemGetCalls)
+	}
+}
+
 func TestOnePasswordBackend_Get_ReusesRecentSuccessfulAuthCheck(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary:       "op.exe",
@@ -438,6 +541,143 @@ func TestOnePasswordBackend_Get_ReusesRecentSuccessfulAuthCheck(t *testing.T) {
 	defer mu.Unlock()
 	if whoamiCalls != 1 {
 		t.Fatalf("whoami calls = %d, want 1", whoamiCalls)
+	}
+}
+
+func TestOnePasswordBackend_Get_ZeroAuthCacheTTLDisablesSequentialReuse(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary:       "op.exe",
+		vault:        "test-vault",
+		authCacheTTL: 0,
+	}
+
+	var mu sync.Mutex
+	whoamiCalls := 0
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			mu.Lock()
+			whoamiCalls++
+			mu.Unlock()
+			return []byte(`{"user_uuid":"user"}`), nil
+		}
+		if strings.Contains(argsStr, "item get") {
+			return json.Marshal(opItem{
+				ID:    args[2],
+				Title: "Secret",
+				Fields: []opItemField{
+					{ID: "password", Type: "CONCEALED", Value: "secret"},
+				},
+			})
+		}
+		return nil, fmt.Errorf("unexpected command: %s", argsStr)
+	}
+
+	if _, err := b.Get(context.Background(), "id1"); err != nil {
+		t.Fatalf("first Get failed: %v", err)
+	}
+	if _, err := b.Get(context.Background(), "id2"); err != nil {
+		t.Fatalf("second Get failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if whoamiCalls != 2 {
+		t.Fatalf("whoami calls = %d, want 2", whoamiCalls)
+	}
+}
+
+func TestOnePasswordBackend_Get_ZeroAuthCacheTTLStillCoalescesConcurrentAuthChecks(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary:       "op.exe",
+		vault:        "test-vault",
+		authCacheTTL: 0,
+	}
+
+	whoamiStarted := make(chan struct{})
+	releaseWhoami := make(chan struct{})
+	var closeWhoamiStarted sync.Once
+
+	var mu sync.Mutex
+	whoamiCalls := 0
+	itemGetCalls := 0
+
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			mu.Lock()
+			whoamiCalls++
+			mu.Unlock()
+			closeWhoamiStarted.Do(func() { close(whoamiStarted) })
+			<-releaseWhoami
+			return []byte(`{"user_uuid":"user"}`), nil
+		}
+		if strings.Contains(argsStr, "item get") {
+			mu.Lock()
+			itemGetCalls++
+			mu.Unlock()
+			return json.Marshal(opItem{
+				ID:    args[2],
+				Title: "Secret",
+				Fields: []opItemField{
+					{ID: "password", Type: "CONCEALED", Value: "secret"},
+				},
+			})
+		}
+		return nil, fmt.Errorf("unexpected command: %s", argsStr)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, id := range []string{"id1", "id2"} {
+		id := id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			item, err := b.Get(context.Background(), id)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if item.ID != id || string(item.Secret) != "secret" {
+				errs <- fmt.Errorf("unexpected item for %s: %+v", id, item)
+			}
+		}()
+	}
+
+	close(start)
+	select {
+	case <-whoamiStarted:
+	case <-time.After(time.Second):
+		t.Fatal("op whoami did not start")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	gotWhoamiWhileBlocked := whoamiCalls
+	mu.Unlock()
+	if gotWhoamiWhileBlocked != 1 {
+		t.Fatalf("whoami calls while auth blocked = %d, want 1", gotWhoamiWhileBlocked)
+	}
+
+	close(releaseWhoami)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if whoamiCalls != 1 {
+		t.Fatalf("whoami calls = %d, want 1", whoamiCalls)
+	}
+	if itemGetCalls != 2 {
+		t.Fatalf("item get calls = %d, want 2", itemGetCalls)
 	}
 }
 
@@ -535,18 +775,28 @@ func TestOnePasswordBackend_RunOP_DoesNotLogSecrets(t *testing.T) {
 }
 
 func TestOnePasswordBackend_RunOP_DoesNotReturnStderr(t *testing.T) {
-	b := &OnePasswordBackend{
-		binary: "op.exe",
-		vault:  "test-vault",
-		runCmd: func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
-			cmd := exec.CommandContext(ctx, "sh", "-c", "echo super-secret-token >&2; exit 42")
-			return cmd.Output()
-		},
+	b := newAuthenticatedTestOnePasswordBackend()
+
+	operationCalls := 0
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			t.Fatalf("test backend should already be authenticated, got auth command: %s", argsStr)
+		}
+		if !strings.Contains(argsStr, "item create") {
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+		operationCalls++
+		cmd := exec.CommandContext(ctx, "sh", "-c", "echo super-secret-token >&2; exit 42")
+		return cmd.Output()
 	}
 
 	_, err := b.runOP(context.Background(), "item", "create")
 	if err == nil {
 		t.Fatal("expected runOP to fail")
+	}
+	if operationCalls != 1 {
+		t.Fatalf("operation calls = %d, want 1", operationCalls)
 	}
 	if strings.Contains(err.Error(), "super-secret-token") {
 		t.Fatalf("runOP returned stderr containing secret: %v", err)
