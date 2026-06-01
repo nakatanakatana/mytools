@@ -296,8 +296,9 @@ func TestOnePasswordBackend_Get(t *testing.T) {
 
 func TestOnePasswordBackend_Get_CoalescesConcurrentAuthChecks(t *testing.T) {
 	b := &OnePasswordBackend{
-		binary: "op.exe",
-		vault:  "test-vault",
+		binary:       "op.exe",
+		vault:        "test-vault",
+		authCacheTTL: time.Minute,
 	}
 
 	whoamiStarted := make(chan struct{})
@@ -387,6 +388,96 @@ func TestOnePasswordBackend_Get_CoalescesConcurrentAuthChecks(t *testing.T) {
 	}
 	if itemGetCalls != 2 {
 		t.Fatalf("item get calls = %d, want 2", itemGetCalls)
+	}
+}
+
+func TestOnePasswordBackend_Get_ReusesRecentSuccessfulAuthCheck(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary:       "op.exe",
+		vault:        "test-vault",
+		authCacheTTL: time.Minute,
+	}
+
+	var mu sync.Mutex
+	whoamiCalls := 0
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			mu.Lock()
+			whoamiCalls++
+			mu.Unlock()
+			return []byte(`{"user_uuid":"user"}`), nil
+		}
+		if strings.Contains(argsStr, "item get") {
+			return json.Marshal(opItem{
+				ID:    args[2],
+				Title: "Secret",
+				Fields: []opItemField{
+					{ID: "password", Type: "CONCEALED", Value: "secret"},
+				},
+			})
+		}
+		return nil, fmt.Errorf("unexpected command: %s", argsStr)
+	}
+
+	if _, err := b.Get(context.Background(), "id1"); err != nil {
+		t.Fatalf("first Get failed: %v", err)
+	}
+	if _, err := b.Get(context.Background(), "id2"); err != nil {
+		t.Fatalf("second Get failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if whoamiCalls != 1 {
+		t.Fatalf("whoami calls = %d, want 1", whoamiCalls)
+	}
+}
+
+func TestOnePasswordBackend_Get_DoesNotCacheFailedAuthCheck(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary:       "op.exe",
+		vault:        "test-vault",
+		authCacheTTL: time.Minute,
+	}
+
+	var mu sync.Mutex
+	whoamiCalls := 0
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			mu.Lock()
+			whoamiCalls++
+			call := whoamiCalls
+			mu.Unlock()
+			if call == 1 {
+				return nil, fmt.Errorf("op command failed: locked")
+			}
+			return []byte(`{"user_uuid":"user"}`), nil
+		}
+		if strings.Contains(argsStr, "item get") {
+			return json.Marshal(opItem{
+				ID:    args[2],
+				Title: "Secret",
+				Fields: []opItemField{
+					{ID: "password", Type: "CONCEALED", Value: "secret"},
+				},
+			})
+		}
+		return nil, fmt.Errorf("unexpected command: %s", argsStr)
+	}
+
+	if _, err := b.Get(context.Background(), "id1"); err == nil {
+		t.Fatal("first Get succeeded, want auth failure")
+	}
+	if _, err := b.Get(context.Background(), "id1"); err != nil {
+		t.Fatalf("second Get failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if whoamiCalls != 2 {
+		t.Fatalf("whoami calls = %d, want 2", whoamiCalls)
 	}
 }
 
