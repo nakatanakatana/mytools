@@ -74,6 +74,32 @@ func TestCollectionCreateItem_InvalidSessionDoesNotSave(t *testing.T) {
 	}
 }
 
+func TestServiceReadAliasReturnsDefaultCollection(t *testing.T) {
+	service := NewServiceObject(nil, &recordingBackend{})
+
+	path, dbusErr := service.ReadAlias("default")
+
+	if dbusErr != nil {
+		t.Fatalf("ReadAlias failed: %v", dbusErr)
+	}
+	if path != dbus.ObjectPath(CollectionPath) {
+		t.Fatalf("ReadAlias(default) = %s, want %s", path, CollectionPath)
+	}
+}
+
+func TestServiceReadAliasReturnsRootForUnknownAlias(t *testing.T) {
+	service := NewServiceObject(nil, &recordingBackend{})
+
+	path, dbusErr := service.ReadAlias("missing")
+
+	if dbusErr != nil {
+		t.Fatalf("ReadAlias failed: %v", dbusErr)
+	}
+	if path != dbus.ObjectPath("/") {
+		t.Fatalf("ReadAlias(missing) = %s, want /", path)
+	}
+}
+
 func TestCollectionCreateItem_DecryptFailureDoesNotSave(t *testing.T) {
 	backend := &recordingBackend{}
 	service := NewServiceObject(nil, backend)

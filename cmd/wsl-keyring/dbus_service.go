@@ -256,6 +256,13 @@ func (s *ServiceObject) SetAlias(name string, collection dbus.ObjectPath) *dbus.
 	return nil
 }
 
+func (s *ServiceObject) ReadAlias(name string) (dbus.ObjectPath, *dbus.Error) {
+	if name == "default" {
+		return dbus.ObjectPath(CollectionPath), nil
+	}
+	return dbus.ObjectPath("/"), nil
+}
+
 // Properties implementation
 func (s *ServiceObject) Get(iface, property string) (dbus.Variant, *dbus.Error) {
 	if iface == ServiceInterface && property == "Collections" {

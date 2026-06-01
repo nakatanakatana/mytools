@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/godbus/dbus/v5"
@@ -111,5 +112,34 @@ func TestCollectionSearchItemsSignatureMatchesSecretServiceSpec(t *testing.T) {
 	}
 	if got, want := method.Type.Out(1), reflect.TypeOf((*dbus.Error)(nil)); got != want {
 		t.Fatalf("SearchItems second output = %v, want %v", got, want)
+	}
+}
+
+func TestServiceReadAliasSignatureMatchesSecretServiceSpec(t *testing.T) {
+	method, ok := reflect.TypeOf(&ServiceObject{}).MethodByName("ReadAlias")
+	if !ok {
+		t.Fatal("ServiceObject.ReadAlias method not found")
+	}
+
+	if got, want := method.Type.NumIn(), 2; got != want {
+		t.Fatalf("ReadAlias NumIn = %d, want %d", got, want)
+	}
+	if got, want := method.Type.In(1), reflect.TypeOf(""); got != want {
+		t.Fatalf("ReadAlias input = %v, want %v", got, want)
+	}
+	if got, want := method.Type.NumOut(), 2; got != want {
+		t.Fatalf("ReadAlias NumOut = %d, want %d", got, want)
+	}
+	if got, want := method.Type.Out(0), reflect.TypeOf(dbus.ObjectPath("")); got != want {
+		t.Fatalf("ReadAlias first output = %v, want %v", got, want)
+	}
+	if got, want := method.Type.Out(1), reflect.TypeOf((*dbus.Error)(nil)); got != want {
+		t.Fatalf("ReadAlias second output = %v, want %v", got, want)
+	}
+}
+
+func TestServiceIntrospectionIncludesReadAlias(t *testing.T) {
+	if !strings.Contains(serviceIntrospectXML, `<method name="ReadAlias">`) {
+		t.Fatal("service introspection XML does not include ReadAlias")
 	}
 }
