@@ -7,7 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/godbus/dbus/v5"
 )
 
@@ -102,6 +104,31 @@ Exec=/usr/bin/env OP_VAULT="my-vault" /tmp/wsl-keyring
 `
 	if got != want {
 		t.Fatalf("service file content = %q, want %q", got, want)
+	}
+}
+
+func TestConfigCacheBackendOptionsUsesEnvDurations(t *testing.T) {
+	t.Setenv("WSL_KEYRING_SECRET_CACHE_TTL", "15m")
+	t.Setenv("WSL_KEYRING_AUTH_CHECK_MIN_SPACING", "30s")
+	t.Setenv("WSL_KEYRING_AUTH_CHECK_TIMEOUT", "750ms")
+
+	var cfg Config
+	if err := env.Parse(&cfg); err != nil {
+		t.Fatalf("env.Parse failed: %v", err)
+	}
+
+	opts := cfg.CacheBackendOptions()
+	if !opts.CacheSecrets || !opts.CacheMetadata || !opts.AsyncSave {
+		t.Fatalf("cache options should enable production caches: %+v", opts)
+	}
+	if got, want := opts.SecretCacheTTL, 15*time.Minute; got != want {
+		t.Fatalf("SecretCacheTTL = %s, want %s", got, want)
+	}
+	if got, want := opts.AuthCheckMinSpacing, 30*time.Second; got != want {
+		t.Fatalf("AuthCheckMinSpacing = %s, want %s", got, want)
+	}
+	if got, want := opts.AuthCheckTimeout, 750*time.Millisecond; got != want {
+		t.Fatalf("AuthCheckTimeout = %s, want %s", got, want)
 	}
 }
 
