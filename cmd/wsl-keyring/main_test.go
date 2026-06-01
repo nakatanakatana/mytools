@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -89,6 +91,50 @@ func TestBuildEnvs(t *testing.T) {
 				t.Errorf("buildEnvs() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildServiceFileContent(t *testing.T) {
+	got := buildServiceFileContent(`/usr/bin/env OP_VAULT="my-vault" /tmp/wsl-keyring`)
+	want := `[D-BUS Service]
+Name=org.freedesktop.secrets
+Exec=/usr/bin/env OP_VAULT="my-vault" /tmp/wsl-keyring
+`
+	if got != want {
+		t.Fatalf("service file content = %q, want %q", got, want)
+	}
+}
+
+func TestWriteServiceFile(t *testing.T) {
+	home := t.TempDir()
+	getenv := func(key string) string {
+		if key == "OP_VAULT" {
+			return "my-vault"
+		}
+		return ""
+	}
+	lookPath := func(s string) (string, error) {
+		return "", errors.New("not found")
+	}
+
+	filePath, execCmd, err := writeServiceFile("/tmp/wsl-keyring", home, getenv, lookPath)
+	if err != nil {
+		t.Fatalf("writeServiceFile failed: %v", err)
+	}
+	wantPath := filepath.Join(home, ".local", "share", "dbus-1", "services", "org.freedesktop.secrets.service")
+	if filePath != wantPath {
+		t.Fatalf("filePath = %s, want %s", filePath, wantPath)
+	}
+	wantExec := `/usr/bin/env OP_VAULT="my-vault" /tmp/wsl-keyring`
+	if execCmd != wantExec {
+		t.Fatalf("execCmd = %q, want %q", execCmd, wantExec)
+	}
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to read service file: %v", err)
+	}
+	if string(content) != buildServiceFileContent(wantExec) {
+		t.Fatalf("service file content = %q", content)
 	}
 }
 

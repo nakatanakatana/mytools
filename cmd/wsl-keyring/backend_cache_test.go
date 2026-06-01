@@ -15,6 +15,7 @@ type fakeRawBackend struct {
 	loadMetaCalls  int
 	saveStarted    chan struct{}
 	saveRelease    chan struct{}
+	saveErr        error
 	createdRealID  string
 	failAuthCheck  bool
 	authCheckCalls int
@@ -43,6 +44,9 @@ func (b *fakeRawBackend) Save(ctx context.Context, item *SecretItem) error {
 	}
 	if b.saveRelease != nil {
 		<-b.saveRelease
+	}
+	if b.saveErr != nil {
+		return b.saveErr
 	}
 
 	b.mu.Lock()
@@ -308,5 +312,90 @@ func TestCachedBackend_Get_AuthCheckFailureClearsSecretCache(t *testing.T) {
 	}
 	if raw.getCalls != 2 {
 		t.Fatalf("raw Get calls = %d, want 2", raw.getCalls)
+	}
+}
+
+func TestCachedBackend_List_ReturnsMetadataWithoutSecrets(t *testing.T) {
+	raw := newFakeRawBackend()
+	raw.items["id1"] = &SecretItem{ID: "id1", Label: "label", Attributes: map[string]string{"service": "github"}, Secret: []byte("secret")}
+	backend := NewCachedBackend(raw, BackendOptions{CacheMetadata: true})
+
+	items, err := backend.List(context.Background())
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("List returned %d items, want 1", len(items))
+	}
+	if items[0].ID != "id1" || items[0].Secret != nil {
+		t.Fatalf("unexpected List item: %+v", items[0])
+	}
+}
+
+func TestCachedBackend_CanDisableSecretAndMetadataCaches(t *testing.T) {
+	raw := newFakeRawBackend()
+	raw.items["id1"] = &SecretItem{ID: "id1", Label: "label", Attributes: map[string]string{"service": "github"}, Secret: []byte("token-1")}
+	backend := NewCachedBackend(raw, BackendOptions{})
+
+	first, err := backend.Get(context.Background(), "id1")
+	if err != nil {
+		t.Fatalf("first Get failed: %v", err)
+	}
+	if string(first.Secret) != "token-1" {
+		t.Fatalf("first secret = %q", first.Secret)
+	}
+
+	raw.mu.Lock()
+	raw.items["id1"].Secret = []byte("token-2")
+	raw.mu.Unlock()
+
+	second, err := backend.Get(context.Background(), "id1")
+	if err != nil {
+		t.Fatalf("second Get failed: %v", err)
+	}
+	if string(second.Secret) != "token-2" {
+		t.Fatalf("second secret = %q", second.Secret)
+	}
+
+	if _, err := backend.Search(context.Background(), map[string]string{"service": "github"}); err != nil {
+		t.Fatalf("first Search failed: %v", err)
+	}
+	if _, err := backend.Search(context.Background(), map[string]string{"service": "github"}); err != nil {
+		t.Fatalf("second Search failed: %v", err)
+	}
+	if raw.getCalls != 2 {
+		t.Fatalf("raw Get calls = %d, want 2", raw.getCalls)
+	}
+	if raw.loadMetaCalls != 2 {
+		t.Fatalf("LoadMetadata calls = %d, want 2", raw.loadMetaCalls)
+	}
+}
+
+func TestCachedBackend_AsyncSaveFailureKeepsOptimisticCache(t *testing.T) {
+	raw := newFakeRawBackend()
+	raw.saveErr = fmt.Errorf("persist failed")
+	backend := NewCachedBackend(raw, BackendOptions{
+		CacheSecrets:        true,
+		CacheMetadata:       true,
+		AsyncSave:           true,
+		SecretCacheTTL:      time.Minute,
+		AuthCheckMinSpacing: time.Hour,
+	})
+
+	item := &SecretItem{
+		ID:         "id1",
+		Label:      "label",
+		Attributes: map[string]string{"service": "github"},
+		Secret:     []byte("secret"),
+	}
+	if err := backend.Save(context.Background(), item); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	got, err := backend.Get(context.Background(), "id1")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if string(got.Secret) != "secret" {
+		t.Fatalf("cached secret = %q", got.Secret)
 	}
 }

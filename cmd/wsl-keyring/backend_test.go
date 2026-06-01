@@ -70,6 +70,30 @@ func TestInMemoryBackend(t *testing.T) {
 	}
 }
 
+func TestInMemoryBackend_LoadMetadataOmitsSecrets(t *testing.T) {
+	b := NewInMemoryBackend()
+	ctx := context.Background()
+	if err := b.Save(ctx, &SecretItem{
+		ID:         "id1",
+		Label:      "label",
+		Attributes: map[string]string{"service": "github"},
+		Secret:     []byte("secret"),
+	}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	items, err := b.LoadMetadata(ctx)
+	if err != nil {
+		t.Fatalf("LoadMetadata failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("LoadMetadata returned %d items, want 1", len(items))
+	}
+	if items[0].ID != "id1" || items[0].Secret != nil {
+		t.Fatalf("unexpected metadata item: %+v", items[0])
+	}
+}
+
 func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary: "op.exe",
@@ -473,6 +497,109 @@ func TestOnePasswordBackend_Search_EmptyValueRequiresExactMatch(t *testing.T) {
 	}
 	if len(matched) != 0 {
 		t.Fatalf("expected no matches for empty username, got %d", len(matched))
+	}
+}
+
+func TestOnePasswordBackend_List_LoadsMetadata(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
+	}
+
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		switch {
+		case strings.Contains(argsStr, "item list"):
+			return json.Marshal([]opListItem{{ID: "id1", Title: "ignored"}})
+		case strings.Contains(argsStr, "item get id1"):
+			return json.Marshal(opItem{
+				ID:    "id1",
+				Title: "My Saved Secret",
+				Fields: []opItemField{
+					{ID: "username", Type: "STRING", Value: "alice"},
+					{ID: "attributes", Label: "attributes", Type: "STRING", Value: "service=github&username=alice"},
+				},
+			})
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+	}
+
+	items, err := b.List(context.Background())
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("List returned %d items, want 1", len(items))
+	}
+	if items[0].ID != "id1" || items[0].Label != "My Saved Secret" || items[0].Attributes["service"] != "github" || items[0].Secret != nil {
+		t.Fatalf("unexpected item: %+v", items[0])
+	}
+}
+
+func TestOnePasswordBackend_Delete_RunsOPDelete(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
+	}
+	var gotArgs string
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		gotArgs = strings.Join(args, " ")
+		return []byte(`{}`), nil
+	}
+
+	if err := b.Delete(context.Background(), "id1"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	if !strings.Contains(gotArgs, "item delete id1") || !strings.Contains(gotArgs, "--vault test-vault") {
+		t.Fatalf("unexpected delete args: %s", gotArgs)
+	}
+}
+
+func TestOnePasswordBackend_Save_CreateUpdatesExistingMatchingItem(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
+	}
+
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		switch {
+		case strings.Contains(argsStr, "item list"):
+			return json.Marshal([]opListItem{{ID: "existing-id", Title: "existing"}})
+		case strings.Contains(argsStr, "item get existing-id"):
+			return json.Marshal(opItem{
+				ID:    "existing-id",
+				Title: "existing",
+				Fields: []opItemField{
+					{ID: "username", Type: "STRING", Value: "alice"},
+					{ID: "attributes", Label: "attributes", Type: "STRING", Value: "service=github&username=alice"},
+				},
+			})
+		case strings.Contains(argsStr, "item edit existing-id"):
+			var template opItem
+			if err := json.Unmarshal([]byte(stdin), &template); err != nil {
+				t.Fatalf("failed to parse stdin template: %v", err)
+			}
+			if template.Title != "updated" {
+				t.Fatalf("template title = %q", template.Title)
+			}
+			return []byte(`{"id":"existing-id","title":"updated"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+	}
+
+	item := &SecretItem{
+		Label:      "updated",
+		Attributes: map[string]string{"service": "github", "username": "alice"},
+		Secret:     []byte("new-secret"),
+	}
+	if err := b.Save(context.Background(), item); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if item.ID != "existing-id" {
+		t.Fatalf("item ID = %q, want existing-id", item.ID)
 	}
 }
 
