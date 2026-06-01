@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,17 +9,9 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/awnumar/memguard"
 	"github.com/caarlos0/env/v11"
 	"golang.org/x/sync/errgroup"
-)
-
-const (
-	defaultSecretCacheTTL      = 60 * time.Second
-	defaultAuthCheckMinSpacing = 5 * time.Second
-	defaultAuthCheckTimeout    = 2 * time.Second
 )
 
 // opItem is the JSON structure returned by the 'op' CLI.
@@ -46,35 +36,13 @@ type opListItem struct {
 	Title string `json:"title"`
 }
 
-// OnePasswordBackend implements StorageBackend by executing the 1Password CLI (op.exe / op).
+// OnePasswordBackend implements RawStorageBackend by executing the 1Password CLI (op.exe / op).
 type OnePasswordBackend struct {
 	binary string
 	vault  string
 
-	metaCache  map[string]*SecretItem
-	idAliases  map[string]string
-	metaMu     sync.RWMutex
-	metaLoaded bool
-
-	secretCache          map[string]*cachedSecretItem
-	secretMu             sync.Mutex
-	secretCacheTTL       time.Duration
-	authCheckMinSpacing  time.Duration
-	authCheckTimeout     time.Duration
-	authCheckInFlight    bool
-	authCheckLastStarted time.Time
-	now                  func() time.Time
-
 	// runCmd is used to execute external commands. Placed here to allow mocking in tests.
 	runCmd func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error)
-}
-
-type cachedSecretItem struct {
-	id         string
-	label      string
-	attributes map[string]string
-	secret     *memguard.LockedBuffer
-	expiresAt  time.Time
 }
 
 type opConfig struct {
@@ -89,15 +57,8 @@ func NewOnePasswordBackend() (*OnePasswordBackend, error) {
 		return nil, err
 	}
 	return &OnePasswordBackend{
-		binary:              cfg.OPBinary,
-		vault:               cfg.Vault,
-		metaCache:           make(map[string]*SecretItem),
-		idAliases:           make(map[string]string),
-		secretCache:         make(map[string]*cachedSecretItem),
-		secretCacheTTL:      defaultSecretCacheTTL,
-		authCheckMinSpacing: defaultAuthCheckMinSpacing,
-		authCheckTimeout:    defaultAuthCheckTimeout,
-		now:                 time.Now,
+		binary: cfg.OPBinary,
+		vault:  cfg.Vault,
 		runCmd: func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
 			if stdin != "" {
@@ -106,35 +67,6 @@ func NewOnePasswordBackend() (*OnePasswordBackend, error) {
 			return cmd.Output()
 		},
 	}, nil
-}
-
-func (b *OnePasswordBackend) ensureInitialized() {
-	b.metaMu.Lock()
-	if b.metaCache == nil {
-		b.metaCache = make(map[string]*SecretItem)
-	}
-	if b.idAliases == nil {
-		b.idAliases = make(map[string]string)
-	}
-	b.metaMu.Unlock()
-
-	b.secretMu.Lock()
-	if b.secretCache == nil {
-		b.secretCache = make(map[string]*cachedSecretItem)
-	}
-	if b.secretCacheTTL == 0 {
-		b.secretCacheTTL = defaultSecretCacheTTL
-	}
-	if b.authCheckMinSpacing == 0 {
-		b.authCheckMinSpacing = defaultAuthCheckMinSpacing
-	}
-	if b.authCheckTimeout == 0 {
-		b.authCheckTimeout = defaultAuthCheckTimeout
-	}
-	if b.now == nil {
-		b.now = time.Now
-	}
-	b.secretMu.Unlock()
 }
 
 func (b *OnePasswordBackend) runOP(ctx context.Context, args ...string) ([]byte, error) {
@@ -166,29 +98,21 @@ func (b *OnePasswordBackend) runOPNoVault(ctx context.Context, args ...string) (
 	return out, nil
 }
 
-func (b *OnePasswordBackend) loadMetaCache(ctx context.Context) error {
-	b.ensureInitialized()
-	b.metaMu.Lock()
-	if b.metaLoaded {
-		b.metaMu.Unlock()
-		return nil
-	}
-	b.metaMu.Unlock()
-
+func (b *OnePasswordBackend) LoadMetadata(ctx context.Context) ([]*SecretItem, error) {
 	out, err := b.runOP(ctx, "item", "list", "--tags", "wsl-keyring", "--format", "json")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var list []opListItem
 	if err := json.Unmarshal(out, &list); err != nil {
-		return err
+		return nil, err
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, 5)
 	var mu sync.Mutex
-	tempCache := make(map[string]*SecretItem)
+	items := make([]*SecretItem, 0, len(list))
 
 	for _, listItem := range list {
 		listItem := listItem
@@ -202,22 +126,17 @@ func (b *OnePasswordBackend) loadMetaCache(ctx context.Context) error {
 			}
 
 			mu.Lock()
-			tempCache[item.ID] = item
+			items = append(items, item)
 			mu.Unlock()
 			return nil
 		})
 	}
 
 	if err := g.Wait(); err != nil {
-		return err
+		return nil, err
 	}
 
-	b.metaMu.Lock()
-	b.metaCache = tempCache
-	b.metaLoaded = true
-	b.metaMu.Unlock()
-
-	return nil
+	return items, nil
 }
 
 func (b *OnePasswordBackend) getMetadataOnly(ctx context.Context, id string) (*SecretItem, error) {
@@ -263,33 +182,16 @@ func (b *OnePasswordBackend) getMetadataOnly(ctx context.Context, id string) (*S
 }
 
 func (b *OnePasswordBackend) Search(ctx context.Context, attributes map[string]string) ([]*SecretItem, error) {
-	if err := b.loadMetaCache(ctx); err != nil {
+	items, err := b.LoadMetadata(ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	b.metaMu.RLock()
-	defer b.metaMu.RUnlock()
-
 	var matched []*SecretItem
-	for _, item := range b.metaCache {
-		match := true
-		for k, v := range attributes {
-			val, ok := item.Attributes[k]
-			if !ok || val != v {
-				match = false
-				break
-			}
-		}
-		if match {
-			copied := &SecretItem{
-				ID:         item.ID,
-				Label:      item.Label,
-				Attributes: make(map[string]string),
-				Secret:     nil,
-			}
-			for k, v := range item.Attributes {
-				copied.Attributes[k] = v
-			}
+	for _, item := range items {
+		if attributesMatch(item.Attributes, attributes) {
+			copied := copySecretItem(item)
+			copied.Secret = nil
 			matched = append(matched, copied)
 		}
 	}
@@ -298,14 +200,6 @@ func (b *OnePasswordBackend) Search(ctx context.Context, attributes map[string]s
 }
 
 func (b *OnePasswordBackend) Get(ctx context.Context, id string) (*SecretItem, error) {
-	b.ensureInitialized()
-	id = b.resolveID(id)
-
-	if item, ok := b.getCachedSecret(id); ok {
-		b.checkAuthAfterCacheAccess()
-		return item, nil
-	}
-
 	out, err := b.runOP(ctx, "item", "get", id, "--format", "json")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, err.Error())
@@ -345,12 +239,10 @@ func (b *OnePasswordBackend) Get(ctx context.Context, id string) (*SecretItem, e
 		}
 	}
 
-	b.storeSecretCache(item)
 	return item, nil
 }
 
 func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
-	b.ensureInitialized()
 	values := url.Values{}
 	for k, v := range item.Attributes {
 		values.Set(k, v)
@@ -363,11 +255,20 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 	}
 
 	if item.ID == "" {
-		pendingID, err := newPendingID()
-		if err != nil {
-			return err
+		if existingID, ok := b.findMatchingOPItem(ctx, item.Attributes); ok {
+			args := []string{
+				"item",
+				"edit",
+				existingID,
+				"--title", item.Label,
+				"--format", "json",
+			}
+			if _, err := b.runOPWithInput(ctx, string(template), args...); err != nil {
+				return fmt.Errorf("failed to persist secret update in 1Password: %w", err)
+			}
+			item.ID = existingID
+			return nil
 		}
-		item.ID = pendingID
 
 		args := []string{
 			"item",
@@ -378,16 +279,19 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 			"--format", "json",
 		}
 
-		b.cacheSavedItem(item)
+		out, err := b.runOPWithInput(ctx, string(template), args...)
+		if err != nil {
+			return fmt.Errorf("failed to persist secret in 1Password: %w", err)
+		}
 
-		persistItem := copySecretItem(item)
-		go b.persistCreate(context.Background(), pendingID, persistItem, string(template), args)
-
+		var opIt opItem
+		if err := json.Unmarshal(out, &opIt); err != nil {
+			return fmt.Errorf("failed to parse created 1Password item: %w", err)
+		}
+		item.ID = opIt.ID
 		return nil
 	}
 
-	// Existing item edit: persist before returning success so callers can
-	// immediately search/get without racing a background op edit.
 	args := []string{
 		"item",
 		"edit",
@@ -396,71 +300,10 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 		"--format", "json",
 	}
 
-	b.cacheSavedItem(item)
-
-	go b.persistEdit(context.Background(), copySecretItem(item), string(template), args)
-
+	if _, err := b.runOPWithInput(ctx, string(template), args...); err != nil {
+		return fmt.Errorf("failed to persist secret update in 1Password: %w", err)
+	}
 	return nil
-}
-
-func (b *OnePasswordBackend) cacheSavedItem(item *SecretItem) {
-	b.ensureInitialized()
-	b.metaMu.Lock()
-	copiedAttrs := make(map[string]string)
-	for k, v := range item.Attributes {
-		copiedAttrs[k] = v
-	}
-	b.metaCache[item.ID] = &SecretItem{
-		ID:         item.ID,
-		Label:      item.Label,
-		Attributes: copiedAttrs,
-		Secret:     nil,
-	}
-	b.metaLoaded = true
-	b.metaMu.Unlock()
-
-	b.storeSecretCache(item)
-}
-
-func (b *OnePasswordBackend) persistCreate(ctx context.Context, pendingID string, item *SecretItem, template string, args []string) {
-	if existingID, ok := b.findMatchingOPItem(ctx, item.Attributes); ok {
-		editArgs := []string{
-			"item",
-			"edit",
-			existingID,
-			"--title", item.Label,
-			"--format", "json",
-		}
-		if _, err := b.runOPWithInput(ctx, template, editArgs...); err != nil {
-			log.Printf("failed to persist secret update in 1Password: %v", err)
-			return
-		}
-		b.reconcileCreatedItem(pendingID, existingID, item)
-		return
-	}
-
-	out, err := b.runOPWithInput(ctx, template, args...)
-	if err != nil {
-		log.Printf("failed to persist secret in 1Password: %v", err)
-		return
-	}
-
-	var opIt opItem
-	if err := json.Unmarshal(out, &opIt); err != nil {
-		log.Printf("failed to parse created 1Password item: %v", err)
-		return
-	}
-	if opIt.ID == "" || opIt.ID == pendingID {
-		return
-	}
-
-	b.reconcileCreatedItem(pendingID, opIt.ID, item)
-}
-
-func (b *OnePasswordBackend) persistEdit(ctx context.Context, item *SecretItem, template string, args []string) {
-	if _, err := b.runOPWithInput(ctx, template, args...); err != nil {
-		log.Printf("failed to persist secret update in 1Password: %v", err)
-	}
 }
 
 func (b *OnePasswordBackend) findMatchingOPItem(ctx context.Context, attributes map[string]string) (string, bool) {
@@ -487,39 +330,6 @@ func (b *OnePasswordBackend) findMatchingOPItem(ctx context.Context, attributes 
 		}
 	}
 	return "", false
-}
-
-func (b *OnePasswordBackend) reconcileCreatedItem(pendingID, realID string, item *SecretItem) {
-	b.metaMu.Lock()
-	if cached := b.metaCache[pendingID]; cached != nil {
-		delete(b.metaCache, pendingID)
-		cached.ID = realID
-		b.metaCache[realID] = cached
-	} else {
-		copied := copySecretItem(item)
-		copied.ID = realID
-		copied.Secret = nil
-		b.metaCache[realID] = copied
-	}
-	b.idAliases[pendingID] = realID
-	b.metaMu.Unlock()
-
-	b.secretMu.Lock()
-	if entry := b.secretCache[pendingID]; entry != nil {
-		delete(b.secretCache, pendingID)
-		entry.id = realID
-		b.secretCache[realID] = entry
-	}
-	b.secretMu.Unlock()
-}
-
-func (b *OnePasswordBackend) resolveID(id string) string {
-	b.metaMu.RLock()
-	defer b.metaMu.RUnlock()
-	if realID, ok := b.idAliases[id]; ok {
-		return realID
-	}
-	return id
 }
 
 func buildOPItemTemplate(item *SecretItem, attrsStr string) opItem {
@@ -552,184 +362,15 @@ func buildOPItemTemplate(item *SecretItem, attrsStr string) opItem {
 }
 
 func (b *OnePasswordBackend) Delete(ctx context.Context, id string) error {
-	b.ensureInitialized()
-	id = b.resolveID(id)
 	_, err := b.runOP(ctx, "item", "delete", id)
-	if err == nil {
-		b.metaMu.Lock()
-		delete(b.metaCache, id)
-		b.metaMu.Unlock()
-		b.deleteSecretCache(id)
-	}
 	return err
 }
 
 func (b *OnePasswordBackend) List(ctx context.Context) ([]*SecretItem, error) {
-	if err := b.loadMetaCache(ctx); err != nil {
-		return nil, err
-	}
-
-	b.metaMu.RLock()
-	defer b.metaMu.RUnlock()
-
-	results := make([]*SecretItem, 0, len(b.metaCache))
-	for _, item := range b.metaCache {
-		copied := &SecretItem{
-			ID:         item.ID,
-			Label:      item.Label,
-			Attributes: make(map[string]string),
-			Secret:     nil,
-		}
-		for k, v := range item.Attributes {
-			copied.Attributes[k] = v
-		}
-		results = append(results, copied)
-	}
-	return results, nil
+	return b.LoadMetadata(ctx)
 }
 
-func (b *OnePasswordBackend) getCachedSecret(id string) (*SecretItem, bool) {
-	b.secretMu.Lock()
-	defer b.secretMu.Unlock()
-
-	entry, ok := b.secretCache[id]
-	if !ok {
-		return nil, false
-	}
-	now := b.now()
-	if !now.Before(entry.expiresAt) || entry.secret == nil || !entry.secret.IsAlive() {
-		entry.destroy()
-		delete(b.secretCache, id)
-		return nil, false
-	}
-
-	entry.expiresAt = now.Add(b.secretCacheTTL)
-	return entry.toSecretItem(), true
-}
-
-func (b *OnePasswordBackend) storeSecretCache(item *SecretItem) {
-	if item == nil || item.ID == "" || item.Secret == nil {
-		return
-	}
-
-	secretCopy := append([]byte(nil), item.Secret...)
-	buf := memguard.NewBufferFromBytes(secretCopy)
-	if buf == nil || !buf.IsAlive() || buf.Size() != len(item.Secret) {
-		if buf != nil {
-			buf.Destroy()
-		}
-		return
-	}
-
-	entry := &cachedSecretItem{
-		id:         item.ID,
-		label:      item.Label,
-		attributes: copyAttributes(item.Attributes),
-		secret:     buf,
-		expiresAt:  b.now().Add(b.secretCacheTTL),
-	}
-
-	b.secretMu.Lock()
-	if old := b.secretCache[item.ID]; old != nil {
-		old.destroy()
-	}
-	b.secretCache[item.ID] = entry
-	b.secretMu.Unlock()
-}
-
-func (b *OnePasswordBackend) deleteSecretCache(id string) {
-	b.secretMu.Lock()
-	if entry := b.secretCache[id]; entry != nil {
-		entry.destroy()
-		delete(b.secretCache, id)
-	}
-	b.secretMu.Unlock()
-}
-
-func (b *OnePasswordBackend) clearSecretCache() {
-	b.secretMu.Lock()
-	for id, entry := range b.secretCache {
-		entry.destroy()
-		delete(b.secretCache, id)
-	}
-	b.secretMu.Unlock()
-}
-
-func (b *OnePasswordBackend) checkAuthAfterCacheAccess() {
-	b.secretMu.Lock()
-	now := b.now()
-	if b.authCheckInFlight || now.Sub(b.authCheckLastStarted) < b.authCheckMinSpacing {
-		b.secretMu.Unlock()
-		return
-	}
-	b.authCheckInFlight = true
-	b.authCheckLastStarted = now
-	timeout := b.authCheckTimeout
-	b.secretMu.Unlock()
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-
-		_, err := b.runOPNoVault(ctx, "whoami", "--format", "json")
-		if err != nil {
-			b.clearSecretCache()
-		}
-
-		b.secretMu.Lock()
-		b.authCheckInFlight = false
-		b.secretMu.Unlock()
-	}()
-}
-
-func (c *cachedSecretItem) toSecretItem() *SecretItem {
-	return &SecretItem{
-		ID:         c.id,
-		Label:      c.label,
-		Attributes: copyAttributes(c.attributes),
-		Secret:     append([]byte(nil), c.secret.Bytes()...),
-	}
-}
-
-func (c *cachedSecretItem) destroy() {
-	if c.secret != nil && c.secret.IsAlive() {
-		c.secret.Destroy()
-	}
-}
-
-func copyAttributes(src map[string]string) map[string]string {
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
-
-func attributesMatch(got, want map[string]string) bool {
-	for k, v := range want {
-		if got[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-func copySecretItem(src *SecretItem) *SecretItem {
-	if src == nil {
-		return nil
-	}
-	return &SecretItem{
-		ID:         src.ID,
-		Label:      src.Label,
-		Attributes: copyAttributes(src.Attributes),
-		Secret:     append([]byte(nil), src.Secret...),
-	}
-}
-
-func newPendingID() (string, error) {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("failed to generate pending item ID: %w", err)
-	}
-	return "pending_" + hex.EncodeToString(buf), nil
+func (b *OnePasswordBackend) CheckAuth(ctx context.Context) error {
+	_, err := b.runOPNoVault(ctx, "whoami", "--format", "json")
+	return err
 }

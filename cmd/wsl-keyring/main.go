@@ -49,7 +49,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to initialize 1Password backend: %v", err)
 		}
-		backend = opBackend
+		backend = NewCachedBackend(opBackend, BackendOptions{
+			CacheSecrets:  true,
+			CacheMetadata: true,
+			AsyncSave:     true,
+		})
 	}
 
 	// Create service object
@@ -126,12 +130,21 @@ func initServiceFile() {
 		log.Fatalf("Failed to get user home directory: %v", err)
 	}
 
-	dir := filepath.Join(home, ".local", "share", "dbus-1", "services")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Fatalf("Failed to create directory %s: %v", dir, err)
+	filePath, execCmd, err := writeServiceFile(execPath, home, os.Getenv, exec.LookPath)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	envs := buildEnvs(os.Getenv, exec.LookPath)
+	log.Printf("Successfully initialized D-Bus activation service file at:\n  %s\nPointing to:\n  %s\n", filePath, execCmd)
+}
+
+func writeServiceFile(execPath, home string, getenv func(string) string, lookPath func(string) (string, error)) (string, string, error) {
+	dir := filepath.Join(home, ".local", "share", "dbus-1", "services")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", "", fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	envs := buildEnvs(getenv, lookPath)
 
 	execCmd := execPath
 	if len(envs) > 0 {
@@ -139,16 +152,20 @@ func initServiceFile() {
 	}
 
 	filePath := filepath.Join(dir, "org.freedesktop.secrets.service")
-	content := fmt.Sprintf(`[D-BUS Service]
+	content := buildServiceFileContent(execCmd)
+
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		return "", "", fmt.Errorf("failed to write service file: %w", err)
+	}
+
+	return filePath, execCmd, nil
+}
+
+func buildServiceFileContent(execCmd string) string {
+	return fmt.Sprintf(`[D-BUS Service]
 Name=org.freedesktop.secrets
 Exec=%s
 `, execCmd)
-
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		log.Fatalf("Failed to write service file: %v", err)
-	}
-
-	log.Printf("Successfully initialized D-Bus activation service file at:\n  %s\nPointing to:\n  %s\n", filePath, execCmd)
 }
 
 func buildEnvs(getenv func(string) string, lookPath func(string) (string, error)) []string {

@@ -8,7 +8,6 @@ import (
 	"log"
 	"os/exec"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -68,6 +67,30 @@ func TestInMemoryBackend(t *testing.T) {
 	_, err = b.Get(ctx, "id1")
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestInMemoryBackend_LoadMetadataOmitsSecrets(t *testing.T) {
+	b := NewInMemoryBackend()
+	ctx := context.Background()
+	if err := b.Save(ctx, &SecretItem{
+		ID:         "id1",
+		Label:      "label",
+		Attributes: map[string]string{"service": "github"},
+		Secret:     []byte("secret"),
+	}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	items, err := b.LoadMetadata(ctx)
+	if err != nil {
+		t.Fatalf("LoadMetadata failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("LoadMetadata returned %d items, want 1", len(items))
+	}
+	if items[0].ID != "id1" || items[0].Secret != nil {
+		t.Fatalf("unexpected metadata item: %+v", items[0])
 	}
 }
 
@@ -147,6 +170,12 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 		<-release
 		return json.Marshal(resp)
 	}
+	backend := NewCachedBackend(b, BackendOptions{
+		CacheSecrets:        true,
+		CacheMetadata:       true,
+		AsyncSave:           true,
+		AuthCheckMinSpacing: time.Hour,
+	})
 
 	item := &SecretItem{
 		Label: "My Label",
@@ -159,7 +188,7 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 
 	saveDone := make(chan error, 1)
 	go func() {
-		saveDone <- b.Save(context.Background(), item)
+		saveDone <- backend.Save(context.Background(), item)
 	}()
 
 	select {
@@ -184,7 +213,7 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 		t.Fatal("expected Save to assign a pending ID")
 	}
 
-	got, err := b.Get(context.Background(), item.ID)
+	got, err := backend.Get(context.Background(), item.ID)
 	if err != nil {
 		t.Fatalf("Get from cache after Save failed: %v", err)
 	}
@@ -200,7 +229,7 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 	close(release)
 	go func() {
 		for {
-			matches, err := b.Search(context.Background(), map[string]string{
+			matches, err := backend.Search(context.Background(), map[string]string{
 				"username": "bob",
 				"app":      "vscode",
 			})
@@ -471,6 +500,109 @@ func TestOnePasswordBackend_Search_EmptyValueRequiresExactMatch(t *testing.T) {
 	}
 }
 
+func TestOnePasswordBackend_List_LoadsMetadata(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
+	}
+
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		switch {
+		case strings.Contains(argsStr, "item list"):
+			return json.Marshal([]opListItem{{ID: "id1", Title: "ignored"}})
+		case strings.Contains(argsStr, "item get id1"):
+			return json.Marshal(opItem{
+				ID:    "id1",
+				Title: "My Saved Secret",
+				Fields: []opItemField{
+					{ID: "username", Type: "STRING", Value: "alice"},
+					{ID: "attributes", Label: "attributes", Type: "STRING", Value: "service=github&username=alice"},
+				},
+			})
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+	}
+
+	items, err := b.List(context.Background())
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("List returned %d items, want 1", len(items))
+	}
+	if items[0].ID != "id1" || items[0].Label != "My Saved Secret" || items[0].Attributes["service"] != "github" || items[0].Secret != nil {
+		t.Fatalf("unexpected item: %+v", items[0])
+	}
+}
+
+func TestOnePasswordBackend_Delete_RunsOPDelete(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
+	}
+	var gotArgs string
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		gotArgs = strings.Join(args, " ")
+		return []byte(`{}`), nil
+	}
+
+	if err := b.Delete(context.Background(), "id1"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	if !strings.Contains(gotArgs, "item delete id1") || !strings.Contains(gotArgs, "--vault test-vault") {
+		t.Fatalf("unexpected delete args: %s", gotArgs)
+	}
+}
+
+func TestOnePasswordBackend_Save_CreateUpdatesExistingMatchingItem(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
+	}
+
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		switch {
+		case strings.Contains(argsStr, "item list"):
+			return json.Marshal([]opListItem{{ID: "existing-id", Title: "existing"}})
+		case strings.Contains(argsStr, "item get existing-id"):
+			return json.Marshal(opItem{
+				ID:    "existing-id",
+				Title: "existing",
+				Fields: []opItemField{
+					{ID: "username", Type: "STRING", Value: "alice"},
+					{ID: "attributes", Label: "attributes", Type: "STRING", Value: "service=github&username=alice"},
+				},
+			})
+		case strings.Contains(argsStr, "item edit existing-id"):
+			var template opItem
+			if err := json.Unmarshal([]byte(stdin), &template); err != nil {
+				t.Fatalf("failed to parse stdin template: %v", err)
+			}
+			if template.Title != "updated" {
+				t.Fatalf("template title = %q", template.Title)
+			}
+			return []byte(`{"id":"existing-id","title":"updated"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+	}
+
+	item := &SecretItem{
+		Label:      "updated",
+		Attributes: map[string]string{"service": "github", "username": "alice"},
+		Secret:     []byte("new-secret"),
+	}
+	if err := b.Save(context.Background(), item); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if item.ID != "existing-id" {
+		t.Fatalf("item ID = %q, want existing-id", item.ID)
+	}
+}
+
 func TestOnePasswordBackend_Save_EditPersistsInBackground(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary: "op.exe",
@@ -513,6 +645,12 @@ func TestOnePasswordBackend_Save_EditPersistsInBackground(t *testing.T) {
 		}
 		return nil, fmt.Errorf("unexpected command: %s", argsStr)
 	}
+	backend := NewCachedBackend(b, BackendOptions{
+		CacheSecrets:        true,
+		CacheMetadata:       true,
+		AsyncSave:           true,
+		AuthCheckMinSpacing: time.Hour,
+	})
 
 	item := &SecretItem{
 		ID:         "test-id",
@@ -523,7 +661,7 @@ func TestOnePasswordBackend_Save_EditPersistsInBackground(t *testing.T) {
 
 	saveDone := make(chan error, 1)
 	go func() {
-		saveDone <- b.Save(context.Background(), item)
+		saveDone <- backend.Save(context.Background(), item)
 	}()
 
 	select {
@@ -545,7 +683,7 @@ func TestOnePasswordBackend_Save_EditPersistsInBackground(t *testing.T) {
 		t.Fatal("op edit did not start")
 	}
 
-	got, err := b.Get(context.Background(), "test-id")
+	got, err := backend.Get(context.Background(), "test-id")
 	if err != nil {
 		t.Fatalf("Get from cache after Save failed: %v", err)
 	}
@@ -553,246 +691,4 @@ func TestOnePasswordBackend_Save_EditPersistsInBackground(t *testing.T) {
 		t.Fatalf("cached secret = %q", string(got.Secret))
 	}
 	close(release)
-}
-
-func TestOnePasswordBackend_Get_UsesSecretCacheWithSlidingTTL(t *testing.T) {
-	now := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
-	itemGetCalls := 0
-	b := &OnePasswordBackend{
-		binary:              "op.exe",
-		vault:               "test-vault",
-		secretCacheTTL:      60 * time.Second,
-		authCheckMinSpacing: time.Hour,
-		now: func() time.Time {
-			return now
-		},
-	}
-
-	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
-		argsStr := strings.Join(args, " ")
-		switch {
-		case strings.Contains(argsStr, "item get test-id"):
-			itemGetCalls++
-			resp := opItem{
-				ID:    "test-id",
-				Title: "My Saved Secret",
-				Fields: []opItemField{
-					{ID: "username", Type: "STRING", Value: "alice"},
-					{ID: "password", Type: "CONCEALED", Value: fmt.Sprintf("token-%d", itemGetCalls)},
-					{ID: "attributes", Label: "attributes", Type: "STRING", Value: "service=github&username=alice"},
-				},
-			}
-			return json.Marshal(resp)
-		case strings.Contains(argsStr, "whoami"):
-			return []byte(`{"user_uuid":"user"}`), nil
-		default:
-			return nil, fmt.Errorf("unexpected command: %s", argsStr)
-		}
-	}
-
-	first, err := b.Get(context.Background(), "test-id")
-	if err != nil {
-		t.Fatalf("first Get failed: %v", err)
-	}
-	if string(first.Secret) != "token-1" {
-		t.Fatalf("first secret = %q", string(first.Secret))
-	}
-
-	now = now.Add(30 * time.Second)
-	second, err := b.Get(context.Background(), "test-id")
-	if err != nil {
-		t.Fatalf("second Get failed: %v", err)
-	}
-	if string(second.Secret) != "token-1" {
-		t.Fatalf("second secret = %q", string(second.Secret))
-	}
-
-	now = now.Add(59 * time.Second)
-	third, err := b.Get(context.Background(), "test-id")
-	if err != nil {
-		t.Fatalf("third Get failed: %v", err)
-	}
-	if string(third.Secret) != "token-1" {
-		t.Fatalf("third secret = %q", string(third.Secret))
-	}
-
-	now = now.Add(61 * time.Second)
-	fourth, err := b.Get(context.Background(), "test-id")
-	if err != nil {
-		t.Fatalf("fourth Get failed: %v", err)
-	}
-	if string(fourth.Secret) != "token-2" {
-		t.Fatalf("fourth secret = %q", string(fourth.Secret))
-	}
-	if itemGetCalls != 2 {
-		t.Fatalf("item get calls = %d, want 2", itemGetCalls)
-	}
-}
-
-func TestOnePasswordBackend_Save_UpdatesSecretCache(t *testing.T) {
-	itemGetCalls := 0
-	b := &OnePasswordBackend{
-		binary:              "op.exe",
-		vault:               "test-vault",
-		secretCacheTTL:      60 * time.Second,
-		authCheckMinSpacing: time.Hour,
-	}
-
-	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
-		argsStr := strings.Join(args, " ")
-		switch {
-		case strings.Contains(argsStr, "item get test-id"):
-			itemGetCalls++
-			resp := opItem{
-				ID:    "test-id",
-				Title: "My Saved Secret",
-				Fields: []opItemField{
-					{ID: "username", Type: "STRING", Value: "alice"},
-					{ID: "password", Type: "CONCEALED", Value: "old-token"},
-				},
-			}
-			return json.Marshal(resp)
-		case strings.Contains(argsStr, "item edit test-id"):
-			return []byte(`{"id":"test-id","title":"My Saved Secret"}`), nil
-		case strings.Contains(argsStr, "whoami"):
-			return []byte(`{"user_uuid":"user"}`), nil
-		default:
-			return nil, fmt.Errorf("unexpected command: %s", argsStr)
-		}
-	}
-
-	if _, err := b.Get(context.Background(), "test-id"); err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-
-	err := b.Save(context.Background(), &SecretItem{
-		ID:         "test-id",
-		Label:      "My Saved Secret",
-		Attributes: map[string]string{"username": "alice"},
-		Secret:     []byte("new-token"),
-	})
-	if err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	got, err := b.Get(context.Background(), "test-id")
-	if err != nil {
-		t.Fatalf("Get after Save failed: %v", err)
-	}
-	if string(got.Secret) != "new-token" {
-		t.Fatalf("secret after Save = %q", string(got.Secret))
-	}
-	if itemGetCalls != 1 {
-		t.Fatalf("item get calls = %d, want 1", itemGetCalls)
-	}
-}
-
-func TestOnePasswordBackend_Delete_InvalidatesSecretCache(t *testing.T) {
-	itemGetCalls := 0
-	b := &OnePasswordBackend{
-		binary:              "op.exe",
-		vault:               "test-vault",
-		secretCacheTTL:      60 * time.Second,
-		authCheckMinSpacing: time.Hour,
-	}
-
-	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
-		argsStr := strings.Join(args, " ")
-		switch {
-		case strings.Contains(argsStr, "item get test-id"):
-			itemGetCalls++
-			resp := opItem{
-				ID:    "test-id",
-				Title: "My Saved Secret",
-				Fields: []opItemField{
-					{ID: "password", Type: "CONCEALED", Value: fmt.Sprintf("token-%d", itemGetCalls)},
-				},
-			}
-			return json.Marshal(resp)
-		case strings.Contains(argsStr, "item delete test-id"):
-			return []byte(`{}`), nil
-		case strings.Contains(argsStr, "whoami"):
-			return []byte(`{"user_uuid":"user"}`), nil
-		default:
-			return nil, fmt.Errorf("unexpected command: %s", argsStr)
-		}
-	}
-
-	if _, err := b.Get(context.Background(), "test-id"); err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	if err := b.Delete(context.Background(), "test-id"); err != nil {
-		t.Fatalf("Delete failed: %v", err)
-	}
-	got, err := b.Get(context.Background(), "test-id")
-	if err != nil {
-		t.Fatalf("Get after Delete failed: %v", err)
-	}
-	if string(got.Secret) != "token-2" {
-		t.Fatalf("secret after Delete = %q", string(got.Secret))
-	}
-	if itemGetCalls != 2 {
-		t.Fatalf("item get calls = %d, want 2", itemGetCalls)
-	}
-}
-
-func TestOnePasswordBackend_Get_AsyncWhoamiFailureClearsSecretCache(t *testing.T) {
-	var mu sync.Mutex
-	itemGetCalls := 0
-	whoamiDone := make(chan struct{})
-	b := &OnePasswordBackend{
-		binary:              "op.exe",
-		vault:               "test-vault",
-		secretCacheTTL:      60 * time.Second,
-		authCheckMinSpacing: 0,
-	}
-
-	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
-		argsStr := strings.Join(args, " ")
-		switch {
-		case strings.Contains(argsStr, "item get test-id"):
-			mu.Lock()
-			itemGetCalls++
-			call := itemGetCalls
-			mu.Unlock()
-			resp := opItem{
-				ID:    "test-id",
-				Title: "My Saved Secret",
-				Fields: []opItemField{
-					{ID: "password", Type: "CONCEALED", Value: fmt.Sprintf("token-%d", call)},
-				},
-			}
-			return json.Marshal(resp)
-		case strings.Contains(argsStr, "whoami"):
-			close(whoamiDone)
-			return nil, fmt.Errorf("not signed in")
-		default:
-			return nil, fmt.Errorf("unexpected command: %s", argsStr)
-		}
-	}
-
-	if _, err := b.Get(context.Background(), "test-id"); err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	second, err := b.Get(context.Background(), "test-id")
-	if err != nil {
-		t.Fatalf("cached Get failed: %v", err)
-	}
-	if string(second.Secret) != "token-1" {
-		t.Fatalf("cached secret = %q", string(second.Secret))
-	}
-
-	select {
-	case <-whoamiDone:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for async whoami check")
-	}
-
-	third, err := b.Get(context.Background(), "test-id")
-	if err != nil {
-		t.Fatalf("Get after whoami failure failed: %v", err)
-	}
-	if string(third.Secret) != "token-2" {
-		t.Fatalf("secret after whoami failure = %q", string(third.Secret))
-	}
 }

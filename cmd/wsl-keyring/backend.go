@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -14,10 +15,10 @@ var (
 
 // SecretItem represents a secret stored in the keyring.
 type SecretItem struct {
-	ID          string            `json:"id"`
-	Label       string            `json:"label"`
-	Attributes  map[string]string `json:"attributes"`
-	Secret      []byte            `json:"secret"`
+	ID         string            `json:"id"`
+	Label      string            `json:"label"`
+	Attributes map[string]string `json:"attributes"`
+	Secret     []byte            `json:"secret"`
 }
 
 // StorageBackend is the interface that wraps basic storage operations.
@@ -27,6 +28,22 @@ type StorageBackend interface {
 	Save(ctx context.Context, item *SecretItem) error
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*SecretItem, error)
+}
+
+// RawStorageBackend provides backend-specific persistence primitives.
+// Shared StorageBackend behavior such as Search/List filtering and caching is
+// layered on top by CachedBackend.
+type RawStorageBackend interface {
+	Get(ctx context.Context, id string) (*SecretItem, error)
+	Save(ctx context.Context, item *SecretItem) error
+	Delete(ctx context.Context, id string) error
+	LoadMetadata(ctx context.Context) ([]*SecretItem, error)
+}
+
+// AuthChecker can be implemented by slow backends whose cached secrets should
+// be discarded when their external authentication state expires.
+type AuthChecker interface {
+	CheckAuth(ctx context.Context) error
 }
 
 // InMemoryBackend implements StorageBackend using an in-memory map.
@@ -108,4 +125,54 @@ func (b *InMemoryBackend) List(ctx context.Context) ([]*SecretItem, error) {
 		list = append(list, item)
 	}
 	return list, nil
+}
+
+func (b *InMemoryBackend) LoadMetadata(ctx context.Context) ([]*SecretItem, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	list := make([]*SecretItem, 0, len(b.items))
+	for _, item := range b.items {
+		copied := copySecretItem(item)
+		copied.Secret = nil
+		list = append(list, copied)
+	}
+	return list, nil
+}
+
+func copyAttributes(src map[string]string) map[string]string {
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func attributesMatch(got, want map[string]string) bool {
+	for k, v := range want {
+		if got[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func copySecretItem(src *SecretItem) *SecretItem {
+	if src == nil {
+		return nil
+	}
+	return &SecretItem{
+		ID:         src.ID,
+		Label:      src.Label,
+		Attributes: copyAttributes(src.Attributes),
+		Secret:     append([]byte(nil), src.Secret...),
+	}
+}
+
+func newPendingID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate pending item ID: %w", err)
+	}
+	return "pending_" + hex.EncodeToString(buf), nil
 }
