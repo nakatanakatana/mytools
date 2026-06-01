@@ -13,6 +13,7 @@ type fakeRawBackend struct {
 	items          map[string]*SecretItem
 	getCalls       int
 	loadMetaCalls  int
+	loadMetaDelay  time.Duration
 	saveStarted    chan struct{}
 	saveRelease    chan struct{}
 	saveErr        error
@@ -74,6 +75,9 @@ func (b *fakeRawBackend) LoadMetadata(ctx context.Context) ([]*SecretItem, error
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.loadMetaCalls++
+	if b.loadMetaDelay > 0 {
+		time.Sleep(b.loadMetaDelay)
+	}
 	items := make([]*SecretItem, 0, len(b.items))
 	for _, item := range b.items {
 		copied := copySecretItem(item)
@@ -164,6 +168,46 @@ func TestCachedBackend_Search_UsesMetadataCache(t *testing.T) {
 	if len(second) != 1 || second[0].ID != "id1" {
 		t.Fatalf("metadata cache was not used: %+v", second)
 	}
+	if raw.loadMetaCalls != 1 {
+		t.Fatalf("LoadMetadata calls = %d, want 1", raw.loadMetaCalls)
+	}
+}
+
+func TestCachedBackend_Search_CoalescesConcurrentMetadataLoads(t *testing.T) {
+	raw := newFakeRawBackend()
+	raw.loadMetaDelay = 50 * time.Millisecond
+	raw.items["id1"] = &SecretItem{ID: "id1", Label: "one", Attributes: map[string]string{"service": "github"}, Secret: []byte("secret")}
+	backend := NewCachedBackend(raw, BackendOptions{CacheMetadata: true})
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			matches, err := backend.Search(context.Background(), map[string]string{"service": "github"})
+			if err != nil {
+				errs <- err
+				return
+			}
+			if len(matches) != 1 || matches[0].ID != "id1" {
+				errs <- fmt.Errorf("unexpected matches: %+v", matches)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	raw.mu.Lock()
+	defer raw.mu.Unlock()
 	if raw.loadMetaCalls != 1 {
 		t.Fatalf("LoadMetadata calls = %d, want 1", raw.loadMetaCalls)
 	}

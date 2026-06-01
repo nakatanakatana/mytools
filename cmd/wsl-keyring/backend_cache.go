@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/awnumar/memguard"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -32,6 +33,7 @@ type CachedBackend struct {
 	metaMu     sync.RWMutex
 	metaCache  map[string]*SecretItem
 	metaLoaded bool
+	metaLoad   singleflight.Group
 	idAliases  map[string]string
 
 	secretMu             sync.Mutex
@@ -174,9 +176,30 @@ func (b *CachedBackend) metadata(ctx context.Context) ([]*SecretItem, error) {
 	}
 	b.metaMu.RUnlock()
 
-	items, err := b.raw.LoadMetadata(ctx)
+	_, err, _ := b.metaLoad.Do("metadata", func() (any, error) {
+		return nil, b.loadMetadataCache(ctx)
+	})
 	if err != nil {
 		return nil, err
+	}
+
+	b.metaMu.RLock()
+	items := copySecretItemsWithoutSecrets(b.metaCache)
+	b.metaMu.RUnlock()
+	return items, nil
+}
+
+func (b *CachedBackend) loadMetadataCache(ctx context.Context) error {
+	b.metaMu.RLock()
+	if b.metaLoaded {
+		b.metaMu.RUnlock()
+		return nil
+	}
+	b.metaMu.RUnlock()
+
+	items, err := b.raw.LoadMetadata(ctx)
+	if err != nil {
+		return err
 	}
 
 	b.metaMu.Lock()
@@ -187,9 +210,8 @@ func (b *CachedBackend) metadata(ctx context.Context) ([]*SecretItem, error) {
 		b.metaCache[copied.ID] = copied
 	}
 	b.metaLoaded = true
-	items = copySecretItemsWithoutSecrets(b.metaCache)
 	b.metaMu.Unlock()
-	return items, nil
+	return nil
 }
 
 func (b *CachedBackend) cacheSavedItem(item *SecretItem) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/godbus/dbus/v5"
@@ -17,8 +18,22 @@ import (
 )
 
 type Config struct {
-	UseInMemory bool `env:"USE_IN_MEMORY"`
-	Init        bool `env:"INIT"`
+	UseInMemory         bool          `env:"USE_IN_MEMORY"`
+	Init                bool          `env:"INIT"`
+	SecretCacheTTL      time.Duration `env:"WSL_KEYRING_SECRET_CACHE_TTL" envDefault:"60s"`
+	AuthCheckMinSpacing time.Duration `env:"WSL_KEYRING_AUTH_CHECK_MIN_SPACING" envDefault:"5s"`
+	AuthCheckTimeout    time.Duration `env:"WSL_KEYRING_AUTH_CHECK_TIMEOUT" envDefault:"2s"`
+}
+
+func (cfg Config) CacheBackendOptions() BackendOptions {
+	return BackendOptions{
+		CacheSecrets:        true,
+		CacheMetadata:       true,
+		AsyncSave:           true,
+		SecretCacheTTL:      cfg.SecretCacheTTL,
+		AuthCheckMinSpacing: cfg.AuthCheckMinSpacing,
+		AuthCheckTimeout:    cfg.AuthCheckTimeout,
+	}
 }
 
 func main() {
@@ -49,11 +64,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to initialize 1Password backend: %v", err)
 		}
-		backend = NewCachedBackend(opBackend, BackendOptions{
-			CacheSecrets:  true,
-			CacheMetadata: true,
-			AsyncSave:     true,
-		})
+		backend = NewCachedBackend(opBackend, cfg.CacheBackendOptions())
 	}
 
 	// Create service object
