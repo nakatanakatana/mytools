@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+func newAuthenticatedTestOnePasswordBackend() *OnePasswordBackend {
+	b := &OnePasswordBackend{
+		binary:       "op.exe",
+		vault:        "test-vault",
+		authCacheTTL: time.Hour,
+	}
+	b.markAuthSucceeded()
+	return b
+}
+
 func TestInMemoryBackend(t *testing.T) {
 	b := NewInMemoryBackend()
 	ctx := context.Background()
@@ -250,10 +260,7 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 }
 
 func TestOnePasswordBackend_Get(t *testing.T) {
-	b := &OnePasswordBackend{
-		binary: "op.exe",
-		vault:  "test-vault",
-	}
+	b := newAuthenticatedTestOnePasswordBackend()
 
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 		argsStr := strings.Join(args, " ")
@@ -547,10 +554,7 @@ func TestOnePasswordBackend_RunOP_DoesNotReturnStderr(t *testing.T) {
 }
 
 func TestOnePasswordBackend_Get_URLQuery(t *testing.T) {
-	b := &OnePasswordBackend{
-		binary: "op.exe",
-		vault:  "test-vault",
-	}
+	b := newAuthenticatedTestOnePasswordBackend()
 
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 		argsStr := strings.Join(args, " ")
@@ -592,10 +596,7 @@ func TestOnePasswordBackend_Get_URLQuery(t *testing.T) {
 }
 
 func TestOnePasswordBackend_Search(t *testing.T) {
-	b := &OnePasswordBackend{
-		binary: "op.exe",
-		vault:  "test-vault",
-	}
+	b := newAuthenticatedTestOnePasswordBackend()
 
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 		argsStr := strings.Join(args, " ")
@@ -651,10 +652,7 @@ func TestOnePasswordBackend_Search(t *testing.T) {
 }
 
 func TestOnePasswordBackend_Search_EmptyValueRequiresExactMatch(t *testing.T) {
-	b := &OnePasswordBackend{
-		binary: "op.exe",
-		vault:  "test-vault",
-	}
+	b := newAuthenticatedTestOnePasswordBackend()
 
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 		argsStr := strings.Join(args, " ")
@@ -689,10 +687,7 @@ func TestOnePasswordBackend_Search_EmptyValueRequiresExactMatch(t *testing.T) {
 }
 
 func TestOnePasswordBackend_List_LoadsMetadata(t *testing.T) {
-	b := &OnePasswordBackend{
-		binary: "op.exe",
-		vault:  "test-vault",
-	}
+	b := newAuthenticatedTestOnePasswordBackend()
 
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 		argsStr := strings.Join(args, " ")
@@ -745,10 +740,7 @@ func TestOnePasswordBackend_Delete_RunsOPDelete(t *testing.T) {
 }
 
 func TestOnePasswordBackend_Save_CreateUpdatesExistingMatchingItem(t *testing.T) {
-	b := &OnePasswordBackend{
-		binary: "op.exe",
-		vault:  "test-vault",
-	}
+	b := newAuthenticatedTestOnePasswordBackend()
 
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 		argsStr := strings.Join(args, " ")
