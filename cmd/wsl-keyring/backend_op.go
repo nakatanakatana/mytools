@@ -9,9 +9,11 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
 // opItem is the JSON structure returned by the 'op' CLI.
@@ -41,13 +43,19 @@ type OnePasswordBackend struct {
 	binary string
 	vault  string
 
+	authCacheTTL time.Duration
+	authMu       sync.Mutex
+	authLastOK   time.Time
+	authFlight   singleflight.Group
+
 	// runCmd is used to execute external commands. Placed here to allow mocking in tests.
 	runCmd func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error)
 }
 
 type opConfig struct {
-	Vault    string `env:"OP_VAULT" envDefault:"wsl-keyring"`
-	OPBinary string `env:"OP_BINARY" envDefault:"op.exe"`
+	Vault        string        `env:"OP_VAULT" envDefault:"wsl-keyring"`
+	OPBinary     string        `env:"OP_BINARY" envDefault:"op.exe"`
+	AuthCacheTTL time.Duration `env:"OP_AUTH_CACHE_TTL" envDefault:"30s"`
 }
 
 // NewOnePasswordBackend creates a new OnePasswordBackend by parsing active configurations from environment variables.
@@ -57,8 +65,9 @@ func NewOnePasswordBackend() (*OnePasswordBackend, error) {
 		return nil, err
 	}
 	return &OnePasswordBackend{
-		binary: cfg.OPBinary,
-		vault:  cfg.Vault,
+		binary:       cfg.OPBinary,
+		vault:        cfg.Vault,
+		authCacheTTL: cfg.AuthCacheTTL,
 		runCmd: func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
 			if stdin != "" {
@@ -73,7 +82,45 @@ func (b *OnePasswordBackend) runOP(ctx context.Context, args ...string) ([]byte,
 	return b.runOPWithInput(ctx, "", args...)
 }
 
+func (b *OnePasswordBackend) ensureAuthenticated(ctx context.Context) error {
+	if b.authRecentlySucceeded() {
+		return nil
+	}
+
+	_, err, _ := b.authFlight.Do("op-auth", func() (any, error) {
+		if b.authRecentlySucceeded() {
+			return nil, nil
+		}
+		if _, err := b.runOPNoVault(ctx, "whoami", "--format", "json"); err != nil {
+			return nil, err
+		}
+		b.markAuthSucceeded()
+		return nil, nil
+	})
+	return err
+}
+
+func (b *OnePasswordBackend) authRecentlySucceeded() bool {
+	if b.authCacheTTL <= 0 {
+		return false
+	}
+
+	b.authMu.Lock()
+	defer b.authMu.Unlock()
+	return !b.authLastOK.IsZero() && time.Since(b.authLastOK) < b.authCacheTTL
+}
+
+func (b *OnePasswordBackend) markAuthSucceeded() {
+	b.authMu.Lock()
+	b.authLastOK = time.Now()
+	b.authMu.Unlock()
+}
+
 func (b *OnePasswordBackend) runOPWithInput(ctx context.Context, stdin string, args ...string) ([]byte, error) {
+	if err := b.ensureAuthenticated(ctx); err != nil {
+		return nil, err
+	}
+
 	if b.vault != "" {
 		args = append(args, "--vault", b.vault)
 	}
@@ -371,6 +418,5 @@ func (b *OnePasswordBackend) List(ctx context.Context) ([]*SecretItem, error) {
 }
 
 func (b *OnePasswordBackend) CheckAuth(ctx context.Context) error {
-	_, err := b.runOPNoVault(ctx, "whoami", "--format", "json")
-	return err
+	return b.ensureAuthenticated(ctx)
 }
