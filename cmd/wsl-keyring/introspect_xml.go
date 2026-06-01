@@ -41,6 +41,10 @@ const serviceIntrospectXML = `<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS O
       <arg name="name"       type="s" direction="in"/>
       <arg name="collection" type="o" direction="in"/>
     </method>
+    <method name="ReadAlias">
+      <arg name="name"       type="s" direction="in"/>
+      <arg name="collection" type="o" direction="out"/>
+    </method>
     <property name="Collections" type="ao" access="read"/>
   </interface>
   <interface name="org.freedesktop.DBus.Properties">
