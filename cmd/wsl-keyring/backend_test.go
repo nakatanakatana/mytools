@@ -141,6 +141,12 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 		if !strings.Contains(argsStr, "item create -") {
 			t.Errorf("expected stdin template marker, got: %s", argsStr)
 		}
+		if !strings.Contains(argsStr, "--tags wsl-keyring,wsl-keyring-meta-v1") {
+			t.Errorf("expected metadata tags, got: %s", argsStr)
+		}
+		if !strings.Contains(argsStr, "wsl-keyring-attr:YXBw=dnNjb2Rl") || !strings.Contains(argsStr, "wsl-keyring-attr:dXNlcm5hbWU=Ym9i") {
+			t.Errorf("expected attribute tags, got: %s", argsStr)
+		}
 		if strings.Contains(argsStr, "--category") {
 			t.Errorf("category must be provided only in stdin template, got args: %s", argsStr)
 		}
@@ -172,6 +178,14 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 		}
 		if !strings.Contains(fields["attributes"], "app=vscode") || !strings.Contains(fields["attributes"], "username=bob") {
 			t.Errorf("unexpected attributes field: %q", fields["attributes"])
+		}
+		if !containsAll(template.Tags, []string{
+			"wsl-keyring",
+			"wsl-keyring-meta-v1",
+			"wsl-keyring-attr:YXBw=dnNjb2Rl",
+			"wsl-keyring-attr:dXNlcm5hbWU=Ym9i",
+		}) {
+			t.Errorf("unexpected template tags: %+v", template.Tags)
 		}
 
 		resp := opItem{
@@ -257,6 +271,19 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for background op create to reconcile item ID")
 	}
+}
+
+func containsAll(got []string, want []string) bool {
+	values := make(map[string]bool, len(got))
+	for _, value := range got {
+		values[value] = true
+	}
+	for _, value := range want {
+		if !values[value] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestOnePasswordBackend_Get(t *testing.T) {
@@ -842,6 +869,133 @@ func TestOnePasswordBackend_Get_URLQuery(t *testing.T) {
 	}
 	if item.Attributes["username"] != "alice" || item.Attributes["app"] != "vscode" || item.Attributes["env"] != "dev" {
 		t.Errorf("unexpected attributes: %+v", item.Attributes)
+	}
+}
+
+func TestOnePasswordBackend_LoadMetadataUsesListTagsWithoutItemGet(t *testing.T) {
+	b := newAuthenticatedTestOnePasswordBackend()
+
+	calls := 0
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		calls++
+		argsStr := strings.Join(args, " ")
+		if !strings.Contains(argsStr, "item list") {
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+		return json.Marshal([]opListItem{{
+			ID:    "id1",
+			Title: "My Saved Secret",
+			Tags: []string{
+				"wsl-keyring",
+				"wsl-keyring-meta-v1",
+				"wsl-keyring-attr:c2VydmljZQ=Z2g6Z2l0aHViLmNvbQ",
+				"wsl-keyring-attr:dXNlcm5hbWU=YWxpY2U",
+			},
+		}})
+	}
+
+	items, err := b.LoadMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("LoadMetadata failed: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("op calls = %d, want 1", calls)
+	}
+	if len(items) != 1 {
+		t.Fatalf("LoadMetadata returned %d items, want 1", len(items))
+	}
+	if items[0].ID != "id1" || items[0].Label != "My Saved Secret" || items[0].Secret != nil {
+		t.Fatalf("unexpected metadata item: %+v", items[0])
+	}
+	if items[0].Attributes["service"] != "gh:github.com" || items[0].Attributes["username"] != "alice" {
+		t.Fatalf("unexpected attributes: %+v", items[0].Attributes)
+	}
+}
+
+func TestOnePasswordBackend_LoadMetadataMigratesLegacyItemTags(t *testing.T) {
+	b := newAuthenticatedTestOnePasswordBackend()
+
+	var commands []string
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		commands = append(commands, argsStr)
+		switch {
+		case strings.Contains(argsStr, "item list"):
+			return json.Marshal([]opListItem{{
+				ID:    "id1",
+				Title: "legacy title from list",
+				Tags:  []string{"wsl-keyring", "keep-me"},
+			}})
+		case strings.Contains(argsStr, "item get id1"):
+			return json.Marshal(opItem{
+				ID:    "id1",
+				Title: "legacy title from get",
+				Fields: []opItemField{
+					{ID: "username", Type: "STRING", Value: "alice"},
+					{ID: "attributes", Label: "attributes", Type: "STRING", Value: "service=gh%3Agithub.com&username=alice"},
+				},
+			})
+		case strings.Contains(argsStr, "item edit id1"):
+			if stdin != "" {
+				t.Fatalf("metadata migration must not pass item template stdin, got %q", stdin)
+			}
+			if !strings.Contains(argsStr, "keep-me") || !strings.Contains(argsStr, "wsl-keyring") || !strings.Contains(argsStr, "wsl-keyring-meta-v1") {
+				t.Fatalf("migration did not preserve existing tags or add metadata marker: %s", argsStr)
+			}
+			if !strings.Contains(argsStr, "wsl-keyring-attr:c2VydmljZQ=Z2g6Z2l0aHViLmNvbQ") || !strings.Contains(argsStr, "wsl-keyring-attr:dXNlcm5hbWU=YWxpY2U") {
+				t.Fatalf("migration did not include attribute tags: %s", argsStr)
+			}
+			return []byte(`{"id":"id1"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+	}
+
+	items, err := b.LoadMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("LoadMetadata failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("LoadMetadata returned %d items, want 1", len(items))
+	}
+	if items[0].ID != "id1" || items[0].Label != "legacy title from get" || items[0].Attributes["service"] != "gh:github.com" {
+		t.Fatalf("unexpected migrated metadata item: %+v", items[0])
+	}
+	if len(commands) != 3 {
+		t.Fatalf("commands = %+v, want list, get, edit", commands)
+	}
+}
+
+func TestOnePasswordBackend_LoadMetadataIgnoresLegacyMigrationFailure(t *testing.T) {
+	b := newAuthenticatedTestOnePasswordBackend()
+
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		switch {
+		case strings.Contains(argsStr, "item list"):
+			return json.Marshal([]opListItem{{ID: "id1", Title: "legacy"}})
+		case strings.Contains(argsStr, "item get id1"):
+			return json.Marshal(opItem{
+				ID:    "id1",
+				Title: "legacy",
+				Fields: []opItemField{
+					{ID: "username", Type: "STRING", Value: "alice"},
+					{ID: "attributes", Label: "attributes", Type: "STRING", Value: "service=github&username=alice"},
+				},
+			})
+		case strings.Contains(argsStr, "item edit id1"):
+			return nil, fmt.Errorf("edit failed")
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+	}
+
+	items, err := b.LoadMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("LoadMetadata failed: %v", err)
+	}
+	if len(items) != 1 || items[0].Attributes["service"] != "github" {
+		t.Fatalf("unexpected metadata items: %+v", items)
 	}
 }
 
