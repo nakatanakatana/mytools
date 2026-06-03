@@ -273,6 +273,45 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 	}
 }
 
+func TestOnePasswordBackend_Save_CreateDoesNotRequireWhoamiPreflight(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
+	}
+
+	var commands []string
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		commands = append(commands, argsStr)
+		if strings.Contains(argsStr, "whoami") {
+			t.Fatalf("Save should let op item commands handle interactive authentication, got preflight: %s", argsStr)
+		}
+		switch {
+		case strings.Contains(argsStr, "item list"):
+			return []byte(`[]`), nil
+		case strings.Contains(argsStr, "item create"):
+			return []byte(`{"id":"generated-id","title":"My Label"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+	}
+
+	item := &SecretItem{
+		Label:      "My Label",
+		Attributes: map[string]string{"app": "vscode", "username": "bob"},
+		Secret:     []byte("secret123"),
+	}
+	if err := b.Save(context.Background(), item); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if item.ID != "generated-id" {
+		t.Fatalf("item ID = %q, want generated-id", item.ID)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("commands = %+v, want item list and item create only", commands)
+	}
+}
+
 func containsAll(got []string, want []string) bool {
 	values := make(map[string]bool, len(got))
 	for _, value := range got {
