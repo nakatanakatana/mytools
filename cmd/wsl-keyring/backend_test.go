@@ -425,6 +425,202 @@ func TestOnePasswordBackend_Get_CoalescesConcurrentAuthChecks(t *testing.T) {
 	}
 }
 
+func TestOnePasswordBackend_Get_CoalescesConcurrentIdenticalReadCommands(t *testing.T) {
+	b := newAuthenticatedTestOnePasswordBackend()
+
+	itemGetStarted := make(chan struct{})
+	releaseItemGet := make(chan struct{})
+	var closeItemGetStarted sync.Once
+
+	var mu sync.Mutex
+	itemGetCalls := 0
+
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			t.Fatalf("test backend should already be authenticated, got auth command: %s", argsStr)
+		}
+		if strings.Contains(argsStr, "item get same-id") {
+			mu.Lock()
+			itemGetCalls++
+			mu.Unlock()
+			closeItemGetStarted.Do(func() { close(itemGetStarted) })
+			<-releaseItemGet
+			return json.Marshal(opItem{
+				ID:    "same-id",
+				Title: "Secret",
+				Fields: []opItemField{
+					{ID: "password", Type: "CONCEALED", Value: "secret"},
+				},
+			})
+		}
+		return nil, fmt.Errorf("unexpected command: %s", argsStr)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			item, err := b.Get(context.Background(), "same-id")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if item.ID != "same-id" || string(item.Secret) != "secret" {
+				errs <- fmt.Errorf("unexpected item: %+v", item)
+			}
+		}()
+	}
+
+	close(start)
+	select {
+	case <-itemGetStarted:
+	case <-time.After(time.Second):
+		t.Fatal("op item get did not start")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	gotCallsWhileBlocked := itemGetCalls
+	mu.Unlock()
+	if gotCallsWhileBlocked != 1 {
+		t.Fatalf("item get calls while read blocked = %d, want 1", gotCallsWhileBlocked)
+	}
+
+	close(releaseItemGet)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if itemGetCalls != 1 {
+		t.Fatalf("item get calls = %d, want 1", itemGetCalls)
+	}
+}
+
+func TestOnePasswordBackend_Get_DoesNotCacheCompletedReadCommands(t *testing.T) {
+	b := newAuthenticatedTestOnePasswordBackend()
+
+	var mu sync.Mutex
+	itemGetCalls := 0
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			t.Fatalf("test backend should already be authenticated, got auth command: %s", argsStr)
+		}
+		if strings.Contains(argsStr, "item get same-id") {
+			mu.Lock()
+			itemGetCalls++
+			mu.Unlock()
+			return json.Marshal(opItem{
+				ID:    "same-id",
+				Title: "Secret",
+				Fields: []opItemField{
+					{ID: "password", Type: "CONCEALED", Value: "secret"},
+				},
+			})
+		}
+		return nil, fmt.Errorf("unexpected command: %s", argsStr)
+	}
+
+	if _, err := b.Get(context.Background(), "same-id"); err != nil {
+		t.Fatalf("first Get failed: %v", err)
+	}
+	if _, err := b.Get(context.Background(), "same-id"); err != nil {
+		t.Fatalf("second Get failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if itemGetCalls != 2 {
+		t.Fatalf("item get calls = %d, want 2", itemGetCalls)
+	}
+}
+
+func TestOnePasswordBackend_Save_DoesNotCoalesceWriteCommands(t *testing.T) {
+	b := newAuthenticatedTestOnePasswordBackend()
+
+	firstEditStarted := make(chan struct{})
+	secondEditStarted := make(chan struct{})
+	releaseEdits := make(chan struct{})
+
+	var mu sync.Mutex
+	editCalls := 0
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		if strings.Contains(argsStr, "whoami") {
+			t.Fatalf("test backend should already be authenticated, got auth command: %s", argsStr)
+		}
+		if strings.Contains(argsStr, "item edit same-id") {
+			mu.Lock()
+			editCalls++
+			call := editCalls
+			mu.Unlock()
+			if call == 1 {
+				close(firstEditStarted)
+			}
+			if call == 2 {
+				close(secondEditStarted)
+			}
+			<-releaseEdits
+			return []byte(`{"id":"same-id","title":"Secret"}`), nil
+		}
+		return nil, fmt.Errorf("unexpected command: %s", argsStr)
+	}
+
+	item := &SecretItem{
+		ID:         "same-id",
+		Label:      "Secret",
+		Attributes: map[string]string{"username": "alice"},
+		Secret:     []byte("secret"),
+	}
+
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- b.Save(context.Background(), copySecretItem(item))
+		}()
+	}
+
+	select {
+	case <-firstEditStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first op item edit did not start")
+	}
+	select {
+	case <-secondEditStarted:
+	case <-time.After(time.Second):
+		t.Fatal("second op item edit did not start; write command may have been coalesced")
+	}
+
+	close(releaseEdits)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if editCalls != 2 {
+		t.Fatalf("item edit calls = %d, want 2", editCalls)
+	}
+}
+
 func TestOnePasswordBackend_CheckAuthAndGet_CoalesceAuthCheck(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary:       "op.exe",

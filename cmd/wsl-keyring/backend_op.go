@@ -59,6 +59,8 @@ type OnePasswordBackend struct {
 	authLastOK   time.Time
 	authFlight   singleflight.Group
 
+	opReadFlight singleflight.Group
+
 	// runCmd is used to execute external commands. Placed here to allow mocking in tests.
 	runCmd func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error)
 }
@@ -132,9 +134,36 @@ func (b *OnePasswordBackend) runOPWithInput(ctx context.Context, stdin string, a
 		return nil, err
 	}
 
+	readOnly := stdin == "" && isOPReadCommand(args)
 	if b.vault != "" {
 		args = append(args, "--vault", b.vault)
 	}
+	return b.runOPCommand(ctx, stdin, readOnly, args...)
+}
+
+func (b *OnePasswordBackend) runOPNoVault(ctx context.Context, args ...string) ([]byte, error) {
+	return b.runOPCommand(ctx, "", isOPReadCommand(args), args...)
+}
+
+func (b *OnePasswordBackend) runOPCommand(ctx context.Context, stdin string, readOnly bool, args ...string) ([]byte, error) {
+	if !readOnly {
+		return b.runOPCommandDirect(ctx, stdin, args...)
+	}
+
+	v, err, _ := b.opReadFlight.Do(b.opCommandKey(stdin, args), func() (any, error) {
+		return b.runOPCommandDirect(ctx, stdin, args...)
+	})
+	if err != nil {
+		return nil, err
+	}
+	out, ok := v.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("unexpected op read result type %T", v)
+	}
+	return cloneBytes(out), nil
+}
+
+func (b *OnePasswordBackend) runOPCommandDirect(ctx context.Context, stdin string, args ...string) ([]byte, error) {
 	out, err := b.runCmd(ctx, stdin, b.binary, args...)
 	if err != nil {
 		if _, ok := err.(*exec.ExitError); ok {
@@ -145,15 +174,39 @@ func (b *OnePasswordBackend) runOPWithInput(ctx context.Context, stdin string, a
 	return out, nil
 }
 
-func (b *OnePasswordBackend) runOPNoVault(ctx context.Context, args ...string) ([]byte, error) {
-	out, err := b.runCmd(ctx, "", b.binary, args...)
-	if err != nil {
-		if _, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("op command failed: %w", err)
-		}
-		return nil, fmt.Errorf("failed to run op: %w", err)
+func isOPReadCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
 	}
-	return out, nil
+	if args[0] == "whoami" {
+		return true
+	}
+	return len(args) >= 2 && args[0] == "item" && (args[1] == "get" || args[1] == "list")
+}
+
+func (b *OnePasswordBackend) opCommandKey(stdin string, args []string) string {
+	key, err := json.Marshal(struct {
+		Binary string   `json:"binary"`
+		Stdin  string   `json:"stdin"`
+		Args   []string `json:"args"`
+	}{
+		Binary: b.binary,
+		Stdin:  stdin,
+		Args:   args,
+	})
+	if err != nil {
+		return b.binary + "\x00" + stdin + "\x00" + strings.Join(args, "\x00")
+	}
+	return string(key)
+}
+
+func cloneBytes(in []byte) []byte {
+	if in == nil {
+		return nil
+	}
+	out := make([]byte, len(in))
+	copy(out, in)
+	return out
 }
 
 func (b *OnePasswordBackend) LoadMetadata(ctx context.Context) ([]*SecretItem, error) {
