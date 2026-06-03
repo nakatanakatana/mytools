@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ type opItem struct {
 	ID       string        `json:"id,omitempty"`
 	Title    string        `json:"title,omitempty"`
 	Category string        `json:"category,omitempty"`
+	Tags     []string      `json:"tags,omitempty"`
 	Fields   []opItemField `json:"fields,omitempty"`
 }
 
@@ -34,9 +37,17 @@ type opItemField struct {
 
 // opListItem is the JSON structure returned by 'op item list'.
 type opListItem struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
+	ID    string   `json:"id"`
+	Title string   `json:"title"`
+	Tags  []string `json:"tags,omitempty"`
 }
+
+const (
+	opBaseTag      = "wsl-keyring"
+	opMetaTag      = "wsl-keyring-meta-v1"
+	opAttributeTag = "wsl-keyring-attr:"
+	opTagSeparator = "="
+)
 
 // OnePasswordBackend implements RawStorageBackend by executing the 1Password CLI (op.exe / op).
 type OnePasswordBackend struct {
@@ -163,11 +174,18 @@ func (b *OnePasswordBackend) LoadMetadata(ctx context.Context) ([]*SecretItem, e
 
 	for _, listItem := range list {
 		listItem := listItem
+		if item, ok := metadataFromOPListItem(listItem); ok {
+			mu.Lock()
+			items = append(items, item)
+			mu.Unlock()
+			continue
+		}
+
 		g.Go(func() error {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			item, err := b.getMetadataOnly(ctx, listItem.ID)
+			item, err := b.loadLegacyMetadata(ctx, listItem)
 			if err != nil {
 				return err
 			}
@@ -184,6 +202,69 @@ func (b *OnePasswordBackend) LoadMetadata(ctx context.Context) ([]*SecretItem, e
 	}
 
 	return items, nil
+}
+
+func (b *OnePasswordBackend) loadLegacyMetadata(ctx context.Context, listItem opListItem) (*SecretItem, error) {
+	item, err := b.getMetadataOnly(ctx, listItem.ID)
+	if err != nil {
+		return nil, err
+	}
+	b.migrateLegacyMetadataTags(ctx, listItem, item)
+	return item, nil
+}
+
+func (b *OnePasswordBackend) migrateLegacyMetadataTags(ctx context.Context, listItem opListItem, item *SecretItem) {
+	if item == nil {
+		return
+	}
+	tags := mergeOPMetadataTags(listItem.Tags, item.Attributes)
+	if _, err := b.runOP(ctx, "item", "edit", item.ID, "--tags", strings.Join(tags, ","), "--format", "json"); err != nil {
+		log.Printf("failed to migrate 1Password item metadata tags for %s: %v", item.ID, err)
+	}
+}
+
+func metadataFromOPListItem(listItem opListItem) (*SecretItem, bool) {
+	item := &SecretItem{
+		ID:         listItem.ID,
+		Label:      listItem.Title,
+		Attributes: make(map[string]string),
+		Secret:     nil,
+	}
+
+	hasMetadata := false
+	for _, tag := range listItem.Tags {
+		if tag == opMetaTag {
+			hasMetadata = true
+			continue
+		}
+		key, value, ok := decodeOPAttributeTag(tag)
+		if !ok {
+			continue
+		}
+		hasMetadata = true
+		item.Attributes[key] = value
+	}
+	return item, hasMetadata
+}
+
+func decodeOPAttributeTag(tag string) (string, string, bool) {
+	raw, ok := strings.CutPrefix(tag, opAttributeTag)
+	if !ok {
+		return "", "", false
+	}
+	encodedKey, encodedValue, ok := strings.Cut(raw, opTagSeparator)
+	if !ok {
+		return "", "", false
+	}
+	keyBytes, err := base64.RawURLEncoding.DecodeString(encodedKey)
+	if err != nil {
+		return "", "", false
+	}
+	valueBytes, err := base64.RawURLEncoding.DecodeString(encodedValue)
+	if err != nil {
+		return "", "", false
+	}
+	return string(keyBytes), string(valueBytes), true
 }
 
 func (b *OnePasswordBackend) getMetadataOnly(ctx context.Context, id string) (*SecretItem, error) {
@@ -295,6 +376,7 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 		values.Set(k, v)
 	}
 	attrsStr := values.Encode()
+	tags := buildOPMetadataTags(item.Attributes)
 
 	template, err := json.Marshal(buildOPItemTemplate(item, attrsStr))
 	if err != nil {
@@ -308,6 +390,7 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 				"edit",
 				existingID,
 				"--title", item.Label,
+				"--tags", strings.Join(tags, ","),
 				"--format", "json",
 			}
 			if _, err := b.runOPWithInput(ctx, string(template), args...); err != nil {
@@ -321,7 +404,7 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 			"item",
 			"create",
 			"-",
-			"--tags", "wsl-keyring",
+			"--tags", strings.Join(tags, ","),
 			"--title", item.Label,
 			"--format", "json",
 		}
@@ -344,6 +427,7 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 		"edit",
 		item.ID,
 		"--title", item.Label,
+		"--tags", strings.Join(tags, ","),
 		"--format", "json",
 	}
 
@@ -367,10 +451,14 @@ func (b *OnePasswordBackend) findMatchingOPItem(ctx context.Context, attributes 
 	}
 
 	for _, listItem := range list {
-		item, err := b.getMetadataOnly(ctx, listItem.ID)
-		if err != nil {
-			log.Printf("failed to inspect 1Password item before upsert: %v", err)
-			continue
+		item, ok := metadataFromOPListItem(listItem)
+		if !ok {
+			var err error
+			item, err = b.getMetadataOnly(ctx, listItem.ID)
+			if err != nil {
+				log.Printf("failed to inspect 1Password item before upsert: %v", err)
+				continue
+			}
 		}
 		if attributesMatch(item.Attributes, attributes) {
 			return item.ID, true
@@ -379,10 +467,54 @@ func (b *OnePasswordBackend) findMatchingOPItem(ctx context.Context, attributes 
 	return "", false
 }
 
+func buildOPMetadataTags(attributes map[string]string) []string {
+	tags := []string{opBaseTag, opMetaTag}
+	keys := make([]string, 0, len(attributes))
+	for key := range attributes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		encodedKey := base64.RawURLEncoding.EncodeToString([]byte(key))
+		encodedValue := base64.RawURLEncoding.EncodeToString([]byte(attributes[key]))
+		tags = append(tags, opAttributeTag+encodedKey+opTagSeparator+encodedValue)
+	}
+	return tags
+}
+
+func mergeOPMetadataTags(existing []string, attributes map[string]string) []string {
+	tags := make([]string, 0, len(existing)+len(attributes)+2)
+	seen := make(map[string]bool, len(existing)+len(attributes)+2)
+
+	for _, tag := range existing {
+		if tag == opMetaTag || strings.HasPrefix(tag, opAttributeTag) {
+			continue
+		}
+		if tag == "" || seen[tag] {
+			continue
+		}
+		tags = append(tags, tag)
+		seen[tag] = true
+	}
+
+	for _, tag := range buildOPMetadataTags(attributes) {
+		if seen[tag] {
+			continue
+		}
+		tags = append(tags, tag)
+		seen[tag] = true
+	}
+
+	sort.Strings(tags)
+	return tags
+}
+
 func buildOPItemTemplate(item *SecretItem, attrsStr string) opItem {
 	return opItem{
 		Title:    item.Label,
 		Category: "LOGIN",
+		Tags:     buildOPMetadataTags(item.Attributes),
 		Fields: []opItemField{
 			{
 				ID:      "username",
