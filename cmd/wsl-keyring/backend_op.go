@@ -134,6 +134,14 @@ func (b *OnePasswordBackend) runOPWithInput(ctx context.Context, stdin string, a
 		return nil, err
 	}
 
+	return b.runOPWithInputAllowInteractive(ctx, stdin, args...)
+}
+
+func (b *OnePasswordBackend) runOPAllowInteractive(ctx context.Context, args ...string) ([]byte, error) {
+	return b.runOPWithInputAllowInteractive(ctx, "", args...)
+}
+
+func (b *OnePasswordBackend) runOPWithInputAllowInteractive(ctx context.Context, stdin string, args ...string) ([]byte, error) {
 	readOnly := stdin == "" && isOPReadCommand(args)
 	if b.vault != "" {
 		args = append(args, "--vault", b.vault)
@@ -446,7 +454,7 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 				"--tags", strings.Join(tags, ","),
 				"--format", "json",
 			}
-			if _, err := b.runOPWithInput(ctx, string(template), args...); err != nil {
+			if _, err := b.runOPWithInputAllowInteractive(ctx, string(template), args...); err != nil {
 				return fmt.Errorf("failed to persist secret update in 1Password: %w", err)
 			}
 			item.ID = existingID
@@ -462,7 +470,7 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 			"--format", "json",
 		}
 
-		out, err := b.runOPWithInput(ctx, string(template), args...)
+		out, err := b.runOPWithInputAllowInteractive(ctx, string(template), args...)
 		if err != nil {
 			return fmt.Errorf("failed to persist secret in 1Password: %w", err)
 		}
@@ -484,14 +492,14 @@ func (b *OnePasswordBackend) Save(ctx context.Context, item *SecretItem) error {
 		"--format", "json",
 	}
 
-	if _, err := b.runOPWithInput(ctx, string(template), args...); err != nil {
+	if _, err := b.runOPWithInputAllowInteractive(ctx, string(template), args...); err != nil {
 		return fmt.Errorf("failed to persist secret update in 1Password: %w", err)
 	}
 	return nil
 }
 
 func (b *OnePasswordBackend) findMatchingOPItem(ctx context.Context, attributes map[string]string) (string, bool) {
-	out, err := b.runOP(ctx, "item", "list", "--tags", "wsl-keyring", "--format", "json")
+	out, err := b.runOPAllowInteractive(ctx, "item", "list", "--tags", "wsl-keyring", "--format", "json")
 	if err != nil {
 		log.Printf("failed to list 1Password items before upsert: %v", err)
 		return "", false
@@ -594,7 +602,7 @@ func buildOPItemTemplate(item *SecretItem, attrsStr string) opItem {
 }
 
 func (b *OnePasswordBackend) Delete(ctx context.Context, id string) error {
-	_, err := b.runOP(ctx, "item", "delete", id)
+	_, err := b.runOPAllowInteractive(ctx, "item", "delete", id)
 	return err
 }
 
