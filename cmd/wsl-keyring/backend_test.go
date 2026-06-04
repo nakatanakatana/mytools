@@ -312,6 +312,61 @@ func TestOnePasswordBackend_Save_CreateDoesNotRequireWhoamiPreflight(t *testing.
 	}
 }
 
+func TestOnePasswordBackend_ReadsDoNotRequireWhoamiPreflight(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
+	}
+
+	var commands []string
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		commands = append(commands, argsStr)
+		if strings.Contains(argsStr, "whoami") {
+			t.Fatalf("reads should let op item commands handle interactive authentication, got preflight: %s", argsStr)
+		}
+		switch {
+		case strings.Contains(argsStr, "item get"):
+			return json.Marshal(opItem{
+				ID:    args[2],
+				Title: "Secret",
+				Tags:  []string{"wsl-keyring"},
+				Fields: []opItemField{
+					{ID: "password", Type: "CONCEALED", Value: "secret"},
+					{ID: "attributes", Type: "STRING", Value: "service=github"},
+				},
+			})
+		case strings.Contains(argsStr, "item list"):
+			return json.Marshal([]opListItem{{
+				ID:    "id1",
+				Title: "Secret",
+				Tags:  []string{"wsl-keyring", "wsl-keyring-meta-v1", "wsl-keyring-attr:c2VydmljZQ=Z2l0aHVi"},
+			}})
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", argsStr)
+		}
+	}
+
+	item, err := b.Get(context.Background(), "id1")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if string(item.Secret) != "secret" {
+		t.Fatalf("secret = %q, want secret", item.Secret)
+	}
+
+	items, err := b.LoadMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("LoadMetadata failed: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "id1" {
+		t.Fatalf("LoadMetadata returned %+v, want id1", items)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("commands = %+v, want item get and item list only", commands)
+	}
+}
+
 func containsAll(got []string, want []string) bool {
 	values := make(map[string]bool, len(got))
 	for _, value := range got {
@@ -367,7 +422,7 @@ func TestOnePasswordBackend_Get(t *testing.T) {
 	}
 }
 
-func TestOnePasswordBackend_Get_CoalescesConcurrentAuthChecks(t *testing.T) {
+func TestOnePasswordBackend_CheckAuth_CoalescesConcurrentChecks(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary:       "op.exe",
 		vault:        "test-vault",
@@ -380,7 +435,6 @@ func TestOnePasswordBackend_Get_CoalescesConcurrentAuthChecks(t *testing.T) {
 
 	var mu sync.Mutex
 	whoamiCalls := 0
-	itemGetCalls := 0
 
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 		argsStr := strings.Join(args, " ")
@@ -393,39 +447,19 @@ func TestOnePasswordBackend_Get_CoalescesConcurrentAuthChecks(t *testing.T) {
 			return []byte(`{"user_uuid":"user"}`), nil
 		}
 
-		if strings.Contains(argsStr, "item get") {
-			mu.Lock()
-			itemGetCalls++
-			mu.Unlock()
-			id := args[2]
-			return json.Marshal(opItem{
-				ID:    id,
-				Title: "Secret " + id,
-				Fields: []opItemField{
-					{ID: "password", Type: "CONCEALED", Value: "secret-" + id},
-				},
-			})
-		}
-
 		return nil, fmt.Errorf("unexpected command: %s", argsStr)
 	}
 
 	start := make(chan struct{})
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
-	for _, id := range []string{"id1", "id2"} {
-		id := id
+	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			item, err := b.Get(context.Background(), id)
-			if err != nil {
+			if err := b.CheckAuth(context.Background()); err != nil {
 				errs <- err
-				return
-			}
-			if item.ID != id || string(item.Secret) != "secret-"+id {
-				errs <- fmt.Errorf("unexpected item for %s: %+v", id, item)
 			}
 		}()
 	}
@@ -458,9 +492,6 @@ func TestOnePasswordBackend_Get_CoalescesConcurrentAuthChecks(t *testing.T) {
 	defer mu.Unlock()
 	if whoamiCalls != 1 {
 		t.Fatalf("whoami calls = %d, want 1", whoamiCalls)
-	}
-	if itemGetCalls != 2 {
-		t.Fatalf("item get calls = %d, want 2", itemGetCalls)
 	}
 }
 
@@ -660,7 +691,7 @@ func TestOnePasswordBackend_Save_DoesNotCoalesceWriteCommands(t *testing.T) {
 	}
 }
 
-func TestOnePasswordBackend_CheckAuthAndGet_CoalesceAuthCheck(t *testing.T) {
+func TestOnePasswordBackend_CheckAuth_DoesNotBlockGet(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary:       "op.exe",
 		vault:        "test-vault",
@@ -739,9 +770,13 @@ func TestOnePasswordBackend_CheckAuthAndGet_CoalesceAuthCheck(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	gotWhoamiWhileBlocked := whoamiCalls
+	gotItemGetWhileBlocked := itemGetCalls
 	mu.Unlock()
 	if gotWhoamiWhileBlocked != 1 {
 		t.Fatalf("whoami calls while auth blocked = %d, want 1", gotWhoamiWhileBlocked)
+	}
+	if gotItemGetWhileBlocked != 1 {
+		t.Fatalf("item get calls while auth blocked = %d, want 1", gotItemGetWhileBlocked)
 	}
 
 	close(releaseWhoami)
@@ -763,7 +798,7 @@ func TestOnePasswordBackend_CheckAuthAndGet_CoalesceAuthCheck(t *testing.T) {
 	}
 }
 
-func TestOnePasswordBackend_Get_ReusesRecentSuccessfulAuthCheck(t *testing.T) {
+func TestOnePasswordBackend_CheckAuth_ReusesRecentSuccess(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary:       "op.exe",
 		vault:        "test-vault",
@@ -780,23 +815,14 @@ func TestOnePasswordBackend_Get_ReusesRecentSuccessfulAuthCheck(t *testing.T) {
 			mu.Unlock()
 			return []byte(`{"user_uuid":"user"}`), nil
 		}
-		if strings.Contains(argsStr, "item get") {
-			return json.Marshal(opItem{
-				ID:    args[2],
-				Title: "Secret",
-				Fields: []opItemField{
-					{ID: "password", Type: "CONCEALED", Value: "secret"},
-				},
-			})
-		}
 		return nil, fmt.Errorf("unexpected command: %s", argsStr)
 	}
 
-	if _, err := b.Get(context.Background(), "id1"); err != nil {
-		t.Fatalf("first Get failed: %v", err)
+	if err := b.CheckAuth(context.Background()); err != nil {
+		t.Fatalf("first CheckAuth failed: %v", err)
 	}
-	if _, err := b.Get(context.Background(), "id2"); err != nil {
-		t.Fatalf("second Get failed: %v", err)
+	if err := b.CheckAuth(context.Background()); err != nil {
+		t.Fatalf("second CheckAuth failed: %v", err)
 	}
 
 	mu.Lock()
@@ -806,7 +832,7 @@ func TestOnePasswordBackend_Get_ReusesRecentSuccessfulAuthCheck(t *testing.T) {
 	}
 }
 
-func TestOnePasswordBackend_Get_ZeroAuthCacheTTLDisablesSequentialReuse(t *testing.T) {
+func TestOnePasswordBackend_CheckAuth_ZeroAuthCacheTTLDisablesSequentialReuse(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary:       "op.exe",
 		vault:        "test-vault",
@@ -823,23 +849,14 @@ func TestOnePasswordBackend_Get_ZeroAuthCacheTTLDisablesSequentialReuse(t *testi
 			mu.Unlock()
 			return []byte(`{"user_uuid":"user"}`), nil
 		}
-		if strings.Contains(argsStr, "item get") {
-			return json.Marshal(opItem{
-				ID:    args[2],
-				Title: "Secret",
-				Fields: []opItemField{
-					{ID: "password", Type: "CONCEALED", Value: "secret"},
-				},
-			})
-		}
 		return nil, fmt.Errorf("unexpected command: %s", argsStr)
 	}
 
-	if _, err := b.Get(context.Background(), "id1"); err != nil {
-		t.Fatalf("first Get failed: %v", err)
+	if err := b.CheckAuth(context.Background()); err != nil {
+		t.Fatalf("first CheckAuth failed: %v", err)
 	}
-	if _, err := b.Get(context.Background(), "id2"); err != nil {
-		t.Fatalf("second Get failed: %v", err)
+	if err := b.CheckAuth(context.Background()); err != nil {
+		t.Fatalf("second CheckAuth failed: %v", err)
 	}
 
 	mu.Lock()
@@ -849,7 +866,7 @@ func TestOnePasswordBackend_Get_ZeroAuthCacheTTLDisablesSequentialReuse(t *testi
 	}
 }
 
-func TestOnePasswordBackend_Get_ZeroAuthCacheTTLStillCoalescesConcurrentAuthChecks(t *testing.T) {
+func TestOnePasswordBackend_CheckAuth_ZeroAuthCacheTTLStillCoalescesConcurrentChecks(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary:       "op.exe",
 		vault:        "test-vault",
@@ -862,7 +879,6 @@ func TestOnePasswordBackend_Get_ZeroAuthCacheTTLStillCoalescesConcurrentAuthChec
 
 	var mu sync.Mutex
 	whoamiCalls := 0
-	itemGetCalls := 0
 
 	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 		argsStr := strings.Join(args, " ")
@@ -874,37 +890,19 @@ func TestOnePasswordBackend_Get_ZeroAuthCacheTTLStillCoalescesConcurrentAuthChec
 			<-releaseWhoami
 			return []byte(`{"user_uuid":"user"}`), nil
 		}
-		if strings.Contains(argsStr, "item get") {
-			mu.Lock()
-			itemGetCalls++
-			mu.Unlock()
-			return json.Marshal(opItem{
-				ID:    args[2],
-				Title: "Secret",
-				Fields: []opItemField{
-					{ID: "password", Type: "CONCEALED", Value: "secret"},
-				},
-			})
-		}
 		return nil, fmt.Errorf("unexpected command: %s", argsStr)
 	}
 
 	start := make(chan struct{})
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
-	for _, id := range []string{"id1", "id2"} {
-		id := id
+	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			item, err := b.Get(context.Background(), id)
-			if err != nil {
+			if err := b.CheckAuth(context.Background()); err != nil {
 				errs <- err
-				return
-			}
-			if item.ID != id || string(item.Secret) != "secret" {
-				errs <- fmt.Errorf("unexpected item for %s: %+v", id, item)
 			}
 		}()
 	}
@@ -938,12 +936,9 @@ func TestOnePasswordBackend_Get_ZeroAuthCacheTTLStillCoalescesConcurrentAuthChec
 	if whoamiCalls != 1 {
 		t.Fatalf("whoami calls = %d, want 1", whoamiCalls)
 	}
-	if itemGetCalls != 2 {
-		t.Fatalf("item get calls = %d, want 2", itemGetCalls)
-	}
 }
 
-func TestOnePasswordBackend_Get_DoesNotCacheFailedAuthCheck(t *testing.T) {
+func TestOnePasswordBackend_CheckAuth_DoesNotCacheFailure(t *testing.T) {
 	b := &OnePasswordBackend{
 		binary:       "op.exe",
 		vault:        "test-vault",
@@ -964,23 +959,14 @@ func TestOnePasswordBackend_Get_DoesNotCacheFailedAuthCheck(t *testing.T) {
 			}
 			return []byte(`{"user_uuid":"user"}`), nil
 		}
-		if strings.Contains(argsStr, "item get") {
-			return json.Marshal(opItem{
-				ID:    args[2],
-				Title: "Secret",
-				Fields: []opItemField{
-					{ID: "password", Type: "CONCEALED", Value: "secret"},
-				},
-			})
-		}
 		return nil, fmt.Errorf("unexpected command: %s", argsStr)
 	}
 
-	if _, err := b.Get(context.Background(), "id1"); err == nil {
-		t.Fatal("first Get succeeded, want auth failure")
+	if err := b.CheckAuth(context.Background()); err == nil {
+		t.Fatal("first CheckAuth succeeded, want auth failure")
 	}
-	if _, err := b.Get(context.Background(), "id1"); err != nil {
-		t.Fatalf("second Get failed: %v", err)
+	if err := b.CheckAuth(context.Background()); err != nil {
+		t.Fatalf("second CheckAuth failed: %v", err)
 	}
 
 	mu.Lock()
