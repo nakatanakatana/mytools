@@ -12,6 +12,7 @@ import (
 type recordingBackend struct {
 	item       *SecretItem
 	items      []*SecretItem
+	getCalls   int
 	saveCalls  int
 	deleteID   string
 	searchFunc func(ctx context.Context, attributes map[string]string) ([]*SecretItem, error)
@@ -25,6 +26,7 @@ func (b *recordingBackend) Search(ctx context.Context, attributes map[string]str
 }
 
 func (b *recordingBackend) Get(ctx context.Context, id string) (*SecretItem, error) {
+	b.getCalls++
 	if b.item == nil || b.item.ID != id {
 		return nil, ErrNotFound
 	}
@@ -377,9 +379,11 @@ func TestItemSetSecret_InvalidSessionDoesNotSave(t *testing.T) {
 	}
 	service := NewServiceObject(nil, backend)
 	item := &ItemObject{
-		backend: backend,
-		service: service,
-		id:      "item1",
+		backend:    backend,
+		service:    service,
+		id:         "item1",
+		label:      "label",
+		attributes: map[string]string{"service": "test"},
 	}
 
 	dbusErr := item.SetSecret(DBusSecret{
@@ -414,9 +418,11 @@ func TestItemSetSecret_DecryptFailureDoesNotSave(t *testing.T) {
 		aesKey:    []byte("0123456789abcdef"),
 	}
 	item := &ItemObject{
-		backend: backend,
-		service: service,
-		id:      "item1",
+		backend:    backend,
+		service:    service,
+		id:         "item1",
+		label:      "label",
+		attributes: map[string]string{"service": "github"},
 	}
 
 	dbusErr := item.SetSecret(DBusSecret{
@@ -436,6 +442,44 @@ func TestItemSetSecret_DecryptFailureDoesNotSave(t *testing.T) {
 	}
 }
 
+func TestItemSetSecret_UsesExportedMetadataWithoutReadingSecret(t *testing.T) {
+	backend := &recordingBackend{}
+	service := NewServiceObject(nil, backend)
+	sessionPath := dbus.ObjectPath(SessionPath + "plain")
+	service.sessions[sessionPath] = &SessionState{algorithm: AlgorithmPlain}
+	item := &ItemObject{
+		backend:    backend,
+		service:    service,
+		id:         "item1",
+		label:      "label",
+		attributes: map[string]string{"service": "github", "username": "alice"},
+	}
+
+	dbusErr := item.SetSecret(DBusSecret{
+		Session: sessionPath,
+		Value:   []byte("new-secret"),
+	})
+
+	if dbusErr != nil {
+		t.Fatalf("SetSecret failed: %v", dbusErr)
+	}
+	if backend.getCalls != 0 {
+		t.Fatalf("Get was called %d times, want 0", backend.getCalls)
+	}
+	if backend.saveCalls != 1 {
+		t.Fatalf("Save was called %d times, want 1", backend.saveCalls)
+	}
+	if backend.item.ID != "item1" || backend.item.Label != "label" {
+		t.Fatalf("saved item metadata = %+v", backend.item)
+	}
+	if backend.item.Attributes["service"] != "github" || backend.item.Attributes["username"] != "alice" {
+		t.Fatalf("saved attributes = %+v", backend.item.Attributes)
+	}
+	if string(backend.item.Secret) != "new-secret" {
+		t.Fatalf("saved secret = %q", backend.item.Secret)
+	}
+}
+
 func TestItemGetSecretDeleteAndProperties(t *testing.T) {
 	backend := &recordingBackend{
 		item: &SecretItem{
@@ -449,9 +493,11 @@ func TestItemGetSecretDeleteAndProperties(t *testing.T) {
 	sessionPath := dbus.ObjectPath(SessionPath + "plain")
 	service.sessions[sessionPath] = &SessionState{algorithm: AlgorithmPlain}
 	item := &ItemObject{
-		backend: backend,
-		service: service,
-		id:      "item1",
+		backend:    backend,
+		service:    service,
+		id:         "item1",
+		label:      "label",
+		attributes: map[string]string{"service": "github"},
 	}
 
 	secret, dbusErr := item.GetSecret(sessionPath)
