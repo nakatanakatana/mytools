@@ -14,13 +14,18 @@ import (
 )
 
 func newAuthenticatedTestOnePasswordBackend() *OnePasswordBackend {
-	b := &OnePasswordBackend{
-		binary:       "op.exe",
-		vault:        "test-vault",
-		authCacheTTL: time.Hour,
+	return &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
 	}
-	b.markAuthSucceeded()
-	return b
+}
+
+func TestNewOnePasswordBackend_IgnoresRemovedAuthCacheTTL(t *testing.T) {
+	t.Setenv("OP_AUTH_CACHE_TTL", "not-a-duration")
+
+	if _, err := NewOnePasswordBackend(); err != nil {
+		t.Fatalf("NewOnePasswordBackend should ignore removed OP_AUTH_CACHE_TTL, got %v", err)
+	}
 }
 
 func TestInMemoryBackend(t *testing.T) {
@@ -422,11 +427,10 @@ func TestOnePasswordBackend_Get(t *testing.T) {
 	}
 }
 
-func TestOnePasswordBackend_CheckAuth_CoalescesConcurrentChecks(t *testing.T) {
+func TestOnePasswordBackend_CheckAuth_CoalescesConcurrentWhoamiReadCommands(t *testing.T) {
 	b := &OnePasswordBackend{
-		binary:       "op.exe",
-		vault:        "test-vault",
-		authCacheTTL: time.Minute,
+		binary: "op.exe",
+		vault:  "test-vault",
 	}
 
 	whoamiStarted := make(chan struct{})
@@ -693,9 +697,8 @@ func TestOnePasswordBackend_Save_DoesNotCoalesceWriteCommands(t *testing.T) {
 
 func TestOnePasswordBackend_CheckAuth_DoesNotBlockGet(t *testing.T) {
 	b := &OnePasswordBackend{
-		binary:       "op.exe",
-		vault:        "test-vault",
-		authCacheTTL: time.Minute,
+		binary: "op.exe",
+		vault:  "test-vault",
 	}
 
 	whoamiStarted := make(chan struct{})
@@ -798,45 +801,10 @@ func TestOnePasswordBackend_CheckAuth_DoesNotBlockGet(t *testing.T) {
 	}
 }
 
-func TestOnePasswordBackend_CheckAuth_ReusesRecentSuccess(t *testing.T) {
+func TestOnePasswordBackend_CheckAuth_DoesNotReuseSequentialSuccess(t *testing.T) {
 	b := &OnePasswordBackend{
-		binary:       "op.exe",
-		vault:        "test-vault",
-		authCacheTTL: time.Minute,
-	}
-
-	var mu sync.Mutex
-	whoamiCalls := 0
-	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
-		argsStr := strings.Join(args, " ")
-		if strings.Contains(argsStr, "whoami") {
-			mu.Lock()
-			whoamiCalls++
-			mu.Unlock()
-			return []byte(`{"user_uuid":"user"}`), nil
-		}
-		return nil, fmt.Errorf("unexpected command: %s", argsStr)
-	}
-
-	if err := b.CheckAuth(context.Background()); err != nil {
-		t.Fatalf("first CheckAuth failed: %v", err)
-	}
-	if err := b.CheckAuth(context.Background()); err != nil {
-		t.Fatalf("second CheckAuth failed: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if whoamiCalls != 1 {
-		t.Fatalf("whoami calls = %d, want 1", whoamiCalls)
-	}
-}
-
-func TestOnePasswordBackend_CheckAuth_ZeroAuthCacheTTLDisablesSequentialReuse(t *testing.T) {
-	b := &OnePasswordBackend{
-		binary:       "op.exe",
-		vault:        "test-vault",
-		authCacheTTL: 0,
+		binary: "op.exe",
+		vault:  "test-vault",
 	}
 
 	var mu sync.Mutex
@@ -866,83 +834,10 @@ func TestOnePasswordBackend_CheckAuth_ZeroAuthCacheTTLDisablesSequentialReuse(t 
 	}
 }
 
-func TestOnePasswordBackend_CheckAuth_ZeroAuthCacheTTLStillCoalescesConcurrentChecks(t *testing.T) {
-	b := &OnePasswordBackend{
-		binary:       "op.exe",
-		vault:        "test-vault",
-		authCacheTTL: 0,
-	}
-
-	whoamiStarted := make(chan struct{})
-	releaseWhoami := make(chan struct{})
-	var closeWhoamiStarted sync.Once
-
-	var mu sync.Mutex
-	whoamiCalls := 0
-
-	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
-		argsStr := strings.Join(args, " ")
-		if strings.Contains(argsStr, "whoami") {
-			mu.Lock()
-			whoamiCalls++
-			mu.Unlock()
-			closeWhoamiStarted.Do(func() { close(whoamiStarted) })
-			<-releaseWhoami
-			return []byte(`{"user_uuid":"user"}`), nil
-		}
-		return nil, fmt.Errorf("unexpected command: %s", argsStr)
-	}
-
-	start := make(chan struct{})
-	errs := make(chan error, 2)
-	var wg sync.WaitGroup
-	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			if err := b.CheckAuth(context.Background()); err != nil {
-				errs <- err
-			}
-		}()
-	}
-
-	close(start)
-	select {
-	case <-whoamiStarted:
-	case <-time.After(time.Second):
-		t.Fatal("op whoami did not start")
-	}
-
-	time.Sleep(50 * time.Millisecond)
-	mu.Lock()
-	gotWhoamiWhileBlocked := whoamiCalls
-	mu.Unlock()
-	if gotWhoamiWhileBlocked != 1 {
-		t.Fatalf("whoami calls while auth blocked = %d, want 1", gotWhoamiWhileBlocked)
-	}
-
-	close(releaseWhoami)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if whoamiCalls != 1 {
-		t.Fatalf("whoami calls = %d, want 1", whoamiCalls)
-	}
-}
-
 func TestOnePasswordBackend_CheckAuth_DoesNotCacheFailure(t *testing.T) {
 	b := &OnePasswordBackend{
-		binary:       "op.exe",
-		vault:        "test-vault",
-		authCacheTTL: time.Minute,
+		binary: "op.exe",
+		vault:  "test-vault",
 	}
 
 	var mu sync.Mutex

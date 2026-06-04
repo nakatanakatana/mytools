@@ -24,8 +24,8 @@ The tool is configured using environment variables:
 |-----|-------------|---------|
 | `OP_VAULT` | The name of the 1Password vault where secrets are stored. | `wsl-keyring` |
 | `USE_IN_MEMORY` | Uses an ephemeral in-memory storage instead of 1Password. Useful for testing. | `false` |
+| `INIT` | Writes the D-Bus activation service file and exits. | `false` |
 | `OP_BINARY` | The binary command to call the 1Password CLI. | `op.exe` |
-| `OP_AUTH_CACHE_TTL` | Duration to reuse a successful background `op whoami` lock-state check. Normal `op item` operations do not run `whoami` as a preflight. Set to `0s` to disable reuse while keeping single-flight coalescing. | `30s` |
 | `WSL_KEYRING_SECRET_CACHE_TTL` | Sliding TTL for decrypted secrets cached in memory after a read or write. | `60s` |
 | `WSL_KEYRING_AUTH_CHECK_MIN_SPACING` | Minimum interval between background `op whoami` checks after a secret-cache hit. | `5s` |
 | `WSL_KEYRING_AUTH_CHECK_TIMEOUT` | Timeout for the background `op whoami` check. | `2s` |
