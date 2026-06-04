@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/caarlos0/env/v11"
 	"golang.org/x/sync/errgroup"
@@ -54,10 +53,7 @@ type OnePasswordBackend struct {
 	binary string
 	vault  string
 
-	authCacheTTL time.Duration
-	authMu       sync.Mutex
-	authLastOK   time.Time
-	authFlight   singleflight.Group
+	authFlight singleflight.Group
 
 	opReadFlight singleflight.Group
 
@@ -66,9 +62,8 @@ type OnePasswordBackend struct {
 }
 
 type opConfig struct {
-	Vault        string        `env:"OP_VAULT" envDefault:"wsl-keyring"`
-	OPBinary     string        `env:"OP_BINARY" envDefault:"op.exe"`
-	AuthCacheTTL time.Duration `env:"OP_AUTH_CACHE_TTL" envDefault:"30s"`
+	Vault    string `env:"OP_VAULT" envDefault:"wsl-keyring"`
+	OPBinary string `env:"OP_BINARY" envDefault:"op.exe"`
 }
 
 // NewOnePasswordBackend creates a new OnePasswordBackend by parsing active configurations from environment variables.
@@ -78,9 +73,8 @@ func NewOnePasswordBackend() (*OnePasswordBackend, error) {
 		return nil, err
 	}
 	return &OnePasswordBackend{
-		binary:       cfg.OPBinary,
-		vault:        cfg.Vault,
-		authCacheTTL: cfg.AuthCacheTTL,
+		binary: cfg.OPBinary,
+		vault:  cfg.Vault,
 		runCmd: func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
 			if stdin != "" {
@@ -96,37 +90,13 @@ func (b *OnePasswordBackend) runOP(ctx context.Context, args ...string) ([]byte,
 }
 
 func (b *OnePasswordBackend) ensureAuthenticated(ctx context.Context) error {
-	if b.authRecentlySucceeded() {
-		return nil
-	}
-
 	_, err, _ := b.authFlight.Do("op-auth", func() (any, error) {
-		if b.authRecentlySucceeded() {
-			return nil, nil
-		}
 		if _, err := b.runOPNoVault(ctx, "whoami", "--format", "json"); err != nil {
 			return nil, err
 		}
-		b.markAuthSucceeded()
 		return nil, nil
 	})
 	return err
-}
-
-func (b *OnePasswordBackend) authRecentlySucceeded() bool {
-	if b.authCacheTTL <= 0 {
-		return false
-	}
-
-	b.authMu.Lock()
-	defer b.authMu.Unlock()
-	return !b.authLastOK.IsZero() && time.Since(b.authLastOK) < b.authCacheTTL
-}
-
-func (b *OnePasswordBackend) markAuthSucceeded() {
-	b.authMu.Lock()
-	b.authLastOK = time.Now()
-	b.authMu.Unlock()
 }
 
 func (b *OnePasswordBackend) runOPWithInput(ctx context.Context, stdin string, args ...string) ([]byte, error) {
