@@ -130,10 +130,6 @@ func (b *OnePasswordBackend) markAuthSucceeded() {
 }
 
 func (b *OnePasswordBackend) runOPWithInput(ctx context.Context, stdin string, args ...string) ([]byte, error) {
-	if err := b.ensureAuthenticated(ctx); err != nil {
-		return nil, err
-	}
-
 	return b.runOPWithInputAllowInteractive(ctx, stdin, args...)
 }
 
