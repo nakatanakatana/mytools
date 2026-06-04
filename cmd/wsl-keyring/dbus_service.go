@@ -290,9 +290,11 @@ func (s *ServiceObject) ExportItem(item *SecretItem) error {
 	}
 	path := dbus.ObjectPath(ItemPathPrefix + item.ID)
 	itemObj := &ItemObject{
-		backend: s.backend,
-		service: s,
-		id:      item.ID,
+		backend:    s.backend,
+		service:    s,
+		id:         item.ID,
+		label:      item.Label,
+		attributes: copyAttributes(item.Attributes),
 	}
 	if err := s.conn.Export(itemObj, path, ItemInterface); err != nil {
 		return fmt.Errorf("failed to export item interface for %s: %w", path, err)
@@ -434,9 +436,11 @@ func (c *CollectionObject) Set(iface, property string, value dbus.Variant) *dbus
 
 // ItemObject implements org.freedesktop.Secret.Item
 type ItemObject struct {
-	backend StorageBackend
-	service *ServiceObject
-	id      string
+	backend    StorageBackend
+	service    *ServiceObject
+	id         string
+	label      string
+	attributes map[string]string
 }
 
 func (item *ItemObject) GetSecret(session dbus.ObjectPath) (DBusSecret, *dbus.Error) {
@@ -464,11 +468,6 @@ func (item *ItemObject) GetSecret(session dbus.ObjectPath) (DBusSecret, *dbus.Er
 }
 
 func (item *ItemObject) SetSecret(secret DBusSecret) *dbus.Error {
-	it, err := item.backend.Get(context.Background(), item.id)
-	if err != nil {
-		return dbus.NewError("org.freedesktop.Secret.Error.Failed", []any{err.Error()})
-	}
-
 	sess, ok := item.service.getSession(secret.Session)
 	if !ok {
 		return dbus.NewError("org.freedesktop.Secret.Error.Failed", []any{"invalid session"})
@@ -478,11 +477,20 @@ func (item *ItemObject) SetSecret(secret DBusSecret) *dbus.Error {
 		return dbus.NewError("org.freedesktop.Secret.Error.Failed", []any{err.Error()})
 	}
 
-	it.Secret = secretValue
+	it := item.secretItemForUpdate(secretValue)
 	if err := item.backend.Save(context.Background(), it); err != nil {
 		return dbus.NewError("org.freedesktop.Secret.Error.Failed", []any{err.Error()})
 	}
 	return nil
+}
+
+func (item *ItemObject) secretItemForUpdate(secret []byte) *SecretItem {
+	return &SecretItem{
+		ID:         item.id,
+		Label:      item.label,
+		Attributes: copyAttributes(item.attributes),
+		Secret:     secret,
+	}
 }
 
 func (item *ItemObject) Delete() (dbus.ObjectPath, *dbus.Error) {
@@ -498,18 +506,13 @@ func (item *ItemObject) Get(iface, property string) (dbus.Variant, *dbus.Error) 
 		return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{"No such interface"})
 	}
 
-	it, err := item.backend.Get(context.Background(), item.id)
-	if err != nil {
-		return dbus.Variant{}, dbus.NewError("org.freedesktop.Secret.Error.Failed", []any{err.Error()})
-	}
-
 	switch property {
 	case "Locked":
 		return dbus.MakeVariant(false), nil
 	case "Attributes":
-		return dbus.MakeVariant(it.Attributes), nil
+		return dbus.MakeVariant(copyAttributes(item.attributes)), nil
 	case "Label":
-		return dbus.MakeVariant(it.Label), nil
+		return dbus.MakeVariant(item.label), nil
 	case "Created":
 		return dbus.MakeVariant(uint64(0)), nil
 	case "Modified":
