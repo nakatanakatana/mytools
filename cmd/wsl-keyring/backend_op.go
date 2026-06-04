@@ -53,8 +53,6 @@ type OnePasswordBackend struct {
 	binary string
 	vault  string
 
-	authFlight singleflight.Group
-
 	opReadFlight singleflight.Group
 
 	// runCmd is used to execute external commands. Placed here to allow mocking in tests.
@@ -87,16 +85,6 @@ func NewOnePasswordBackend() (*OnePasswordBackend, error) {
 
 func (b *OnePasswordBackend) runOP(ctx context.Context, args ...string) ([]byte, error) {
 	return b.runOPWithInput(ctx, "", args...)
-}
-
-func (b *OnePasswordBackend) ensureAuthenticated(ctx context.Context) error {
-	_, err, _ := b.authFlight.Do("op-auth", func() (any, error) {
-		if _, err := b.runOPNoVault(ctx, "whoami", "--format", "json"); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	})
-	return err
 }
 
 func (b *OnePasswordBackend) runOPWithInput(ctx context.Context, stdin string, args ...string) ([]byte, error) {
@@ -577,5 +565,6 @@ func (b *OnePasswordBackend) List(ctx context.Context) ([]*SecretItem, error) {
 }
 
 func (b *OnePasswordBackend) CheckAuth(ctx context.Context) error {
-	return b.ensureAuthenticated(ctx)
+	_, err := b.runOPNoVault(ctx, "whoami", "--format", "json")
+	return err
 }
