@@ -36,7 +36,9 @@ func TestNIP11InformationDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("StatusCode = %d", resp.StatusCode)
@@ -87,7 +89,9 @@ func TestNIP01PublishAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() {
+		_ = client.Close()
+	}()
 
 	event := nostr.Event{
 		CreatedAt: nostr.Now(),
@@ -137,13 +141,17 @@ func TestNIP01LiveSubscriptionReceivesPublishedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer subscriber.Close()
+	defer func() {
+		_ = subscriber.Close()
+	}()
 
 	publisher, err := nostr.RelayConnect(ctx, relayURL, nostr.RelayOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer publisher.Close()
+	defer func() {
+		_ = publisher.Close()
+	}()
 
 	sub, err := subscriber.Subscribe(ctx, nostr.Filter{Kinds: []nostr.Kind{nostr.Kind(1)}}, nostr.SubscriptionOptions{})
 	if err != nil {
