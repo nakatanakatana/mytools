@@ -31,6 +31,10 @@ go.work.sum
 dist/
 .worktrees/
 
+# Superpowers local planning artifacts
+docs/superpowers/plans/
+docs/superpowers/specs/
+
 # Editor/IDE
 # .idea/
 # .vscode/
