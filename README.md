@@ -21,6 +21,9 @@ A standalone server for managing, generating, and serving `.well-known/nostr.jso
 ### 3. [wsl-keyring](file:///home/tanaka/repos/github.com/nakatanakatana/mytools/cmd/wsl-keyring/README.md)
 A D-Bus Secret Service provider daemon that exposes the `org.freedesktop.secrets` interface and integrates with 1Password (`op.exe`) as the storage backend. Designed for WSL environments.
 
+### 4. [nostr-relay](file:///home/tanaka/repos/github.com/nakatanakatana/mytools/cmd/nostr-relay/README.md)
+A minimal Nostr relay built on `fiatjaf.com/nostr/khatru`, supporting NIP-01 relay flow and NIP-11 relay metadata with in-memory storage.
+
 ---
 
 ## Development and Build
@@ -70,6 +73,9 @@ docker build --target nip05 -t nip05 .
 
 # For wsl-keyring only
 docker build --target wsl-keyring -t wsl-keyring .
+
+# For nostr-relay only
+docker build --target nostr-relay -t nostr-relay .
 ```
 
 ### Build All Tools Image
