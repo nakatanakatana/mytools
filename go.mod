@@ -3,7 +3,7 @@ module github.com/nakatanakatana/mytools
 go 1.26.3
 
 require (
-	fiatjaf.com/nostr v0.0.0-20260606144221-245a47bc03f7
+	fiatjaf.com/nostr v0.0.0-20260611201423-bd9746b22ba5
 	github.com/awnumar/memguard v0.23.0
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/godbus/dbus/v5 v5.2.2
