@@ -148,7 +148,7 @@ display:
     kubernetes: false
 ```
 
-The active and inactive tab settings are independent. Each state must keep either `tab_number`, `process`, or `process_full` enabled so tab labels are never empty. `process` shows only the process name. `process_full` shows the process with arguments. Enabling Git or Kubernetes for inactive tabs runs the corresponding lookup for every tab.
+The active and inactive tab settings are independent. Each state must keep either `tab_number`, `process`, or `process_full` enabled so tab labels are never empty. `process` shows only the process name and skips it when it matches `$SHELL`. `process_full` shows the process with arguments. Enabling Git or Kubernetes for inactive tabs runs the corresponding lookup for every tab.
 
 Git information is read from the focused pane's current directory with `github.com/arl/gitstatus`. If the directory is outside a Git working tree or Git does not answer within 700ms, only the Git item is omitted.
 

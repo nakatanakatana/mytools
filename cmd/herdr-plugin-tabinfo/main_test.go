@@ -28,9 +28,29 @@ func TestProcessNameFromProcessInfoUsesProcessNameOnly(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, "")
 	if got != "nvim" {
 		t.Fatalf("processNameFromProcessInfo() = %q, want %q", got, "nvim")
+	}
+}
+
+func TestProcessNameFromProcessInfoSkipsShellProcessName(t *testing.T) {
+	got := processNameFromProcessInfo(paneProcessInfoResult{
+		ProcessInfo: paneProcessInfo{
+			ForegroundProcesses: []foregroundProcess{
+				{Name: "bash"},
+				{Name: "python"},
+			},
+		},
+	}, "bash")
+	if got != "python" {
+		t.Fatalf("processNameFromProcessInfo() = %q, want %q", got, "python")
+	}
+}
+
+func TestShellProcessNameUsesBaseName(t *testing.T) {
+	if got := shellProcessName("/bin/zsh"); got != "zsh" {
+		t.Fatalf("shellProcessName() = %q, want %q", got, "zsh")
 	}
 }
 

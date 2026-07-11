@@ -189,6 +189,7 @@ func run(args []string) error {
 	if socketPath == "" {
 		return errors.New("HERDR_SOCKET_PATH is not set. Run this from Herdr as a plugin action or event")
 	}
+	shellProcessName := shellProcessName(os.Getenv("SHELL"))
 
 	gitmux, err := loadGitmuxConfig()
 	if err != nil {
@@ -209,7 +210,7 @@ func run(args []string) error {
 		return err
 	}
 
-	updated, err := refreshLabels(client, result.Snapshot, gitmux, config)
+	updated, err := refreshLabels(client, result.Snapshot, gitmux, config, shellProcessName)
 	if err != nil {
 		return err
 	}
@@ -276,7 +277,7 @@ func (c *herdrClient) request(method string, params interface{}, result interfac
 	return nil
 }
 
-func refreshLabels(client *herdrClient, snapshot sessionSnapshot, gitmux gitmuxConfig, config tabInfoConfig) (int, error) {
+func refreshLabels(client *herdrClient, snapshot sessionSnapshot, gitmux gitmuxConfig, config tabInfoConfig, shellProcessName string) (int, error) {
 	renames := planLabelUpdatesWithInfo(snapshot, config.Display, func(tab tabInfo, pane *paneInfo) tabDynamicInfo {
 		cwd := paneCWD(pane)
 		info := tabDynamicInfo{}
@@ -285,7 +286,7 @@ func refreshLabels(client *herdrClient, snapshot sessionSnapshot, gitmux gitmuxC
 			processInfo, ok := fetchPaneProcessInfo(client, pane)
 			if ok {
 				if display.Process {
-					info.Process = processNameFromProcessInfo(processInfo)
+					info.Process = processNameFromProcessInfo(processInfo, shellProcessName)
 				}
 				if display.ProcessFull {
 					info.ProcessFull = processFullFromProcessInfo(processInfo)
@@ -387,14 +388,21 @@ func fetchPaneProcessInfo(client *herdrClient, pane *paneInfo) (paneProcessInfoR
 	return result, true
 }
 
-func processNameFromProcessInfo(result paneProcessInfoResult) string {
+func processNameFromProcessInfo(result paneProcessInfoResult, shellProcessName string) string {
 	for index := len(result.ProcessInfo.ForegroundProcesses) - 1; index >= 0; index-- {
 		process := result.ProcessInfo.ForegroundProcesses[index]
-		if process.Name != "" {
+		if process.Name != "" && process.Name != shellProcessName {
 			return process.Name
 		}
 	}
 	return ""
+}
+
+func shellProcessName(shell string) string {
+	if shell == "" {
+		return ""
+	}
+	return filepath.Base(shell)
 }
 
 func processFullFromProcessInfo(result paneProcessInfoResult) string {
