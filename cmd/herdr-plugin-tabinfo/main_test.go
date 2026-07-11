@@ -87,9 +87,9 @@ func TestBuildTabLabelIncludesGitStatus(t *testing.T) {
 	}
 }
 
-func TestBuildTabLabelIncludesKubernetesConfig(t *testing.T) {
+func TestBuildTabLabelIncludesConfiguredEnvironmentVariable(t *testing.T) {
 	tab := tabInfo{TabID: "t1", Number: 2, Focused: true}
-	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{Kubernetes: "production"}, defaultTabInfoConfig().Display.Active)
+	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{Environment: map[string]string{"KUBECONFIG_NAME": "production"}}, defaultTabInfoConfig().Display.Active)
 	want := "2 ⎈ production"
 	if got != want {
 		t.Fatalf("buildTabLabel() = %q, want %q", got, want)
@@ -123,9 +123,9 @@ func TestBuildTabLabelRespectsDisplayConfig(t *testing.T) {
 	display := tabDisplayConfig{TabNumber: true, Git: true}
 
 	got := buildTabLabel(tab, panes, paneLayout{FocusedPaneID: "p1"}, tabDynamicInfo{
-		Process:    "nvim",
-		Git:        "⎇ main",
-		Kubernetes: "production",
+		Process:     "nvim",
+		Git:         "⎇ main",
+		Environment: map[string]string{"KUBECONFIG_NAME": "production"},
 	}, display)
 	want := "2  ⎇ main"
 	if got != want {
@@ -140,18 +140,92 @@ func TestLoadTabInfoConfigRequiresGlobalTabContent(t *testing.T) {
 	}
 }
 
+func TestLoadTabInfoConfigReadsXDGConfigFile(t *testing.T) {
+	configHome := t.TempDir()
+	configPath := filepath.Join(configHome, "herdr-plugin-tabinfo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("display:\n  active:\n    git: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERDR_TABINFO_CONFIG", "")
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	config, err := loadTabInfoConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Display.Active.Git {
+		t.Fatalf("Active.Git = true, want false")
+	}
+}
+
+func TestLoadTabInfoConfigPrefersExplicitConfig(t *testing.T) {
+	configHome := t.TempDir()
+	globalConfigPath := filepath.Join(configHome, "herdr-plugin-tabinfo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(globalConfigPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalConfigPath, []byte("display:\n  active:\n    git: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	explicitConfigPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(explicitConfigPath, []byte("display:\n  active:\n    directory: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERDR_TABINFO_CONFIG", explicitConfigPath)
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	config, err := loadTabInfoConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.Display.Active.Git || config.Display.Active.Directory {
+		t.Fatalf("Active = %#v", config.Display.Active)
+	}
+}
+
+func TestLoadTabInfoConfigPrefersPluginConfigDir(t *testing.T) {
+	pluginConfigDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pluginConfigDir, "config.yaml"), []byte("display:\n  active:\n    directory: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configHome := t.TempDir()
+	globalConfigPath := filepath.Join(configHome, "herdr-plugin-tabinfo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(globalConfigPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalConfigPath, []byte("display:\n  active:\n    git: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERDR_TABINFO_CONFIG", "")
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", pluginConfigDir)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	config, err := loadTabInfoConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.Display.Active.Git || config.Display.Active.Directory {
+		t.Fatalf("Active = %#v", config.Display.Active)
+	}
+}
+
 func TestParseTabInfoConfigOverridesDefaults(t *testing.T) {
 	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    process: false\n    git: false\n  inactive:\n    process_full: true\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.Display.Active.TabNumber || config.Display.Active.Process || config.Display.Active.ProcessFull || config.Display.Active.Git || !config.Display.Active.Directory || !config.Display.Active.Kubernetes {
+	if !config.Display.Active.TabNumber || config.Display.Active.Process || config.Display.Active.ProcessFull || config.Display.Active.Git || !config.Display.Active.Directory || len(config.Display.Active.Environment) != 1 || config.Display.Active.Environment[0].Variable != "KUBECONFIG_NAME" {
 		t.Fatalf("Active = %#v", config.Display.Active)
 	}
 	if !config.Display.Inactive.TabNumber || !config.Display.Inactive.Process || !config.Display.Inactive.ProcessFull {
 		t.Fatalf("Inactive = %#v", config.Display.Inactive)
 	}
-	if config.Display.Inactive.Directory || config.Display.Inactive.Git || config.Display.Inactive.Kubernetes {
+	if config.Display.Inactive.Directory || config.Display.Inactive.Git || len(config.Display.Inactive.Environment) != 0 {
 		t.Fatalf("Inactive = %#v", config.Display.Inactive)
 	}
 }
@@ -198,9 +272,37 @@ func TestProcessFullFromProcessInfoPrefersLastNamedForegroundProcess(t *testing.
 	}
 }
 
-func TestReadKubernetesConfigWithoutDirenvUsesInheritedValue(t *testing.T) {
-	if got := readKubernetesConfig("/repo", "", "production"); got != "production" {
-		t.Fatalf("readKubernetesConfig() = %q, want production", got)
+func TestReadEnvironmentVariableWithoutDirenvUsesInheritedValue(t *testing.T) {
+	if got := readEnvironmentVariable("/repo", "", "KUBECONFIG_NAME", "production"); got != "production" {
+		t.Fatalf("readEnvironmentVariable() = %q, want production", got)
+	}
+}
+
+func TestBuildTabLabelOmitsEmptyEnvironmentValue(t *testing.T) {
+	tab := tabInfo{TabID: "t1", Number: 2, Focused: true}
+	display := tabDisplayConfig{TabNumber: true, Environment: []environmentDisplayConfig{{Icon: "◆", Variable: "PROJECT"}, {Icon: "●", Variable: "TEAM"}}}
+	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{}, display)
+	if got != "2" {
+		t.Fatalf("buildTabLabel() = %q, want 2", got)
+	}
+}
+
+func TestParseTabInfoConfigOverridesEnvironmentDisplays(t *testing.T) {
+	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    environment:\n      - icon: '◆'\n        variable: PROJECT\n      - icon: '●'\n        variable: TEAM\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := config.Display.Active.Environment, []environmentDisplayConfig{{Icon: "◆", Variable: "PROJECT"}, {Icon: "●", Variable: "TEAM"}}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Active.Environment = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildTabLabelIncludesMultipleEnvironmentVariables(t *testing.T) {
+	tab := tabInfo{TabID: "t1", Number: 2, Focused: true}
+	display := tabDisplayConfig{TabNumber: true, Environment: []environmentDisplayConfig{{Icon: "◆", Variable: "PROJECT"}, {Icon: "●", Variable: "TEAM"}}}
+	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{Environment: map[string]string{"PROJECT": "tabinfo", "TEAM": "platform"}}, display)
+	if got != "2 ◆ tabinfo ● platform" {
+		t.Fatalf("buildTabLabel() = %q", got)
 	}
 }
 

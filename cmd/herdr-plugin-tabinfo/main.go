@@ -24,7 +24,6 @@ const (
 	defaultMaxLabel = 80
 	iconDirectory   = ""
 	iconGit         = ""
-	iconKubernetes  = "⎈"
 	gitTimeout      = 700 * time.Millisecond
 )
 
@@ -76,12 +75,17 @@ type displayConfig struct {
 }
 
 type tabDisplayConfig struct {
-	TabNumber   bool `yaml:"tab_number"`
-	Process     bool `yaml:"process"`
-	ProcessFull bool `yaml:"process_full"`
-	Directory   bool `yaml:"directory"`
-	Git         bool `yaml:"git"`
-	Kubernetes  bool `yaml:"kubernetes"`
+	TabNumber   bool                       `yaml:"tab_number"`
+	Process     bool                       `yaml:"process"`
+	ProcessFull bool                       `yaml:"process_full"`
+	Directory   bool                       `yaml:"directory"`
+	Git         bool                       `yaml:"git"`
+	Environment []environmentDisplayConfig `yaml:"environment"`
+}
+
+type environmentDisplayConfig struct {
+	Icon     string `yaml:"icon"`
+	Variable string `yaml:"variable"`
 }
 
 type apiRequest struct {
@@ -174,7 +178,7 @@ type tabDynamicInfo struct {
 	Process     string
 	ProcessFull string
 	Git         string
-	Kubernetes  string
+	Environment map[string]string
 }
 
 func main() {
@@ -296,8 +300,13 @@ func refreshLabels(client *herdrClient, snapshot sessionSnapshot, gitmux gitmuxC
 		if display.Git {
 			info.Git = displayGitStatus(cwd, gitmux)
 		}
-		if display.Kubernetes {
-			info.Kubernetes = displayKubernetesConfig(cwd)
+		if len(display.Environment) > 0 {
+			info.Environment = make(map[string]string, len(display.Environment))
+			for _, environment := range display.Environment {
+				if environment.Variable != "" {
+					info.Environment[environment.Variable] = displayEnvironmentVariable(cwd, environment.Variable)
+				}
+			}
 		}
 		return info
 	})
@@ -398,8 +407,10 @@ func buildTabLabel(tab tabInfo, panes []paneInfo, layout paneLayout, info tabDyn
 	if display.Git && info.Git != "" {
 		parts = append(parts, iconGit+" "+info.Git)
 	}
-	if display.Kubernetes && info.Kubernetes != "" {
-		parts = append(parts, iconKubernetes+" "+info.Kubernetes)
+	for _, environment := range display.Environment {
+		if value := info.Environment[environment.Variable]; environment.Variable != "" && value != "" {
+			parts = append(parts, formatEnvironmentValue(environment.Icon, value))
+		}
 	}
 	return normalizeLabel(strings.Join(parts, " "))
 }
@@ -508,24 +519,44 @@ func defaultGitmuxConfig() gitmuxConfig {
 }
 
 func loadTabInfoConfig() (tabInfoConfig, error) {
-	path := os.Getenv("HERDR_TABINFO_CONFIG")
-	if path == "" {
-		configDir := os.Getenv("HERDR_PLUGIN_CONFIG_DIR")
-		if configDir == "" {
-			return defaultTabInfoConfig(), nil
-		}
-		path = filepath.Join(configDir, "config.yaml")
-	}
-
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return defaultTabInfoConfig(), nil
-	}
+	paths, err := tabInfoConfigPaths()
 	if err != nil {
-		return tabInfoConfig{}, fmt.Errorf("read tabinfo config %q: %w", path, err)
+		return tabInfoConfig{}, err
 	}
 
-	return parseTabInfoConfig(data)
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return tabInfoConfig{}, fmt.Errorf("read tabinfo config %q: %w", path, err)
+		}
+		return parseTabInfoConfig(data)
+	}
+
+	return defaultTabInfoConfig(), nil
+}
+
+func tabInfoConfigPaths() ([]string, error) {
+	if path := os.Getenv("HERDR_TABINFO_CONFIG"); path != "" {
+		return []string{path}, nil
+	}
+
+	paths := make([]string, 0, 2)
+	if configDir := os.Getenv("HERDR_PLUGIN_CONFIG_DIR"); configDir != "" {
+		paths = append(paths, filepath.Join(configDir, "config.yaml"))
+	}
+
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("find home directory for tabinfo config: %w", err)
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	return append(paths, filepath.Join(configHome, "herdr-plugin-tabinfo", "config.yaml")), nil
 }
 
 func parseTabInfoConfig(data []byte) (tabInfoConfig, error) {
@@ -545,11 +576,14 @@ func parseTabInfoConfig(data []byte) (tabInfoConfig, error) {
 func defaultTabInfoConfig() tabInfoConfig {
 	return tabInfoConfig{Display: displayConfig{
 		Active: tabDisplayConfig{
-			TabNumber:  true,
-			Process:    true,
-			Directory:  true,
-			Git:        true,
-			Kubernetes: true,
+			TabNumber: true,
+			Process:   true,
+			Directory: true,
+			Git:       true,
+			Environment: []environmentDisplayConfig{{
+				Icon:     "⎈",
+				Variable: "KUBECONFIG_NAME",
+			}},
 		},
 		Inactive: tabDisplayConfig{
 			TabNumber: true,
@@ -577,15 +611,18 @@ func displayGitStatus(cwd string, config gitmuxConfig) string {
 	return formatGitStatus(status, config.Tmux)
 }
 
-func displayKubernetesConfig(cwd string) string {
+func displayEnvironmentVariable(cwd, variable string) string {
+	if variable == "" {
+		return ""
+	}
 	direnvPath, err := exec.LookPath("direnv")
 	if err != nil {
 		direnvPath = ""
 	}
-	return readKubernetesConfig(cwd, direnvPath, os.Getenv("KUBECONFIG_NAME"))
+	return readEnvironmentVariable(cwd, direnvPath, variable, os.Getenv(variable))
 }
 
-func readKubernetesConfig(cwd, direnvPath, inherited string) string {
+func readEnvironmentVariable(cwd, direnvPath, variable, inherited string) string {
 	if direnvPath == "" {
 		return inherited
 	}
@@ -594,13 +631,20 @@ func readKubernetesConfig(cwd, direnvPath, inherited string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, direnvPath, "exec", cwd, "printenv", "KUBECONFIG_NAME")
+	command := exec.CommandContext(ctx, direnvPath, "exec", cwd, "printenv", variable)
 	command.Dir = cwd
 	output, err := command.Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func formatEnvironmentValue(icon, value string) string {
+	if icon == "" {
+		return value
+	}
+	return icon + " " + value
 }
 
 func readGitStatus(dir string) (*gitstatus.Status, error) {

@@ -89,7 +89,7 @@ docker build --target mytools -t mytools .
 
 `cmd/herdr-plugin-tabinfo` contains a Herdr plugin that rewrites tab labels with live tab information through the Herdr Socket API.
 
-The label format starts with the Herdr workspace-local tab number and the foreground process name. When the tab is active, the plugin can also append directory, Git, and Kubernetes information.
+The label format starts with the Herdr workspace-local tab number and the foreground process name. When the tab is active, the plugin can also append directory, Git, and an environment-variable value.
 
 Example:
 
@@ -101,7 +101,7 @@ Example:
 - `nvim`: foreground process name of the tab's focused pane.
 - ` repo`: focused pane's current directory basename.
 - ` ⎇ main ✚ 2 … 1`: Git branch plus modified and untracked file counts.
-- `⎈ production`: `KUBECONFIG_NAME` from the pane directory's direnv environment.
+- `⎈ production`: a configured environment variable from the pane directory's direnv environment.
 
 The plugin replaces user-provided tab labels and does not store or restore original labels.
 
@@ -136,7 +136,7 @@ The plugin refreshes labels when Herdr emits these events:
 
 Set `HERDR_TABINFO_MAX_LABEL` to change the maximum generated label length. The default is `80`.
 
-Use `config.yaml` under `HERDR_PLUGIN_CONFIG_DIR` to choose displayed fields. For local development, set `HERDR_TABINFO_CONFIG` to an explicit file path. Fields default to `true` when no config is present.
+Use `config.yaml` under `HERDR_PLUGIN_CONFIG_DIR` to choose displayed fields. When it is not present, the plugin also reads `$XDG_CONFIG_HOME/herdr-plugin-tabinfo/config.yaml` (or `~/.config/herdr-plugin-tabinfo/config.yaml` when `XDG_CONFIG_HOME` is unset). For local development, set `HERDR_TABINFO_CONFIG` to an explicit file path. Fields default to `true` when no config is present.
 
 ```yaml
 display:
@@ -146,21 +146,23 @@ display:
     process_full: false
     directory: true
     git: true
-    kubernetes: true
+    environment:
+      - icon: '⎈'
+        variable: KUBECONFIG_NAME
   inactive:
     tab_number: true
     process: true
     process_full: false
     directory: false
     git: false
-    kubernetes: false
+    environment: []
 ```
 
-The active and inactive tab settings are independent. Each state must keep either `tab_number`, `process`, or `process_full` enabled so tab labels are never empty. `process` shows only the process name and skips it when it matches `$SHELL`. `process_full` shows the process with arguments. Enabling Git or Kubernetes for inactive tabs runs the corresponding lookup for every tab.
+The active and inactive tab settings are independent. Each state must keep either `tab_number`, `process`, or `process_full` enabled so tab labels are never empty. `process` shows only the process name and skips it when it matches `$SHELL`. `process_full` shows the process with arguments. `environment` accepts multiple entries, each with an `icon` and `variable`, and displays them in that order. Use `environment: []` to disable them. Enabling Git or environment variables for inactive tabs runs the corresponding lookup for every tab.
 
 Git information is read from the focused pane's current directory with `github.com/arl/gitstatus`. If the directory is outside a Git working tree or Git does not answer within 700ms, only the Git item is omitted.
 
-Kubernetes information uses `direnv exec <pane-directory> printenv KUBECONFIG_NAME` when `direnv` is available. Without `direnv`, it uses the plugin process's `KUBECONFIG_NAME`. An empty value or a failed command omits the Kubernetes item.
+Environment-variable values use `direnv exec <pane-directory> printenv <variable>` when `direnv` is available. Without `direnv`, they use the plugin process's value. An empty value or a failed command omits the item.
 
 The Git display reads the existing gitmux configuration format. Set `HERDR_TABINFO_GITMUX_CONFIG` to an explicit configuration path. Otherwise, the plugin uses `~/.gitmux.conf` when it exists, or gitmux's default symbols and layout when it does not.
 
