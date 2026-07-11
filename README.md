@@ -105,6 +105,14 @@ Example:
 
 The plugin replaces user-provided tab labels and does not store or restore original labels.
 
+### Install
+
+```bash
+herdr plugin install nakatanakatana/mytools/cmd/herdr-plugin-tabinfo
+```
+
+Use `herdr plugin config-dir nakatanakatana.tabinfo` to locate the plugin config directory after installation.
+
 ### Local Development
 
 ```bash
