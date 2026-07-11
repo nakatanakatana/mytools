@@ -339,6 +339,49 @@ func TestPlanLabelUpdatesIncludesProcessLabelsForInactiveTabs(t *testing.T) {
 	}
 }
 
+func TestPlanLabelUpdatesPrioritizesActiveTabAndWorkspace(t *testing.T) {
+	snapshot := sessionSnapshot{
+		Tabs: []tabInfo{
+			{TabID: "t1", WorkspaceID: "w1", Number: 1, Label: "one"},
+			{TabID: "t2", WorkspaceID: "w2", Number: 2, Label: "two"},
+			{TabID: "t3", WorkspaceID: "w1", Number: 3, Label: "three", Focused: true},
+			{TabID: "t4", WorkspaceID: "w1", Number: 4, Label: "four"},
+			{TabID: "t5", WorkspaceID: "w3", Number: 5, Label: "five"},
+		},
+	}
+
+	renames := planLabelUpdates(snapshot)
+	want := []tabRename{
+		{TabID: "t3", Label: "3"},
+		{TabID: "t1", Label: "1"},
+		{TabID: "t4", Label: "4"},
+		{TabID: "t2", Label: "2"},
+		{TabID: "t5", Label: "5"},
+	}
+	if len(renames) != len(want) {
+		t.Fatalf("len(renames) = %d, want %d: %#v", len(renames), len(want), renames)
+	}
+	for i := range want {
+		if renames[i] != want[i] {
+			t.Fatalf("renames[%d] = %#v, want %#v", i, renames[i], want[i])
+		}
+	}
+}
+
+func TestPrioritizedTabsKeepsSnapshotOrderWithoutActiveTab(t *testing.T) {
+	tabs := []tabInfo{
+		{TabID: "t1", WorkspaceID: "w1"},
+		{TabID: "t2", WorkspaceID: "w2"},
+	}
+
+	got := prioritizedTabs(tabs)
+	for i := range tabs {
+		if got[i] != tabs[i] {
+			t.Fatalf("tabs[%d] = %#v, want %#v", i, got[i], tabs[i])
+		}
+	}
+}
+
 func TestHerdrClientOpensConnectionPerRequest(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "herdr.sock")
 	listener, err := net.Listen("unix", socketPath)
