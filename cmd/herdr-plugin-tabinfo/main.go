@@ -329,7 +329,7 @@ func planLabelUpdatesWithInfo(snapshot sessionSnapshot, display displayConfig, i
 
 	var renames []tabRename
 
-	for _, tab := range snapshot.Tabs {
+	for _, tab := range prioritizedTabs(snapshot.Tabs) {
 		displayForTab := display.forTab(tab.Focused)
 		focusedPane := findFocusedPane(panesByTab[tab.TabID], layoutsByTab[tab.TabID])
 		info := tabDynamicInfo{}
@@ -348,6 +348,34 @@ func planLabelUpdatesWithInfo(snapshot sessionSnapshot, display displayConfig, i
 	}
 
 	return renames
+}
+
+// prioritizedTabs keeps the snapshot order within each priority group.
+func prioritizedTabs(tabs []tabInfo) []tabInfo {
+	var active *tabInfo
+	for i := range tabs {
+		if tabs[i].Focused {
+			active = &tabs[i]
+			break
+		}
+	}
+	if active == nil {
+		return tabs
+	}
+
+	ordered := make([]tabInfo, 0, len(tabs))
+	ordered = append(ordered, *active)
+	for _, tab := range tabs {
+		if tab.TabID != active.TabID && tab.WorkspaceID == active.WorkspaceID {
+			ordered = append(ordered, tab)
+		}
+	}
+	for _, tab := range tabs {
+		if tab.TabID != active.TabID && tab.WorkspaceID != active.WorkspaceID {
+			ordered = append(ordered, tab)
+		}
+	}
+	return ordered
 }
 
 func buildTabLabel(tab tabInfo, panes []paneInfo, layout paneLayout, info tabDynamicInfo, display tabDisplayConfig) string {
