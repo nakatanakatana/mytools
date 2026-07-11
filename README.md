@@ -89,7 +89,7 @@ docker build --target mytools -t mytools .
 
 `cmd/herdr-plugin-tabinfo` contains a Herdr plugin that rewrites tab labels with live tab information through the Herdr Socket API.
 
-The label format starts with the Herdr workspace-local tab number and the foreground command. When the tab is active, the plugin can also append directory, Git, and Kubernetes information.
+The label format starts with the Herdr workspace-local tab number and the foreground process name. When the tab is active, the plugin can also append directory, Git, and Kubernetes information.
 
 Example:
 
@@ -98,7 +98,7 @@ Example:
 ```
 
 - `2`: Herdr's workspace-local tab number.
-- `nvim`: foreground command of the tab's focused pane.
+- `nvim`: foreground process name of the tab's focused pane.
 - ` repo`: focused pane's current directory basename.
 - ` ⎇ main ✚ 2 … 1`: Git branch plus modified and untracked file counts.
 - `⎈ production`: `KUBECONFIG_NAME` from the pane directory's direnv environment.
@@ -134,19 +134,21 @@ Use `config.yaml` under `HERDR_PLUGIN_CONFIG_DIR` to choose displayed fields. Fo
 display:
   active:
     tab_number: true
-    command: true
+    process: true
+    process_full: false
     directory: true
     git: true
     kubernetes: true
   inactive:
     tab_number: true
-    command: true
+    process: true
+    process_full: false
     directory: false
     git: false
     kubernetes: false
 ```
 
-The active and inactive tab settings are independent. Each state must keep either `tab_number` or `command` enabled so tab labels are never empty. Enabling Git or Kubernetes for inactive tabs runs the corresponding lookup for every tab.
+The active and inactive tab settings are independent. Each state must keep either `tab_number`, `process`, or `process_full` enabled so tab labels are never empty. `process` shows only the process name and skips it when it matches `$SHELL`. `process_full` shows the process with arguments. Enabling Git or Kubernetes for inactive tabs runs the corresponding lookup for every tab.
 
 Git information is read from the focused pane's current directory with `github.com/arl/gitstatus`. If the directory is outside a Git working tree or Git does not answer within 700ms, only the Git item is omitted.
 

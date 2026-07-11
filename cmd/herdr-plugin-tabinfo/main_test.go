@@ -12,6 +12,48 @@ import (
 	"github.com/arl/gitstatus"
 )
 
+func ptrString(v string) *string {
+	return &v
+}
+
+func TestProcessNameFromProcessInfoUsesProcessNameOnly(t *testing.T) {
+	got := processNameFromProcessInfo(paneProcessInfoResult{
+		ProcessInfo: paneProcessInfo{
+			ForegroundProcesses: []foregroundProcess{
+				{
+					Name:    "nvim",
+					Cmdline: ptrString("nvim main.go"),
+					Argv:    []string{"nvim", "main.go"},
+					Argv0:   ptrString("nvim"),
+				},
+			},
+		},
+	}, "")
+	if got != "nvim" {
+		t.Fatalf("processNameFromProcessInfo() = %q, want %q", got, "nvim")
+	}
+}
+
+func TestProcessNameFromProcessInfoSkipsShellProcessName(t *testing.T) {
+	got := processNameFromProcessInfo(paneProcessInfoResult{
+		ProcessInfo: paneProcessInfo{
+			ForegroundProcesses: []foregroundProcess{
+				{Name: "bash"},
+				{Name: "python"},
+			},
+		},
+	}, "bash")
+	if got != "python" {
+		t.Fatalf("processNameFromProcessInfo() = %q, want %q", got, "python")
+	}
+}
+
+func TestShellProcessNameUsesBaseName(t *testing.T) {
+	if got := shellProcessName("/bin/zsh"); got != "zsh" {
+		t.Fatalf("shellProcessName() = %q, want %q", got, "zsh")
+	}
+}
+
 func TestBuildTabLabel(t *testing.T) {
 	cwd := "/repo/project"
 	tab := tabInfo{
@@ -54,9 +96,20 @@ func TestBuildTabLabelIncludesKubernetesConfig(t *testing.T) {
 	}
 }
 
-func TestBuildTabLabelShowsCommandForInactiveTab(t *testing.T) {
+func TestBuildTabLabelShowsProcessForInactiveTab(t *testing.T) {
 	tab := tabInfo{TabID: "t1", Number: 3, Focused: false}
-	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{Command: "go test ./..."}, defaultTabInfoConfig().Display.Inactive)
+	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{Process: "go"}, defaultTabInfoConfig().Display.Inactive)
+	want := "3 go"
+	if got != want {
+		t.Fatalf("buildTabLabel() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildTabLabelShowsFullProcessWhenEnabled(t *testing.T) {
+	tab := tabInfo{TabID: "t1", Number: 3, Focused: false}
+	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{
+		ProcessFull: "go test ./...",
+	}, tabDisplayConfig{TabNumber: true, ProcessFull: true})
 	want := "3 go test ./..."
 	if got != want {
 		t.Fatalf("buildTabLabel() = %q, want %q", got, want)
@@ -70,7 +123,7 @@ func TestBuildTabLabelRespectsDisplayConfig(t *testing.T) {
 	display := tabDisplayConfig{TabNumber: true, Git: true}
 
 	got := buildTabLabel(tab, panes, paneLayout{FocusedPaneID: "p1"}, tabDynamicInfo{
-		Command:    "nvim",
+		Process:    "nvim",
 		Git:        "⎇ main",
 		Kubernetes: "production",
 	}, display)
@@ -81,21 +134,21 @@ func TestBuildTabLabelRespectsDisplayConfig(t *testing.T) {
 }
 
 func TestLoadTabInfoConfigRequiresGlobalTabContent(t *testing.T) {
-	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    tab_number: false\n    command: false\n"))
+	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    tab_number: false\n    process: false\n    process_full: false\n"))
 	if err == nil {
 		t.Fatalf("parseTabInfoConfig() = %#v, want error", config)
 	}
 }
 
 func TestParseTabInfoConfigOverridesDefaults(t *testing.T) {
-	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    command: false\n    git: false\n  inactive:\n    command: false\n"))
+	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    process: false\n    git: false\n  inactive:\n    process_full: true\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.Display.Active.TabNumber || config.Display.Active.Command || config.Display.Active.Git || !config.Display.Active.Directory || !config.Display.Active.Kubernetes {
+	if !config.Display.Active.TabNumber || config.Display.Active.Process || config.Display.Active.ProcessFull || config.Display.Active.Git || !config.Display.Active.Directory || !config.Display.Active.Kubernetes {
 		t.Fatalf("Active = %#v", config.Display.Active)
 	}
-	if !config.Display.Inactive.TabNumber || config.Display.Inactive.Command {
+	if !config.Display.Inactive.TabNumber || !config.Display.Inactive.Process || !config.Display.Inactive.ProcessFull {
 		t.Fatalf("Inactive = %#v", config.Display.Inactive)
 	}
 	if config.Display.Inactive.Directory || config.Display.Inactive.Git || config.Display.Inactive.Kubernetes {
@@ -106,21 +159,21 @@ func TestParseTabInfoConfigOverridesDefaults(t *testing.T) {
 func TestBuildTabLabelUsesDifferentActiveAndInactiveSettings(t *testing.T) {
 	config := tabInfoConfig{Display: displayConfig{
 		Active:   tabDisplayConfig{TabNumber: true, Directory: true},
-		Inactive: tabDisplayConfig{Command: true, Git: true},
+		Inactive: tabDisplayConfig{ProcessFull: true, Git: true},
 	}}
 	cwd := "/repo/project"
 	active := buildTabLabel(
 		tabInfo{TabID: "t1", Number: 2, Focused: true},
 		[]paneInfo{{PaneID: "p1", ForegroundCWD: &cwd}},
 		paneLayout{FocusedPaneID: "p1"},
-		tabDynamicInfo{Command: "nvim"},
+		tabDynamicInfo{Process: "nvim"},
 		config.Display.forTab(true),
 	)
 	inactive := buildTabLabel(
 		tabInfo{TabID: "t2", Number: 3},
 		nil,
 		paneLayout{},
-		tabDynamicInfo{Command: "go test ./...", Git: "⎇ main"},
+		tabDynamicInfo{ProcessFull: "go test ./...", Git: "⎇ main"},
 		config.Display.forTab(false),
 	)
 	if active != "2  project" {
@@ -128,6 +181,20 @@ func TestBuildTabLabelUsesDifferentActiveAndInactiveSettings(t *testing.T) {
 	}
 	if inactive != "go test ./...  ⎇ main" {
 		t.Fatalf("inactive = %q", inactive)
+	}
+}
+
+func TestProcessFullFromProcessInfoPrefersLastNamedForegroundProcess(t *testing.T) {
+	got := processFullFromProcessInfo(paneProcessInfoResult{
+		ProcessInfo: paneProcessInfo{
+			ForegroundProcesses: []foregroundProcess{
+				{Name: "bash"},
+				{Name: "zsh", Cmdline: ptrString("zsh -l")},
+			},
+		},
+	})
+	if got != "zsh -l" {
+		t.Fatalf("processFullFromProcessInfo() = %q, want %q", got, "zsh -l")
 	}
 }
 
@@ -238,7 +305,7 @@ func TestPlanLabelUpdatesRewritesEveryTab(t *testing.T) {
 	}
 }
 
-func TestPlanLabelUpdatesIncludesCommandsForInactiveTabs(t *testing.T) {
+func TestPlanLabelUpdatesIncludesProcessLabelsForInactiveTabs(t *testing.T) {
 	snapshot := sessionSnapshot{
 		Tabs: []tabInfo{
 			{TabID: "t1", WorkspaceID: "w1", Number: 1, Label: "dev", Focused: true},
@@ -256,9 +323,9 @@ func TestPlanLabelUpdatesIncludesCommandsForInactiveTabs(t *testing.T) {
 
 	renames := planLabelUpdatesWithInfo(snapshot, defaultTabInfoConfig().Display, func(_ tabInfo, pane *paneInfo) tabDynamicInfo {
 		if pane.PaneID == "p1" {
-			return tabDynamicInfo{Command: "nvim"}
+			return tabDynamicInfo{Process: "nvim"}
 		}
-		return tabDynamicInfo{Command: "go test ./..."}
+		return tabDynamicInfo{Process: "go"}
 	})
 
 	if len(renames) != 2 {
@@ -267,7 +334,7 @@ func TestPlanLabelUpdatesIncludesCommandsForInactiveTabs(t *testing.T) {
 	if renames[0] != (tabRename{TabID: "t1", Label: "1 nvim"}) {
 		t.Fatalf("active rename = %#v", renames[0])
 	}
-	if renames[1] != (tabRename{TabID: "t2", Label: "2 go test ./..."}) {
+	if renames[1] != (tabRename{TabID: "t2", Label: "2 go"}) {
 		t.Fatalf("inactive rename = %#v", renames[1])
 	}
 }
