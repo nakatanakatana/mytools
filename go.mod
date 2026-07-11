@@ -4,12 +4,14 @@ go 1.26.3
 
 require (
 	fiatjaf.com/nostr v0.0.0-20260611201423-bd9746b22ba5
+	github.com/arl/gitstatus v0.7.0
 	github.com/awnumar/memguard v0.23.0
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/godbus/dbus/v5 v5.2.2
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sync v0.21.0
 	gotest.tools/v3 v3.5.2
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

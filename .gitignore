@@ -29,6 +29,7 @@ go.work.sum
 
 # Build artifacts
 dist/
+bin/
 .worktrees/
 
 # Superpowers local planning artifacts
