@@ -76,11 +76,12 @@ type displayConfig struct {
 }
 
 type tabDisplayConfig struct {
-	TabNumber  bool `yaml:"tab_number"`
-	Command    bool `yaml:"command"`
-	Directory  bool `yaml:"directory"`
-	Git        bool `yaml:"git"`
-	Kubernetes bool `yaml:"kubernetes"`
+	TabNumber   bool `yaml:"tab_number"`
+	Process     bool `yaml:"process"`
+	ProcessFull bool `yaml:"process_full"`
+	Directory   bool `yaml:"directory"`
+	Git         bool `yaml:"git"`
+	Kubernetes  bool `yaml:"kubernetes"`
 }
 
 type apiRequest struct {
@@ -170,9 +171,10 @@ type tabRename struct {
 }
 
 type tabDynamicInfo struct {
-	Command    string
-	Git        string
-	Kubernetes string
+	Process     string
+	ProcessFull string
+	Git         string
+	Kubernetes  string
 }
 
 func main() {
@@ -279,8 +281,16 @@ func refreshLabels(client *herdrClient, snapshot sessionSnapshot, gitmux gitmuxC
 		cwd := paneCWD(pane)
 		info := tabDynamicInfo{}
 		display := config.Display.forTab(tab.Focused)
-		if display.Command {
-			info.Command = paneCommand(client, pane)
+		if display.Process || display.ProcessFull {
+			processInfo, ok := fetchPaneProcessInfo(client, pane)
+			if ok {
+				if display.Process {
+					info.Process = processNameFromProcessInfo(processInfo)
+				}
+				if display.ProcessFull {
+					info.ProcessFull = processFullFromProcessInfo(processInfo)
+				}
+			}
 		}
 		if display.Git {
 			info.Git = displayGitStatus(cwd, gitmux)
@@ -345,8 +355,11 @@ func buildTabLabel(tab tabInfo, panes []paneInfo, layout paneLayout, info tabDyn
 	if display.TabNumber {
 		parts = append(parts, strconv.Itoa(tab.Number))
 	}
-	if display.Command && info.Command != "" {
-		parts = append(parts, info.Command)
+	if display.Process && info.Process != "" {
+		parts = append(parts, info.Process)
+	}
+	if display.ProcessFull && info.ProcessFull != "" {
+		parts = append(parts, info.ProcessFull)
 	}
 	if display.Directory {
 		if cwd := displayCWD(focusedPane); cwd != "" {
@@ -362,15 +375,29 @@ func buildTabLabel(tab tabInfo, panes []paneInfo, layout paneLayout, info tabDyn
 	return normalizeLabel(strings.Join(parts, " "))
 }
 
-func paneCommand(client *herdrClient, pane *paneInfo) string {
+func fetchPaneProcessInfo(client *herdrClient, pane *paneInfo) (paneProcessInfoResult, bool) {
 	if pane == nil {
-		return ""
+		return paneProcessInfoResult{}, false
 	}
 
 	var result paneProcessInfoResult
 	if err := client.request("pane.process_info", map[string]string{"pane_id": pane.PaneID}, &result); err != nil {
-		return ""
+		return paneProcessInfoResult{}, false
 	}
+	return result, true
+}
+
+func processNameFromProcessInfo(result paneProcessInfoResult) string {
+	for index := len(result.ProcessInfo.ForegroundProcesses) - 1; index >= 0; index-- {
+		process := result.ProcessInfo.ForegroundProcesses[index]
+		if process.Name != "" {
+			return process.Name
+		}
+	}
+	return ""
+}
+
+func processFullFromProcessInfo(result paneProcessInfoResult) string {
 	for index := len(result.ProcessInfo.ForegroundProcesses) - 1; index >= 0; index-- {
 		process := result.ProcessInfo.ForegroundProcesses[index]
 		if process.Cmdline != nil && *process.Cmdline != "" {
@@ -470,11 +497,11 @@ func parseTabInfoConfig(data []byte) (tabInfoConfig, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return tabInfoConfig{}, fmt.Errorf("parse tabinfo config: %w", err)
 	}
-	if !config.Display.Active.TabNumber && !config.Display.Active.Command {
-		return tabInfoConfig{}, errors.New("tabinfo config must enable display.active.tab_number or display.active.command")
+	if !config.Display.Active.TabNumber && !config.Display.Active.Process && !config.Display.Active.ProcessFull {
+		return tabInfoConfig{}, errors.New("tabinfo config must enable display.active.tab_number, display.active.process, or display.active.process_full")
 	}
-	if !config.Display.Inactive.TabNumber && !config.Display.Inactive.Command {
-		return tabInfoConfig{}, errors.New("tabinfo config must enable display.inactive.tab_number or display.inactive.command")
+	if !config.Display.Inactive.TabNumber && !config.Display.Inactive.Process && !config.Display.Inactive.ProcessFull {
+		return tabInfoConfig{}, errors.New("tabinfo config must enable display.inactive.tab_number, display.inactive.process, or display.inactive.process_full")
 	}
 	return config, nil
 }
@@ -483,14 +510,14 @@ func defaultTabInfoConfig() tabInfoConfig {
 	return tabInfoConfig{Display: displayConfig{
 		Active: tabDisplayConfig{
 			TabNumber:  true,
-			Command:    true,
+			Process:    true,
 			Directory:  true,
 			Git:        true,
 			Kubernetes: true,
 		},
 		Inactive: tabDisplayConfig{
 			TabNumber: true,
-			Command:   true,
+			Process:   true,
 		},
 	}}
 }
