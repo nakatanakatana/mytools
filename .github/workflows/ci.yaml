@@ -19,7 +19,7 @@ jobs:
             v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.60.2
+          aqua_version: v2.61.0
 
   version:
     needs: setup
@@ -34,7 +34,7 @@ jobs:
             v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.60.2
+          aqua_version: v2.61.0
       - run: which go
       - run: go version
 
@@ -51,7 +51,7 @@ jobs:
             v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.60.2
+          aqua_version: v2.61.0
       - run: golangci-lint run
 
   build:
@@ -67,7 +67,7 @@ jobs:
             v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.60.2
+          aqua_version: v2.61.0
       - run: go build -o dist/ ./cmd/...
 
   test:
@@ -83,7 +83,7 @@ jobs:
             v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.60.2
+          aqua_version: v2.61.0
       # NOTE: workground https://github.com/golang/go/issues/75031
       - id: parse-go-version
         run: echo "GO_VERSION=$(cat aqua.yaml | grep "golang/go" | cut -f2 -d'@')" >> $GITHUB_OUTPUT
