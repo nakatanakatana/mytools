@@ -21,23 +21,6 @@ jobs:
         with:
           aqua_version: v2.61.0
 
-  version:
-    needs: setup
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.local/share/aquaproj-aqua
-          key: v2-aqua-installer-${{runner.os}}-${{runner.arch}}-${{hashFiles('aqua.yaml', 'aqua-checksums.json')}}
-          restore-keys: |
-            v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
-      - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
-        with:
-          aqua_version: v2.61.0
-      - run: which go
-      - run: go version
-
   lint:
     needs: setup
     runs-on: ubuntu-latest
@@ -92,3 +75,15 @@ jobs:
           GO_VERSION: ${{ steps.parse-go-version.outputs.GO_VERSION }}
       - run: go test ./... -v -coverprofile=coverage.out -covermode=atomic
       - uses: k1LoW/octocov-action@b3b6ee60482a667950f87553abf1df63217235d9 # v1.5.1
+
+  aqua-checksum:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        with:
+          aqua_version: v2.61.0
+          policy_allow: "true"
+      - run: aqua upc -prune
+      - run: git diff --exit-code -- aqua-checksums.json
+
