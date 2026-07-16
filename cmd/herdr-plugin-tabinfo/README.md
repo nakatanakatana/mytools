@@ -2,7 +2,7 @@
 
 `cmd/herdr-plugin-tabinfo` contains a Herdr plugin that rewrites tab labels with live tab information through the Herdr Socket API.
 
-The label format starts with the Herdr workspace-local tab number and the foreground process name. When the tab is active, the plugin can also append directory, Git, and an environment-variable value.
+Configure each tab label from its workspace-local tab number, foreground process, directory, Git information, and environment-variable values. The `items` list selects and orders the displayed values independently for active and inactive tabs.
 
 Example:
 
@@ -49,29 +49,30 @@ The plugin refreshes labels when Herdr emits these events:
 
 Set `HERDR_TABINFO_MAX_LABEL` to change the maximum generated label length. The default is `80`.
 
-Use `config.yaml` under `HERDR_PLUGIN_CONFIG_DIR` to choose displayed fields. When it is not present, the plugin also reads `$XDG_CONFIG_HOME/herdr-plugin-tabinfo/config.yaml` (or `~/.config/herdr-plugin-tabinfo/config.yaml` when `XDG_CONFIG_HOME` is unset). For local development, set `HERDR_TABINFO_CONFIG` to an explicit file path. Fields default to `true` when no config is present.
+Use `config.yaml` under `HERDR_PLUGIN_CONFIG_DIR` to choose displayed fields. When it is not present, the plugin also reads `$XDG_CONFIG_HOME/herdr-plugin-tabinfo/config.yaml` (or `~/.config/herdr-plugin-tabinfo/config.yaml` when `XDG_CONFIG_HOME` is unset). For local development, set `HERDR_TABINFO_CONFIG` to an explicit file path.
 
 ```yaml
 display:
   active:
-    tab_number: true
-    process: true
-    process_full: false
-    directory: true
-    git: true
+    items:
+      - tab_number
+      - process
+      - directory
+      - git
+      - environment
+    separator: " "
     environment:
       - icon: '⎈'
         variable: KUBECONFIG_NAME
   inactive:
-    tab_number: true
-    process: true
-    process_full: false
-    directory: false
-    git: false
+    items:
+      - tab_number
+      - process
+    separator: " "
     environment: []
 ```
 
-The active and inactive tab settings are independent. Each state must keep either `tab_number`, `process`, or `process_full` enabled so tab labels are never empty. `process` shows only the process name and skips it when it matches `$SHELL`. `process_full` shows the process with arguments. `environment` accepts multiple entries, each with an `icon` and `variable`, and displays them in that order. Use `environment: []` to disable them. Enabling Git or environment variables for inactive tabs runs the corresponding lookup for every tab.
+The active and inactive tab settings are independent, and each requires an `items` list. Valid values are `tab_number`, `process`, `process_full`, `directory`, `git`, and `environment`; the list controls inclusion and order. `separator` defaults to one space and can be empty. Omitted dynamic values do not leave an extra separator. `environment` expands its entries in YAML order; use `environment: []` to disable them. The retired boolean fields are not supported. Both `process` and `process_full` select the first non-shell member of the shell-to-descendant foreground-process chain, which is the direct child of `$SHELL`; `process` shows only its name, while `process_full` includes its arguments. Including Git or environment variables for inactive tabs runs the corresponding lookup for every tab.
 
 Git information is read from the focused pane's current directory with `github.com/arl/gitstatus`. If the directory is outside a Git working tree or Git does not answer within 700ms, only the Git item is omitted.
 
