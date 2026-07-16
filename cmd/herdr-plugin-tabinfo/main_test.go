@@ -17,7 +17,21 @@ func ptrString(v string) *string {
 	return &v
 }
 
-func TestProcessNameFromProcessInfoUsesProcessNameOnly(t *testing.T) {
+func TestProcessDisplayUsesDirectChildOfShell(t *testing.T) {
+	result := paneProcessInfoResult{ProcessInfo: paneProcessInfo{ForegroundProcesses: []foregroundProcess{
+		{Name: "zsh"},
+		{Name: "go", Cmdline: ptrString("go test ./...")},
+		{Name: "tabinfo.test", Cmdline: ptrString("/tmp/tabinfo.test")},
+	}}}
+	if got := processNameFromProcessInfo(result, "zsh"); got != "go" {
+		t.Fatalf("processNameFromProcessInfo() = %q, want go", got)
+	}
+	if got := processFullFromProcessInfo(result, "zsh"); got != "go test ./..." {
+		t.Fatalf("processFullFromProcessInfo() = %q, want go test ./...", got)
+	}
+}
+
+func TestProcessDisplayUsesNonShellProcessWhenOnlyOneExists(t *testing.T) {
 	got := processNameFromProcessInfo(paneProcessInfoResult{
 		ProcessInfo: paneProcessInfo{
 			ForegroundProcesses: []foregroundProcess{
@@ -35,17 +49,13 @@ func TestProcessNameFromProcessInfoUsesProcessNameOnly(t *testing.T) {
 	}
 }
 
-func TestProcessNameFromProcessInfoSkipsShellProcessName(t *testing.T) {
-	got := processNameFromProcessInfo(paneProcessInfoResult{
-		ProcessInfo: paneProcessInfo{
-			ForegroundProcesses: []foregroundProcess{
-				{Name: "bash"},
-				{Name: "python"},
-			},
-		},
-	}, "bash")
-	if got != "python" {
-		t.Fatalf("processNameFromProcessInfo() = %q, want %q", got, "python")
+func TestProcessDisplayOmitsShellOnlyPane(t *testing.T) {
+	result := paneProcessInfoResult{ProcessInfo: paneProcessInfo{ForegroundProcesses: []foregroundProcess{{Name: "bash"}}}}
+	if got := processNameFromProcessInfo(result, "bash"); got != "" {
+		t.Fatalf("processNameFromProcessInfo() = %q, want empty", got)
+	}
+	if got := processFullFromProcessInfo(result, "bash"); got != "" {
+		t.Fatalf("processFullFromProcessInfo() = %q, want empty", got)
 	}
 }
 
@@ -55,26 +65,33 @@ func TestShellProcessNameUsesBaseName(t *testing.T) {
 	}
 }
 
-func TestBuildTabLabel(t *testing.T) {
+func TestBuildTabLabelUsesConfiguredOrderAndSeparator(t *testing.T) {
 	cwd := "/repo/project"
-	tab := tabInfo{
-		TabID:       "t1",
-		WorkspaceID: "w1",
-		Number:      2,
-		Label:       "dev",
-		Focused:     true,
+	display := tabDisplayConfig{
+		Items:       []displayItem{displayItemGit, displayItemDirectory, displayItemProcess, displayItemTabNumber, displayItemEnvironment},
+		Separator:   " | ",
+		Environment: []environmentDisplayConfig{{Icon: "⎈", Variable: "KUBECONFIG_NAME"}},
 	}
-	panes := []paneInfo{{
-		PaneID:        "p1",
-		TabID:         "t1",
-		Focused:       true,
-		ForegroundCWD: &cwd,
-	}}
-	layout := paneLayout{TabID: "t1", FocusedPaneID: "p1"}
+	got := buildTabLabel(
+		tabInfo{TabID: "t1", Number: 2},
+		[]paneInfo{{PaneID: "p1", ForegroundCWD: &cwd}},
+		paneLayout{FocusedPaneID: "p1"},
+		tabDynamicInfo{Process: "go", Git: "⎇ main", Environment: map[string]string{"KUBECONFIG_NAME": "production"}},
+		display,
+	)
+	if want := " ⎇ main |  project | go | 2 | ⎈ production"; got != want {
+		t.Fatalf("buildTabLabel() = %q, want %q", got, want)
+	}
+}
 
-	got := buildTabLabel(tab, panes, layout, tabDynamicInfo{}, defaultTabInfoConfig().Display.Active)
-	want := "2  project"
-	if got != want {
+func TestBuildTabLabelOmitsMissingItemsWithoutExtraSeparators(t *testing.T) {
+	display := tabDisplayConfig{
+		Items:       []displayItem{displayItemProcess, displayItemGit, displayItemEnvironment, displayItemTabNumber},
+		Separator:   "",
+		Environment: []environmentDisplayConfig{{Icon: "⎈", Variable: "KUBECONFIG_NAME"}},
+	}
+	got := buildTabLabel(tabInfo{TabID: "t1", Number: 2}, nil, paneLayout{}, tabDynamicInfo{Process: "go"}, display)
+	if want := "go2"; got != want {
 		t.Fatalf("buildTabLabel() = %q, want %q", got, want)
 	}
 }
@@ -280,17 +297,16 @@ func TestBuildTabLabelUsesDifferentActiveAndInactiveSettings(t *testing.T) {
 	}
 }
 
-func TestProcessFullFromProcessInfoPrefersLastNamedForegroundProcess(t *testing.T) {
+func TestProcessFullFromProcessInfoUsesFallbacks(t *testing.T) {
 	got := processFullFromProcessInfo(paneProcessInfoResult{
 		ProcessInfo: paneProcessInfo{
 			ForegroundProcesses: []foregroundProcess{
-				{Name: "bash"},
-				{Name: "zsh", Cmdline: ptrString("zsh -l")},
+				{Name: "go", Cmdline: ptrString("go test ./...")},
 			},
 		},
-	})
-	if got != "zsh -l" {
-		t.Fatalf("processFullFromProcessInfo() = %q, want %q", got, "zsh -l")
+	}, "")
+	if got != "go test ./..." {
+		t.Fatalf("processFullFromProcessInfo() = %q, want %q", got, "go test ./...")
 	}
 }
 

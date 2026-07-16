@@ -348,12 +348,8 @@ func refreshLabels(client *herdrClient, snapshot sessionSnapshot, gitmux gitmuxC
 		if display.hasItem(displayItemProcess) || display.hasItem(displayItemProcessFull) {
 			processInfo, ok := fetchPaneProcessInfo(client, pane)
 			if ok {
-				if display.hasItem(displayItemProcess) {
-					info.Process = processNameFromProcessInfo(processInfo, shellProcessName)
-				}
-				if display.hasItem(displayItemProcessFull) {
-					info.ProcessFull = processFullFromProcessInfo(processInfo)
-				}
+				info.Process = processNameFromProcessInfo(processInfo, shellProcessName)
+				info.ProcessFull = processFullFromProcessInfo(processInfo, shellProcessName)
 			}
 		}
 		if display.hasItem(displayItemGit) {
@@ -448,32 +444,36 @@ func prioritizedTabs(tabs []tabInfo) []tabInfo {
 
 func buildTabLabel(tab tabInfo, panes []paneInfo, layout paneLayout, info tabDynamicInfo, display tabDisplayConfig) string {
 	focusedPane := findFocusedPane(panes, layout)
-	parts := []string{}
-	if display.hasItem(displayItemTabNumber) {
-		parts = append(parts, strconv.Itoa(tab.Number))
-	}
-	if display.hasItem(displayItemProcess) && info.Process != "" {
-		parts = append(parts, info.Process)
-	}
-	if display.hasItem(displayItemProcessFull) && info.ProcessFull != "" {
-		parts = append(parts, info.ProcessFull)
-	}
-	if display.hasItem(displayItemDirectory) {
-		if cwd := displayCWD(focusedPane); cwd != "" {
-			parts = append(parts, iconDirectory+" "+cwd)
-		}
-	}
-	if display.hasItem(displayItemGit) && info.Git != "" {
-		parts = append(parts, iconGit+" "+info.Git)
-	}
-	if display.hasItem(displayItemEnvironment) {
-		for _, environment := range display.Environment {
-			if value := info.Environment[environment.Variable]; environment.Variable != "" && value != "" {
-				parts = append(parts, formatEnvironmentValue(environment.Icon, value))
+	parts := make([]string, 0, len(display.Items)+len(display.Environment))
+	for _, item := range display.Items {
+		switch item {
+		case displayItemTabNumber:
+			parts = append(parts, strconv.Itoa(tab.Number))
+		case displayItemProcess:
+			if info.Process != "" {
+				parts = append(parts, info.Process)
+			}
+		case displayItemProcessFull:
+			if info.ProcessFull != "" {
+				parts = append(parts, info.ProcessFull)
+			}
+		case displayItemDirectory:
+			if cwd := displayCWD(focusedPane); cwd != "" {
+				parts = append(parts, iconDirectory+" "+cwd)
+			}
+		case displayItemGit:
+			if info.Git != "" {
+				parts = append(parts, iconGit+" "+info.Git)
+			}
+		case displayItemEnvironment:
+			for _, environment := range display.Environment {
+				if value := info.Environment[environment.Variable]; environment.Variable != "" && value != "" {
+					parts = append(parts, formatEnvironmentValue(environment.Icon, value))
+				}
 			}
 		}
 	}
-	return normalizeLabel(strings.Join(parts, " "))
+	return normalizeLabel(strings.Join(parts, display.Separator))
 }
 
 func fetchPaneProcessInfo(client *herdrClient, pane *paneInfo) (paneProcessInfoResult, bool) {
@@ -489,13 +489,11 @@ func fetchPaneProcessInfo(client *herdrClient, pane *paneInfo) (paneProcessInfoR
 }
 
 func processNameFromProcessInfo(result paneProcessInfoResult, shellProcessName string) string {
-	for index := len(result.ProcessInfo.ForegroundProcesses) - 1; index >= 0; index-- {
-		process := result.ProcessInfo.ForegroundProcesses[index]
-		if process.Name != "" && process.Name != shellProcessName {
-			return process.Name
-		}
+	process, ok := selectedForegroundProcess(result, shellProcessName)
+	if !ok {
+		return ""
 	}
-	return ""
+	return process.Name
 }
 
 func shellProcessName(shell string) string {
@@ -505,23 +503,30 @@ func shellProcessName(shell string) string {
 	return filepath.Base(shell)
 }
 
-func processFullFromProcessInfo(result paneProcessInfoResult) string {
-	for index := len(result.ProcessInfo.ForegroundProcesses) - 1; index >= 0; index-- {
-		process := result.ProcessInfo.ForegroundProcesses[index]
-		if process.Cmdline != nil && *process.Cmdline != "" {
-			return *process.Cmdline
-		}
-		if len(process.Argv) > 0 {
-			return strings.Join(process.Argv, " ")
-		}
-		if process.Argv0 != nil && *process.Argv0 != "" {
-			return *process.Argv0
-		}
-		if process.Name != "" {
-			return process.Name
+func selectedForegroundProcess(result paneProcessInfoResult, shellProcessName string) (foregroundProcess, bool) {
+	for _, process := range result.ProcessInfo.ForegroundProcesses {
+		if process.Name != "" && process.Name != shellProcessName {
+			return process, true
 		}
 	}
-	return ""
+	return foregroundProcess{}, false
+}
+
+func processFullFromProcessInfo(result paneProcessInfoResult, shellProcessName string) string {
+	process, ok := selectedForegroundProcess(result, shellProcessName)
+	if !ok {
+		return ""
+	}
+	if process.Cmdline != nil && *process.Cmdline != "" {
+		return *process.Cmdline
+	}
+	if len(process.Argv) > 0 {
+		return strings.Join(process.Argv, " ")
+	}
+	if process.Argv0 != nil && *process.Argv0 != "" {
+		return *process.Argv0
+	}
+	return process.Name
 }
 
 func loadGitmuxConfig() (gitmuxConfig, error) {
