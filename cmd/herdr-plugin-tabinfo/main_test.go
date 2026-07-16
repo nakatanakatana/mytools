@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/arl/gitstatus"
@@ -109,7 +110,7 @@ func TestBuildTabLabelShowsFullProcessWhenEnabled(t *testing.T) {
 	tab := tabInfo{TabID: "t1", Number: 3, Focused: false}
 	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{
 		ProcessFull: "go test ./...",
-	}, tabDisplayConfig{TabNumber: true, ProcessFull: true})
+	}, tabDisplayConfig{Items: []displayItem{displayItemTabNumber, displayItemProcessFull}, Separator: " "})
 	want := "3 go test ./..."
 	if got != want {
 		t.Fatalf("buildTabLabel() = %q, want %q", got, want)
@@ -120,7 +121,7 @@ func TestBuildTabLabelRespectsDisplayConfig(t *testing.T) {
 	cwd := "/repo/project"
 	tab := tabInfo{TabID: "t1", Number: 2, Focused: true}
 	panes := []paneInfo{{PaneID: "p1", TabID: "t1", Focused: true, ForegroundCWD: &cwd}}
-	display := tabDisplayConfig{TabNumber: true, Git: true}
+	display := tabDisplayConfig{Items: []displayItem{displayItemTabNumber, displayItemGit}, Separator: " "}
 
 	got := buildTabLabel(tab, panes, paneLayout{FocusedPaneID: "p1"}, tabDynamicInfo{
 		Process:     "nvim",
@@ -133,10 +134,47 @@ func TestBuildTabLabelRespectsDisplayConfig(t *testing.T) {
 	}
 }
 
-func TestLoadTabInfoConfigRequiresGlobalTabContent(t *testing.T) {
-	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    tab_number: false\n    process: false\n    process_full: false\n"))
-	if err == nil {
-		t.Fatalf("parseTabInfoConfig() = %#v, want error", config)
+func TestParseTabInfoConfigReadsItemsAndSeparator(t *testing.T) {
+	config, err := parseTabInfoConfig([]byte(`
+display:
+  active:
+    items: [directory, tab_number, environment]
+    separator: " | "
+    environment:
+      - icon: "◆"
+        variable: PROJECT
+  inactive:
+    items: [tab_number, process]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := config.Display.Active.Items, []displayItem{displayItemDirectory, displayItemTabNumber, displayItemEnvironment}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Active.Items = %#v, want %#v", got, want)
+	}
+	if got := config.Display.Active.Separator; got != " | " {
+		t.Fatalf("Active.Separator = %q, want %q", got, " | ")
+	}
+	if got := config.Display.Inactive.Separator; got != " " {
+		t.Fatalf("Inactive.Separator = %q, want one space", got)
+	}
+}
+
+func TestParseTabInfoConfigRejectsInvalidItems(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{name: "missing active", yaml: "display:\n  active: {}\n  inactive:\n    items: [tab_number]\n"},
+		{name: "empty inactive", yaml: "display:\n  active:\n    items: [tab_number]\n  inactive:\n    items: []\n"},
+		{name: "unknown", yaml: "display:\n  active:\n    items: [tab_number, owner]\n  inactive:\n    items: [tab_number]\n"},
+		{name: "duplicate", yaml: "display:\n  active:\n    items: [tab_number, tab_number]\n  inactive:\n    items: [tab_number]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseTabInfoConfig([]byte(tc.yaml)); err == nil {
+				t.Fatal("parseTabInfoConfig() error = nil")
+			}
+		})
 	}
 }
 
@@ -146,7 +184,7 @@ func TestLoadTabInfoConfigReadsXDGConfigFile(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte("display:\n  active:\n    git: false\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("display:\n  active:\n    items: [git]\n  inactive:\n    items: [tab_number]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HERDR_TABINFO_CONFIG", "")
@@ -157,8 +195,8 @@ func TestLoadTabInfoConfigReadsXDGConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Display.Active.Git {
-		t.Fatalf("Active.Git = true, want false")
+	if got, want := config.Display.Active.Items, []displayItem{displayItemGit}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Active.Items = %#v, want %#v", got, want)
 	}
 }
 
@@ -168,11 +206,11 @@ func TestLoadTabInfoConfigPrefersExplicitConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(globalConfigPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(globalConfigPath, []byte("display:\n  active:\n    git: false\n"), 0o644); err != nil {
+	if err := os.WriteFile(globalConfigPath, []byte("display:\n  active:\n    items: [git]\n  inactive:\n    items: [tab_number]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	explicitConfigPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(explicitConfigPath, []byte("display:\n  active:\n    directory: false\n"), 0o644); err != nil {
+	if err := os.WriteFile(explicitConfigPath, []byte("display:\n  active:\n    items: [directory]\n  inactive:\n    items: [tab_number]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HERDR_TABINFO_CONFIG", explicitConfigPath)
@@ -183,14 +221,14 @@ func TestLoadTabInfoConfigPrefersExplicitConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.Display.Active.Git || config.Display.Active.Directory {
-		t.Fatalf("Active = %#v", config.Display.Active)
+	if got, want := config.Display.Active.Items, []displayItem{displayItemDirectory}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Active.Items = %#v, want %#v", got, want)
 	}
 }
 
 func TestLoadTabInfoConfigPrefersPluginConfigDir(t *testing.T) {
 	pluginConfigDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(pluginConfigDir, "config.yaml"), []byte("display:\n  active:\n    directory: false\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(pluginConfigDir, "config.yaml"), []byte("display:\n  active:\n    items: [directory]\n  inactive:\n    items: [tab_number]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	configHome := t.TempDir()
@@ -198,7 +236,7 @@ func TestLoadTabInfoConfigPrefersPluginConfigDir(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(globalConfigPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(globalConfigPath, []byte("display:\n  active:\n    git: false\n"), 0o644); err != nil {
+	if err := os.WriteFile(globalConfigPath, []byte("display:\n  active:\n    items: [git]\n  inactive:\n    items: [tab_number]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HERDR_TABINFO_CONFIG", "")
@@ -209,31 +247,15 @@ func TestLoadTabInfoConfigPrefersPluginConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.Display.Active.Git || config.Display.Active.Directory {
-		t.Fatalf("Active = %#v", config.Display.Active)
-	}
-}
-
-func TestParseTabInfoConfigOverridesDefaults(t *testing.T) {
-	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    process: false\n    git: false\n  inactive:\n    process_full: true\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !config.Display.Active.TabNumber || config.Display.Active.Process || config.Display.Active.ProcessFull || config.Display.Active.Git || !config.Display.Active.Directory || len(config.Display.Active.Environment) != 1 || config.Display.Active.Environment[0].Variable != "KUBECONFIG_NAME" {
-		t.Fatalf("Active = %#v", config.Display.Active)
-	}
-	if !config.Display.Inactive.TabNumber || !config.Display.Inactive.Process || !config.Display.Inactive.ProcessFull {
-		t.Fatalf("Inactive = %#v", config.Display.Inactive)
-	}
-	if config.Display.Inactive.Directory || config.Display.Inactive.Git || len(config.Display.Inactive.Environment) != 0 {
-		t.Fatalf("Inactive = %#v", config.Display.Inactive)
+	if got, want := config.Display.Active.Items, []displayItem{displayItemDirectory}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Active.Items = %#v, want %#v", got, want)
 	}
 }
 
 func TestBuildTabLabelUsesDifferentActiveAndInactiveSettings(t *testing.T) {
 	config := tabInfoConfig{Display: displayConfig{
-		Active:   tabDisplayConfig{TabNumber: true, Directory: true},
-		Inactive: tabDisplayConfig{ProcessFull: true, Git: true},
+		Active:   tabDisplayConfig{Items: []displayItem{displayItemTabNumber, displayItemDirectory}, Separator: " "},
+		Inactive: tabDisplayConfig{Items: []displayItem{displayItemProcessFull, displayItemGit}, Separator: " "},
 	}}
 	cwd := "/repo/project"
 	active := buildTabLabel(
@@ -280,7 +302,7 @@ func TestReadEnvironmentVariableWithoutDirenvUsesInheritedValue(t *testing.T) {
 
 func TestBuildTabLabelOmitsEmptyEnvironmentValue(t *testing.T) {
 	tab := tabInfo{TabID: "t1", Number: 2, Focused: true}
-	display := tabDisplayConfig{TabNumber: true, Environment: []environmentDisplayConfig{{Icon: "◆", Variable: "PROJECT"}, {Icon: "●", Variable: "TEAM"}}}
+	display := tabDisplayConfig{Items: []displayItem{displayItemTabNumber, displayItemEnvironment}, Separator: " ", Environment: []environmentDisplayConfig{{Icon: "◆", Variable: "PROJECT"}, {Icon: "●", Variable: "TEAM"}}}
 	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{}, display)
 	if got != "2" {
 		t.Fatalf("buildTabLabel() = %q, want 2", got)
@@ -288,7 +310,7 @@ func TestBuildTabLabelOmitsEmptyEnvironmentValue(t *testing.T) {
 }
 
 func TestParseTabInfoConfigOverridesEnvironmentDisplays(t *testing.T) {
-	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    environment:\n      - icon: '◆'\n        variable: PROJECT\n      - icon: '●'\n        variable: TEAM\n"))
+	config, err := parseTabInfoConfig([]byte("display:\n  active:\n    items: [environment]\n    environment:\n      - icon: '◆'\n        variable: PROJECT\n      - icon: '●'\n        variable: TEAM\n  inactive:\n    items: [tab_number]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +321,7 @@ func TestParseTabInfoConfigOverridesEnvironmentDisplays(t *testing.T) {
 
 func TestBuildTabLabelIncludesMultipleEnvironmentVariables(t *testing.T) {
 	tab := tabInfo{TabID: "t1", Number: 2, Focused: true}
-	display := tabDisplayConfig{TabNumber: true, Environment: []environmentDisplayConfig{{Icon: "◆", Variable: "PROJECT"}, {Icon: "●", Variable: "TEAM"}}}
+	display := tabDisplayConfig{Items: []displayItem{displayItemTabNumber, displayItemEnvironment}, Separator: " ", Environment: []environmentDisplayConfig{{Icon: "◆", Variable: "PROJECT"}, {Icon: "●", Variable: "TEAM"}}}
 	got := buildTabLabel(tab, nil, paneLayout{}, tabDynamicInfo{Environment: map[string]string{"PROJECT": "tabinfo", "TEAM": "platform"}}, display)
 	if got != "2 ◆ tabinfo ● platform" {
 		t.Fatalf("buildTabLabel() = %q", got)
