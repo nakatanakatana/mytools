@@ -74,13 +74,72 @@ type displayConfig struct {
 	Inactive tabDisplayConfig `yaml:"inactive"`
 }
 
+type displayItem string
+
+const (
+	displayItemTabNumber   displayItem = "tab_number"
+	displayItemProcess     displayItem = "process"
+	displayItemProcessFull displayItem = "process_full"
+	displayItemDirectory   displayItem = "directory"
+	displayItemGit         displayItem = "git"
+	displayItemEnvironment displayItem = "environment"
+)
+
 type tabDisplayConfig struct {
-	TabNumber   bool                       `yaml:"tab_number"`
-	Process     bool                       `yaml:"process"`
-	ProcessFull bool                       `yaml:"process_full"`
-	Directory   bool                       `yaml:"directory"`
-	Git         bool                       `yaml:"git"`
+	Items       []displayItem              `yaml:"items"`
+	Separator   string                     `yaml:"separator"`
 	Environment []environmentDisplayConfig `yaml:"environment"`
+}
+
+type rawTabDisplayConfig struct {
+	Items       []displayItem              `yaml:"items"`
+	Separator   *string                    `yaml:"separator"`
+	Environment []environmentDisplayConfig `yaml:"environment"`
+}
+
+type rawTabInfoConfig struct {
+	Display struct {
+		Active   rawTabDisplayConfig `yaml:"active"`
+		Inactive rawTabDisplayConfig `yaml:"inactive"`
+	} `yaml:"display"`
+}
+
+func (config rawTabDisplayConfig) resolved() tabDisplayConfig {
+	separator := " "
+	if config.Separator != nil {
+		separator = *config.Separator
+	}
+	return tabDisplayConfig{Items: config.Items, Separator: separator, Environment: config.Environment}
+}
+
+func (config tabDisplayConfig) hasItem(item displayItem) bool {
+	for _, configured := range config.Items {
+		if configured == item {
+			return true
+		}
+	}
+	return false
+}
+
+func validateTabDisplayConfig(name string, config tabDisplayConfig) error {
+	if len(config.Items) == 0 {
+		return fmt.Errorf("tabinfo config display.%s.items must not be empty", name)
+	}
+	valid := map[displayItem]bool{
+		displayItemTabNumber: true, displayItemProcess: true, displayItemProcessFull: true,
+		displayItemDirectory: true, displayItemGit: true, displayItemEnvironment: true,
+	}
+	seen := make(map[displayItem]bool, len(config.Items))
+	for _, item := range config.Items {
+		if !valid[item] {
+			return fmt.Errorf("tabinfo config display.%s.items contains unknown item %q", name, item)
+		}
+		if seen[item] {
+			return fmt.Errorf("tabinfo config display.%s.items contains duplicate item %q", name, item)
+		}
+		seen[item] = true
+	}
+	return nil
 }
 
 type environmentDisplayConfig struct {
@@ -286,21 +345,17 @@ func refreshLabels(client *herdrClient, snapshot sessionSnapshot, gitmux gitmuxC
 		cwd := paneCWD(pane)
 		info := tabDynamicInfo{}
 		display := config.Display.forTab(tab.Focused)
-		if display.Process || display.ProcessFull {
+		if display.hasItem(displayItemProcess) || display.hasItem(displayItemProcessFull) {
 			processInfo, ok := fetchPaneProcessInfo(client, pane)
 			if ok {
-				if display.Process {
-					info.Process = processNameFromProcessInfo(processInfo, shellProcessName)
-				}
-				if display.ProcessFull {
-					info.ProcessFull = processFullFromProcessInfo(processInfo)
-				}
+				info.Process = processNameFromProcessInfo(processInfo, shellProcessName)
+				info.ProcessFull = processFullFromProcessInfo(processInfo, shellProcessName)
 			}
 		}
-		if display.Git {
+		if display.hasItem(displayItemGit) {
 			info.Git = displayGitStatus(cwd, gitmux)
 		}
-		if len(display.Environment) > 0 {
+		if display.hasItem(displayItemEnvironment) && len(display.Environment) > 0 {
 			info.Environment = make(map[string]string, len(display.Environment))
 			for _, environment := range display.Environment {
 				if environment.Variable != "" {
@@ -389,30 +444,36 @@ func prioritizedTabs(tabs []tabInfo) []tabInfo {
 
 func buildTabLabel(tab tabInfo, panes []paneInfo, layout paneLayout, info tabDynamicInfo, display tabDisplayConfig) string {
 	focusedPane := findFocusedPane(panes, layout)
-	parts := []string{}
-	if display.TabNumber {
-		parts = append(parts, strconv.Itoa(tab.Number))
-	}
-	if display.Process && info.Process != "" {
-		parts = append(parts, info.Process)
-	}
-	if display.ProcessFull && info.ProcessFull != "" {
-		parts = append(parts, info.ProcessFull)
-	}
-	if display.Directory {
-		if cwd := displayCWD(focusedPane); cwd != "" {
-			parts = append(parts, iconDirectory+" "+cwd)
+	parts := make([]string, 0, len(display.Items)+len(display.Environment))
+	for _, item := range display.Items {
+		switch item {
+		case displayItemTabNumber:
+			parts = append(parts, strconv.Itoa(tab.Number))
+		case displayItemProcess:
+			if info.Process != "" {
+				parts = append(parts, info.Process)
+			}
+		case displayItemProcessFull:
+			if info.ProcessFull != "" {
+				parts = append(parts, info.ProcessFull)
+			}
+		case displayItemDirectory:
+			if cwd := displayCWD(focusedPane); cwd != "" {
+				parts = append(parts, iconDirectory+" "+cwd)
+			}
+		case displayItemGit:
+			if info.Git != "" {
+				parts = append(parts, iconGit+" "+info.Git)
+			}
+		case displayItemEnvironment:
+			for _, environment := range display.Environment {
+				if value := info.Environment[environment.Variable]; environment.Variable != "" && value != "" {
+					parts = append(parts, formatEnvironmentValue(environment.Icon, value))
+				}
+			}
 		}
 	}
-	if display.Git && info.Git != "" {
-		parts = append(parts, iconGit+" "+info.Git)
-	}
-	for _, environment := range display.Environment {
-		if value := info.Environment[environment.Variable]; environment.Variable != "" && value != "" {
-			parts = append(parts, formatEnvironmentValue(environment.Icon, value))
-		}
-	}
-	return normalizeLabel(strings.Join(parts, " "))
+	return normalizeLabel(strings.Join(parts, display.Separator))
 }
 
 func fetchPaneProcessInfo(client *herdrClient, pane *paneInfo) (paneProcessInfoResult, bool) {
@@ -428,13 +489,11 @@ func fetchPaneProcessInfo(client *herdrClient, pane *paneInfo) (paneProcessInfoR
 }
 
 func processNameFromProcessInfo(result paneProcessInfoResult, shellProcessName string) string {
-	for index := len(result.ProcessInfo.ForegroundProcesses) - 1; index >= 0; index-- {
-		process := result.ProcessInfo.ForegroundProcesses[index]
-		if process.Name != "" && process.Name != shellProcessName {
-			return process.Name
-		}
+	process, ok := selectedForegroundProcess(result, shellProcessName)
+	if !ok {
+		return ""
 	}
-	return ""
+	return process.Name
 }
 
 func shellProcessName(shell string) string {
@@ -444,23 +503,30 @@ func shellProcessName(shell string) string {
 	return filepath.Base(shell)
 }
 
-func processFullFromProcessInfo(result paneProcessInfoResult) string {
-	for index := len(result.ProcessInfo.ForegroundProcesses) - 1; index >= 0; index-- {
-		process := result.ProcessInfo.ForegroundProcesses[index]
-		if process.Cmdline != nil && *process.Cmdline != "" {
-			return *process.Cmdline
-		}
-		if len(process.Argv) > 0 {
-			return strings.Join(process.Argv, " ")
-		}
-		if process.Argv0 != nil && *process.Argv0 != "" {
-			return *process.Argv0
-		}
-		if process.Name != "" {
-			return process.Name
+func selectedForegroundProcess(result paneProcessInfoResult, shellProcessName string) (foregroundProcess, bool) {
+	for _, process := range result.ProcessInfo.ForegroundProcesses {
+		if process.Name != "" && process.Name != shellProcessName {
+			return process, true
 		}
 	}
-	return ""
+	return foregroundProcess{}, false
+}
+
+func processFullFromProcessInfo(result paneProcessInfoResult, shellProcessName string) string {
+	process, ok := selectedForegroundProcess(result, shellProcessName)
+	if !ok {
+		return ""
+	}
+	if process.Cmdline != nil && *process.Cmdline != "" {
+		return *process.Cmdline
+	}
+	if len(process.Argv) > 0 {
+		return strings.Join(process.Argv, " ")
+	}
+	if process.Argv0 != nil && *process.Argv0 != "" {
+		return *process.Argv0
+	}
+	return process.Name
 }
 
 func loadGitmuxConfig() (gitmuxConfig, error) {
@@ -560,15 +626,19 @@ func tabInfoConfigPaths() ([]string, error) {
 }
 
 func parseTabInfoConfig(data []byte) (tabInfoConfig, error) {
-	config := defaultTabInfoConfig()
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	var raw rawTabInfoConfig
+	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return tabInfoConfig{}, fmt.Errorf("parse tabinfo config: %w", err)
 	}
-	if !config.Display.Active.TabNumber && !config.Display.Active.Process && !config.Display.Active.ProcessFull {
-		return tabInfoConfig{}, errors.New("tabinfo config must enable display.active.tab_number, display.active.process, or display.active.process_full")
+	config := tabInfoConfig{Display: displayConfig{
+		Active:   raw.Display.Active.resolved(),
+		Inactive: raw.Display.Inactive.resolved(),
+	}}
+	if err := validateTabDisplayConfig("active", config.Display.Active); err != nil {
+		return tabInfoConfig{}, err
 	}
-	if !config.Display.Inactive.TabNumber && !config.Display.Inactive.Process && !config.Display.Inactive.ProcessFull {
-		return tabInfoConfig{}, errors.New("tabinfo config must enable display.inactive.tab_number, display.inactive.process, or display.inactive.process_full")
+	if err := validateTabDisplayConfig("inactive", config.Display.Inactive); err != nil {
+		return tabInfoConfig{}, err
 	}
 	return config, nil
 }
@@ -576,18 +646,16 @@ func parseTabInfoConfig(data []byte) (tabInfoConfig, error) {
 func defaultTabInfoConfig() tabInfoConfig {
 	return tabInfoConfig{Display: displayConfig{
 		Active: tabDisplayConfig{
-			TabNumber: true,
-			Process:   true,
-			Directory: true,
-			Git:       true,
+			Items:     []displayItem{displayItemTabNumber, displayItemProcess, displayItemDirectory, displayItemGit, displayItemEnvironment},
+			Separator: " ",
 			Environment: []environmentDisplayConfig{{
 				Icon:     "⎈",
 				Variable: "KUBECONFIG_NAME",
 			}},
 		},
 		Inactive: tabDisplayConfig{
-			TabNumber: true,
-			Process:   true,
+			Items:     []displayItem{displayItemTabNumber, displayItemProcess},
+			Separator: " ",
 		},
 	}}
 }
