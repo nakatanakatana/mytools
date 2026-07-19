@@ -29,9 +29,29 @@ func setBlueskyEnv(t *testing.T) {
 	t.Setenv("NOSTR_BRIDGE_BLUESKY_RECONCILE_INTERVAL", "15m")
 	t.Setenv("NOSTR_BRIDGE_BLUESKY_OAUTH_CALLBACK_URL", "https://bridge.example/oauth/bluesky/callback")
 	t.Setenv("NOSTR_BRIDGE_BLUESKY_OAUTH_AUTHORIZATION_SERVER_URL", "https://oauth.example")
-	t.Setenv("NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID", "https://bridge.example/oauth/client-metadata.json")
+	t.Setenv("NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID", "https://bridge.example/oauth/bluesky/client-metadata.json")
 	t.Setenv("NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_SIGNING_KEY", "test-secret")
 	t.Setenv("NOSTR_BRIDGE_BLUESKY_OAUTH_ENCRYPTION_KEY", "test-secret")
+}
+
+func TestLoadConfigRejectsOAuthRoutePathMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, value string
+		setup            func(*testing.T)
+	}{
+		{"bluesky callback", "NOSTR_BRIDGE_BLUESKY_OAUTH_CALLBACK_URL", "https://bridge.example/oauth/callback", setBlueskyEnv},
+		{"bluesky metadata", "NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID", "https://bridge.example/oauth/client-metadata.json", setBlueskyEnv},
+		{"mastodon callback", "NOSTR_BRIDGE_MASTODON_OAUTH_CALLBACK_URL", "https://bridge.example/oauth/callback", setMastodonEnv},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setSharedEnv(t)
+			tc.setup(t)
+			t.Setenv(tc.env, tc.value)
+			if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), tc.env) {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
 }
 
 func setMastodonEnv(t *testing.T) {

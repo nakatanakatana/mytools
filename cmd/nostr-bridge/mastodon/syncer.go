@@ -53,6 +53,13 @@ type SyncOptions struct {
 	StreamURL     string
 	Connect       StreamConnector
 	Sleep         func(context.Context, int) error
+	Observer      StreamObserver
+	Now           func() time.Time
+}
+
+type StreamObserver interface {
+	StreamConnected(bool)
+	StreamEvent(time.Time)
 }
 
 type Syncer struct{ options SyncOptions }
@@ -69,6 +76,9 @@ func NewSyncer(options SyncOptions) *Syncer {
 	}
 	if options.Sleep == nil {
 		options.Sleep = backoffSleep
+	}
+	if options.Now == nil {
+		options.Now = time.Now
 	}
 	return &Syncer{options: options}
 }

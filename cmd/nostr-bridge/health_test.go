@@ -134,3 +134,36 @@ func TestReadinessFailsImmediatelyWhenDispatcherStops(t *testing.T) {
 		t.Fatalf("status = %d", recorder.Code)
 	}
 }
+
+func TestReadinessRequiresEveryEnabledProviderBootstrapButNotStreamConnection(t *testing.T) {
+	health := NewHealth(HealthOptions{DatabaseCheck: func(context.Context) error { return nil }, EnabledProviders: []string{"bluesky", "mastodon"}})
+	health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.Authenticated = true; m.Bootstrapped = true })
+	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Authenticated = true })
+	r := httptest.NewRecorder()
+	health.Readiness(r, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if r.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", r.Code, r.Body.String())
+	}
+	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Bootstrapped = true; m.StreamConnected = false })
+	r = httptest.NewRecorder()
+	health.Readiness(r, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if r.Code != http.StatusOK {
+		t.Fatalf("quiet disconnected stream status = %d, body = %s", r.Code, r.Body.String())
+	}
+}
+
+func TestProviderMetricsUseOnlyBoundedProviderLabels(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"mastodon", "bluesky"}})
+	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Authenticated = true; m.TargetCount = 2 })
+	r := httptest.NewRecorder()
+	health.Metrics(r, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := r.Body.String()
+	for _, label := range []string{`provider="bluesky"`, `provider="mastodon"`} {
+		if !strings.Contains(body, label) {
+			t.Fatalf("missing %s: %s", label, body)
+		}
+	}
+	if strings.Contains(body, "social.example") || strings.Contains(body, "did:plc") {
+		t.Fatalf("unbounded label leaked: %s", body)
+	}
+}

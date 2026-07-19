@@ -89,6 +89,9 @@ func (s *Syncer) consume(ctx context.Context, conn StreamConnection) error {
 		if err := s.HandleEvent(ctx, event); err != nil {
 			return err
 		}
+		if s.options.Observer != nil {
+			s.options.Observer.StreamEvent(s.options.Now())
+		}
 	}
 }
 
@@ -109,8 +112,14 @@ func (s *Syncer) Run(ctx context.Context) error {
 		conn, err := s.options.Connect(ctx, s.options.StreamURL)
 		if err == nil {
 			if err = subscribe(ctx, conn, s.options.ListIDs); err == nil {
+				if s.options.Observer != nil {
+					s.options.Observer.StreamConnected(true)
+				}
 				attempt = 0
 				err = s.consume(ctx, conn)
+				if s.options.Observer != nil {
+					s.options.Observer.StreamConnected(false)
+				}
 			}
 			_ = conn.Close()
 		}

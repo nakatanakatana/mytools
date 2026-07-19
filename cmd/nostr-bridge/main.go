@@ -13,11 +13,13 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"fiatjaf.com/nostr"
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/mastodon"
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/outbox"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/relayclient"
@@ -47,8 +49,22 @@ func ServerAddress(cfg Config) string {
 // RegisterOAuthRoutes attaches the OAuth client endpoints to the bridge HTTP server.
 // The OAuth client serves the start/callback endpoints as well as the public
 // client metadata and JWKS routes under /oauth/.
-func RegisterOAuthRoutes(mux *http.ServeMux, client *bridgeoauth.Client) {
-	mux.Handle("/oauth/", client.Handler())
+func RegisterOAuthRoutes(mux *http.ServeMux, blueskyClient *bridgeoauth.Client, mastodonClient *mastodon.OAuthClient) {
+	if blueskyClient != nil {
+		mux.Handle("/oauth/bluesky/", blueskyClient.HandlerAt("/oauth/bluesky"))
+	}
+	if mastodonClient != nil {
+		mux.HandleFunc("POST /oauth/mastodon/start", func(w http.ResponseWriter, r *http.Request) {
+			u, err := mastodonClient.StartAuthorization(r.Context())
+			if err != nil {
+				http.Error(w, "could not start OAuth authorization", http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"authorization_url":%q}`, u)
+		})
+		mux.HandleFunc("GET /oauth/mastodon/callback", mastodonClient.HandleCallback)
+	}
 }
 
 type runtimeResources struct {
@@ -74,7 +90,7 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 	if err != nil {
 		return runtimeResources{}, err
 	}
-	client, err := newOAuthClient(cfg, bridgeStore)
+	client, mastodonOAuth, err := newOAuthClients(cfg, bridgeStore)
 	if err != nil {
 		_ = database.Close()
 		return runtimeResources{}, err
@@ -87,7 +103,7 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 			}
 			return pinger.PingContext(ctx)
 		},
-		OutboxCount: bridgeStore.OutboxCount, OutboxLimit: int64(cfg.Shared.OutboxLimit), RequireDispatcher: true,
+		OutboxCount: bridgeStore.OutboxCount, OutboxLimit: int64(cfg.Shared.OutboxLimit), RequireDispatcher: true, EnabledProviders: enabledProviders(cfg),
 	})
 	managementURL, err := url.Parse(cfg.Shared.RelayManagementURL)
 	if err != nil {
@@ -115,14 +131,14 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		defer health.Update(func(m *HealthMetrics) { m.DispatcherRunning = false })
 		return dispatcher.Run(ctx)
 	})
-	runtime, err := newRuntimeSync(cfg, bridgeStore, client, health)
+	runtime, err := newRuntimeSync(cfg, bridgeStore, client, mastodonOAuth, health)
 	if err != nil {
 		_ = dispatchWorker.Close()
 		_ = database.Close()
 		return runtimeResources{}, err
 	}
 	mux := http.NewServeMux()
-	RegisterOAuthRoutes(mux, client)
+	RegisterOAuthRoutes(mux, client, mastodonOAuth)
 	RegisterHealthRoutes(mux, health)
 	return runtimeResources{
 		httpServer:     &http.Server{Addr: ServerAddress(cfg), Handler: mux},
@@ -131,6 +147,50 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		dispatcherDone: dispatchWorker.Done(),
 		database:       newTrackedDatabaseCloser(database),
 	}, nil
+}
+
+func enabledProviders(cfg Config) []string {
+	var p []string
+	if cfg.Bluesky.Enabled() {
+		p = append(p, "bluesky")
+	}
+	if cfg.Mastodon.Enabled() {
+		p = append(p, "mastodon")
+	}
+	return p
+}
+
+func newOAuthClients(cfg Config, store bridgestore.OAuthStore) (*bridgeoauth.Client, *mastodon.OAuthClient, error) {
+	var b *bridgeoauth.Client
+	var m *mastodon.OAuthClient
+	var err error
+	if cfg.Bluesky.Enabled() {
+		b, err = newOAuthClient(cfg, store)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if cfg.Mastodon.Enabled() {
+		key, decodeErr := base64.StdEncoding.DecodeString(cfg.Mastodon.OAuthEncryptionKey)
+		if decodeErr != nil {
+			return nil, nil, fmt.Errorf("decode Mastodon OAuth encryption key: %w", decodeErr)
+		}
+		account := normalizedMastodonAccount(cfg.Mastodon.Account, cfg.Mastodon.BaseURL)
+		m, err = mastodon.NewOAuthClient(mastodon.OAuthOptions{Scope: bridgestore.SourceScope{Provider: "mastodon", Account: account}, Store: store, BaseURL: cfg.Mastodon.BaseURL, Account: account, ClientID: cfg.Mastodon.OAuthClientID, ClientSecret: cfg.Mastodon.OAuthClientSecret, RedirectURL: cfg.Mastodon.OAuthCallbackURL, EncryptionKey: key})
+		if err != nil {
+			return nil, nil, fmt.Errorf("construct Mastodon OAuth client: %w", err)
+		}
+	}
+	return b, m, nil
+}
+
+func normalizedMastodonAccount(account, baseURL string) string {
+	u, _ := url.Parse(baseURL)
+	account = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(account, "@")))
+	if !strings.Contains(account, "@") {
+		account += "@" + strings.ToLower(u.Hostname())
+	}
+	return account
 }
 
 func newOAuthClient(cfg Config, bridgeStore bridgestore.OAuthStore) (*bridgeoauth.Client, error) {

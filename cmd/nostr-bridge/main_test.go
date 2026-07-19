@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -61,11 +62,18 @@ func TestRuntimeResourcesServeConfiguredOAuthRoutes(t *testing.T) {
 	}
 	defer func() { _ = closeRuntimeResources(resources) }()
 
-	request := httptest.NewRequest(http.MethodGet, "/oauth/client-metadata.json", nil)
+	request := httptest.NewRequest(http.MethodGet, "/oauth/bluesky/client-metadata.json", nil)
 	recorder := httptest.NewRecorder()
 	resources.httpServer.Handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("metadata status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if got := metadata["jwks_uri"]; got != "https://bridge.example/oauth/bluesky/jwks" {
+		t.Fatalf("jwks_uri = %v", got)
 	}
 }
 
@@ -128,7 +136,7 @@ func TestRunServesConfiguredOAuthRoutes(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		response, err := http.Get("http://127.0.0.1:" + port + "/oauth/client-metadata.json")
+		response, err := http.Get("http://127.0.0.1:" + port + "/oauth/bluesky/client-metadata.json")
 		if err == nil {
 			_ = response.Body.Close()
 			if response.StatusCode != http.StatusOK {
@@ -165,10 +173,26 @@ func testRuntimeConfig(t *testing.T) Config {
 		},
 		Bluesky: BlueskyConfig{
 			AccountDID: "did:plc:owner", BaseURL: "https://bsky.example",
-			OAuthCallbackURL: "https://bridge.example/oauth/callback", OAuthAuthorizationServerURL: "https://issuer.example",
-			OAuthClientID: "https://bridge.example/oauth/client-metadata.json", OAuthClientSigningKey: testOAuthSigningKey(t),
+			OAuthCallbackURL: "https://bridge.example/oauth/bluesky/callback", OAuthAuthorizationServerURL: "https://issuer.example",
+			OAuthClientID: "https://bridge.example/oauth/bluesky/client-metadata.json", OAuthClientSigningKey: testOAuthSigningKey(t),
 			OAuthEncryptionKey: base64.StdEncoding.EncodeToString(make([]byte, 32)),
 		},
+	}
+}
+
+func TestOAuthRoutesOnlyExistForEnabledProviders(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	resources, err := newRuntimeResources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources) }()
+	for path, want := range map[string]int{"/oauth/bluesky/client-metadata.json": http.StatusOK, "/oauth/mastodon/callback": http.StatusNotFound, "/oauth/client-metadata.json": http.StatusNotFound} {
+		r := httptest.NewRecorder()
+		resources.httpServer.Handler.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
+		if r.Code != want {
+			t.Fatalf("%s status = %d, want %d", path, r.Code, want)
+		}
 	}
 }
 

@@ -117,6 +117,15 @@ func LoadConfig() (Config, error) {
 		}); err != nil {
 			return Config{}, err
 		}
+		if err := requireOAuthRoute("NOSTR_BRIDGE_BLUESKY_OAUTH_CALLBACK_URL", cfg.Bluesky.OAuthCallbackURL, "/oauth/bluesky/callback"); err != nil {
+			return Config{}, err
+		}
+		if err := requireOAuthRoute("NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID", cfg.Bluesky.OAuthClientID, "/oauth/bluesky/client-metadata.json"); err != nil {
+			return Config{}, err
+		}
+		if !sameOrigin(cfg.Bluesky.OAuthCallbackURL, cfg.Bluesky.OAuthClientID) {
+			return Config{}, fmt.Errorf("NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID must use the OAuth callback public origin")
+		}
 	}
 	if cfg.Mastodon.Enabled() {
 		if err := requireSettings([]setting{
@@ -126,6 +135,9 @@ func LoadConfig() (Config, error) {
 			{"NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_SECRET", cfg.Mastodon.OAuthClientSecret},
 			{"NOSTR_BRIDGE_MASTODON_OAUTH_ENCRYPTION_KEY", cfg.Mastodon.OAuthEncryptionKey},
 		}); err != nil {
+			return Config{}, err
+		}
+		if err := requireOAuthRoute("NOSTR_BRIDGE_MASTODON_OAUTH_CALLBACK_URL", cfg.Mastodon.OAuthCallbackURL, "/oauth/mastodon/callback"); err != nil {
 			return Config{}, err
 		}
 	}
@@ -152,6 +164,20 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("NOSTR_BRIDGE_OUTBOX_POLL_INTERVAL must be positive")
 	}
 	return cfg, nil
+}
+
+func requireOAuthRoute(name, raw, route string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != route {
+		return fmt.Errorf("%s must be an absolute HTTPS URL with path %s", name, route)
+	}
+	return nil
+}
+
+func sameOrigin(a, b string) bool {
+	x, errX := url.Parse(a)
+	y, errY := url.Parse(b)
+	return errX == nil && errY == nil && strings.EqualFold(x.Scheme, y.Scheme) && strings.EqualFold(x.Host, y.Host)
 }
 
 type setting struct{ name, value string }

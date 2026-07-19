@@ -7,6 +7,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/nostrmap"
 	bridgeowner "github.com/nakatanakatana/mytools/cmd/nostr-bridge/owner"
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
 
@@ -139,6 +141,133 @@ func TestInitialTargetMetricUsesPersistedTargetsAfterReconcileFailure(t *testing
 	if got := health.snapshot().TargetDIDCount; got != 1 {
 		t.Fatalf("TargetDIDCount = %d", got)
 	}
+}
+
+func TestBlueskyObserverUpdatesProviderPendingAndSync(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"bluesky"}})
+	o := healthSyncObserver{health}
+	now := time.Unix(42, 0)
+	o.PendingWork(1)
+	if got := health.providerSnapshot("bluesky").PendingWork; got != 1 {
+		t.Fatalf("pending = %d", got)
+	}
+	o.SyncCompleted(now)
+	if got := health.providerSnapshot("bluesky").LastReconciliation; !got.Equal(now) {
+		t.Fatalf("last reconciliation = %v", got)
+	}
+	o.PendingWork(-1)
+	if got := health.providerSnapshot("bluesky").PendingWork; got != 0 {
+		t.Fatalf("pending = %d", got)
+	}
+}
+
+func TestApplyPeriodicTargetsUpdatesBlueskyProviderHealth(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"bluesky"}})
+	live := newLiveTargets(bluesky.DIDSet{})
+	targets := bluesky.TargetSet{Union: bluesky.DIDSet{"did:plc:alice": {}}}
+	if err := applyPeriodicTargets(context.Background(), reconciliationSource{}, successfulCoordinator{}, runtimeTestScope, targets, nil, 100, live, health); err != nil {
+		t.Fatal(err)
+	}
+	m := health.providerSnapshot("bluesky")
+	if m.TargetCount != 1 || m.LastReconciliation.IsZero() {
+		t.Fatalf("provider health = %#v", m)
+	}
+	first := m.LastReconciliation
+	time.Sleep(time.Millisecond)
+	targets.Union["did:plc:bob"] = struct{}{}
+	if err := applyPeriodicTargets(context.Background(), reconciliationSource{}, successfulCoordinator{}, runtimeTestScope, targets, nil, 100, live, health); err != nil {
+		t.Fatal(err)
+	}
+	m = health.providerSnapshot("bluesky")
+	if m.TargetCount != 2 || !m.LastReconciliation.After(first) {
+		t.Fatalf("second provider health = %#v", m)
+	}
+}
+
+func TestProviderPendingAlwaysDecrementsAfterFailure(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"mastodon"}})
+	for range 3 {
+		_ = withProviderPending(health, "mastodon", func() error { return errors.New("construct failed") })
+	}
+	if got := health.providerSnapshot("mastodon").PendingWork; got != 0 {
+		t.Fatalf("pending = %d", got)
+	}
+}
+
+func TestBlueskyPeriodicReconciliationReportsPendingAndJoinsOnCancellation(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"bluesky"}})
+	source := &blockingReconciliationSource{started: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reconcilePeriodically(ctx, time.Millisecond, source, successfulCoordinator{}, runtimeTestScope, nil, nil, 100, newLiveTargets(bluesky.DIDSet{"did:plc:old": {}}), health)
+	}()
+	select {
+	case <-source.started:
+	case <-time.After(time.Second):
+		t.Fatal("reconciliation did not start")
+	}
+	if got := health.providerSnapshot("bluesky").PendingWork; got != 1 {
+		t.Fatalf("pending during blocked work = %d", got)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("periodic reconciliation did not join")
+	}
+	if got := health.providerSnapshot("bluesky").PendingWork; got != 0 {
+		t.Fatalf("pending after cancellation = %d", got)
+	}
+}
+
+func TestRuntimeRetryDelayIsBoundedAndCancellationAware(t *testing.T) {
+	old := runtimeRetryDelay
+	runtimeRetryDelay = 20 * time.Millisecond
+	t.Cleanup(func() { runtimeRetryDelay = old })
+	started := time.Now()
+	if !waitRuntimeRetry(context.Background()) {
+		t.Fatal("delay canceled")
+	}
+	if time.Since(started) < 15*time.Millisecond {
+		t.Fatal("retry delay tight-looped")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started = time.Now()
+	if waitRuntimeRetry(ctx) {
+		t.Fatal("canceled delay continued")
+	}
+	if time.Since(started) > 100*time.Millisecond {
+		t.Fatal("cancellation was not prompt")
+	}
+}
+
+type blockingReconciliationSource struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingReconciliationSource) Timeline(context.Context, string, int) (bluesky.Page, error) {
+	return bluesky.Page{}, nil
+}
+func (s *blockingReconciliationSource) Follows(ctx context.Context) ([]bluesky.Actor, error) {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (s *blockingReconciliationSource) List(context.Context, string) (bluesky.List, error) {
+	return bluesky.List{}, nil
+}
+func (s *blockingReconciliationSource) Profile(context.Context, string) (bluesky.Profile, error) {
+	return bluesky.Profile{}, nil
+}
+
+type successfulCoordinator struct{}
+
+func (successfulCoordinator) Reconcile(context.Context, bridgestore.SourceScope, source.TargetSnapshot, []source.Profile) error {
+	return nil
 }
 
 func TestTargetRemovalRetainsPublisherMappingAndOutboxAndReadditionKey(t *testing.T) {

@@ -188,3 +188,20 @@ func containsString(value any, wanted string) bool {
 	}
 	return false
 }
+
+func TestHandlerAtServesExactProviderPrefix(t *testing.T) {
+	client, _ := newTestClient(t, "https://issuer.example")
+	h := client.HandlerAt("/oauth/bluesky")
+	for _, route := range []string{"/oauth/bluesky/client-metadata.json", "/oauth/bluesky/jwks"} {
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, route, nil))
+		if r.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", route, r.Code)
+		}
+	}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/oauth/jwks", nil))
+	if r.Code != http.StatusNotFound {
+		t.Fatalf("legacy route status = %d", r.Code)
+	}
+}

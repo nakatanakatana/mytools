@@ -87,6 +87,33 @@ func TestRunReconnectsAndRestoresSubscriptions(t *testing.T) {
 	}
 }
 
+type recordingStreamObserver struct {
+	states []bool
+	events []time.Time
+}
+
+func (o *recordingStreamObserver) StreamConnected(v bool)   { o.states = append(o.states, v) }
+func (o *recordingStreamObserver) StreamEvent(at time.Time) { o.events = append(o.events, at) }
+
+func TestRunObservesQuietConnectionAndAcceptedEvent(t *testing.T) {
+	now := time.Unix(123, 0)
+	status := testStatus("42", "https://social.example/users/alice/statuses/42", "https://social.example/users/alice")
+	b, _ := json.Marshal(map[string]string{"event": "update", "payload": string(mustJSON(status))})
+	conn := &fakeStreamConn{reads: [][]byte{b}, err: errors.New("drop")}
+	observer := &recordingStreamObserver{}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := NewSyncer(SyncOptions{Scope: testScope(), API: &fakeTimelineAPI{lists: map[string][]Status{}}, Store: newMemoryDelivery(), MasterSeed: []byte(testSeed), Targets: func() source.IdentitySet { return sourceSet(status.Account.URI) }, StreamURL: "wss://example", Observer: observer, Now: func() time.Time { return now }, Connect: func(context.Context, string) (StreamConnection, error) { return conn, nil }, Sleep: func(context.Context, int) error { cancel(); return context.Canceled }})
+	_ = s.Run(ctx)
+	if !reflect.DeepEqual(observer.states, []bool{true, false}) {
+		t.Fatalf("states = %v", observer.states)
+	}
+	if !reflect.DeepEqual(observer.events, []time.Time{now}) {
+		t.Fatalf("events = %v", observer.events)
+	}
+}
+
+func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+
 func TestBackoffCapsAndCancels(t *testing.T) {
 	if got := backoffDuration(100); got != 64*time.Second {
 		t.Fatalf("backoff=%s", got)

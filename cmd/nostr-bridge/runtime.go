@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/mastodon"
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
 	bridgeowner "github.com/nakatanakatana/mytools/cmd/nostr-bridge/owner"
 	neutral "github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
@@ -77,13 +79,35 @@ func (t *liveTargets) Get() bluesky.DIDSet {
 }
 
 var errInvalidMasterSeed = errors.New("bridge master seed must be base64 encoding of exactly 32 bytes")
+var runtimeRetryDelay = 10 * time.Second
+
+func waitRuntimeRetry(ctx context.Context) bool {
+	timer := time.NewTimer(runtimeRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func withProviderPending(health *Health, provider string, work func() error) error {
+	health.UpdateProvider(provider, func(m *ProviderHealthMetrics) { m.PendingWork++ })
+	defer health.UpdateProvider(provider, func(m *ProviderHealthMetrics) {
+		if m.PendingWork > 0 {
+			m.PendingWork--
+		}
+	})
+	return work()
+}
 
 type runtimeStore interface {
 	bridgestore.SyncDeliveryStore
 	bridgestore.ReconciliationStore
 }
 
-func newRuntimeSync(cfg Config, store runtimeStore, oauthClient *bridgeoauth.Client, health *Health) (*runtimeSync, error) {
+func newRuntimeSync(cfg Config, store runtimeStore, oauthClient *bridgeoauth.Client, mastodonOAuth *mastodon.OAuthClient, health *Health) (*runtimeSync, error) {
 	seed, err := base64.StdEncoding.DecodeString(cfg.Shared.MasterSeed)
 	if err != nil || len(seed) != 32 {
 		return nil, errInvalidMasterSeed
@@ -93,7 +117,7 @@ func newRuntimeSync(cfg Config, store runtimeStore, oauthClient *bridgeoauth.Cli
 	runtime := &runtimeSync{cancel: cancel, done: done}
 	go func() {
 		defer close(done)
-		runtime.run(ctx, cfg, seed, store, oauthClient, health)
+		runtime.run(ctx, cfg, seed, store, oauthClient, mastodonOAuth, health)
 	}()
 	return runtime, nil
 }
@@ -120,8 +144,21 @@ func (r *runtimeSync) CloseContext(ctx context.Context) error {
 	return r.Wait(ctx)
 }
 
-func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store runtimeStore, oauthClient *bridgeoauth.Client, health *Health) {
+func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store runtimeStore, oauthClient *bridgeoauth.Client, mastodonOAuth *mastodon.OAuthClient, health *Health) {
 	coordinator := bridgeowner.New(bridgeowner.Options{MasterSeed: seed, OwnerID: cfg.Owner.ID, OwnerName: cfg.Owner.Name, OwnerAbout: cfg.Owner.About, OwnerPicture: cfg.Owner.Picture, Store: store, OutboxLimit: int64(cfg.Shared.OutboxLimit)})
+	var wg sync.WaitGroup
+	if cfg.Bluesky.Enabled() && oauthClient != nil {
+		wg.Add(1)
+		go func() { defer wg.Done(); r.runBluesky(ctx, cfg, seed, store, oauthClient, health, coordinator) }()
+	}
+	if cfg.Mastodon.Enabled() && mastodonOAuth != nil {
+		wg.Add(1)
+		go func() { defer wg.Done(); r.runMastodon(ctx, cfg, seed, store, mastodonOAuth, health, coordinator) }()
+	}
+	wg.Wait()
+}
+
+func (r *runtimeSync) runBluesky(ctx context.Context, cfg Config, seed []byte, store runtimeStore, oauthClient *bridgeoauth.Client, health *Health, coordinator reconciliationCoordinator) {
 	for ctx.Err() == nil {
 		scope := bridgestore.SourceScope{Provider: "bluesky", Account: cfg.Bluesky.AccountDID}
 		token, err := oauthClient.TokenByAccountDID(ctx, cfg.Bluesky.AccountDID)
@@ -131,52 +168,211 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 					metrics.OAuthConnected = false
 					metrics.OAuthExpiry = token.Expiry
 				})
-				select {
-				case <-ctx.Done():
+				health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+					m.Authenticated = false
+					m.OAuthExpiry = token.Expiry
+					m.StreamConnected = false
+				})
+				if !waitRuntimeRetry(ctx) {
 					return
-				case <-time.After(10 * time.Second):
 				}
 				continue
 			}
 			health.Update(func(metrics *HealthMetrics) { metrics.OAuthConnected = true; metrics.OAuthExpiry = token.Expiry })
+			health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.Authenticated = true; m.OAuthExpiry = token.Expiry })
 			if source, sourceErr := bluesky.NewClient(bluesky.ClientOptions{BaseURL: cfg.Bluesky.BaseURL, Token: token, AccountDID: cfg.Bluesky.AccountDID}); sourceErr == nil {
 				health.Update(func(metrics *HealthMetrics) { metrics.PendingWork++ })
-				targets, reconcileErr := bluesky.NewReconciler(source, cfg.Bluesky.ListURIs).Reconcile(ctx)
-				if reconcileErr != nil {
-					reportReconciliationFailure("initial reconciliation", reconcileErr)
-				}
-				targets = resolveInitialTargets(ctx, store, scope, targets, reconcileErr, health)
+				var targets bluesky.TargetSet
+				var reconcileErr error
+				initialErr := withProviderPending(health, "bluesky", func() error {
+					targets, reconcileErr = bluesky.NewReconciler(source, cfg.Bluesky.ListURIs).Reconcile(ctx)
+					if reconcileErr != nil {
+						reportReconciliationFailure("initial reconciliation", reconcileErr)
+					}
+					targets = resolveInitialTargets(ctx, store, scope, targets, reconcileErr, health)
+					if reconcileErr == nil {
+						err := reconcileBluesky(ctx, coordinator, source, scope, targets)
+						if err != nil {
+							reportReconciliationFailure("initial publication", err)
+						}
+						return err
+					}
+					return nil
+				})
 				health.Update(func(metrics *HealthMetrics) {
 					if metrics.PendingWork > 0 {
 						metrics.PendingWork--
 					}
 				})
-				if reconcileErr == nil {
-					if err := reconcileBluesky(ctx, coordinator, source, scope, targets); err != nil {
-						reportReconciliationFailure("initial publication", err)
-						continue
+				if initialErr != nil {
+					if !waitRuntimeRetry(ctx) {
+						return
 					}
+					continue
+				}
+				if reconcileErr == nil {
+					health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+						m.Bootstrapped = true
+						m.TargetCount = len(targets.Union)
+						m.LastReconciliation = time.Now()
+					})
 				}
 				if len(targets.Union) > 0 {
 					live := newLiveTargets(targets.Union)
 					syncContext, stopSync := context.WithCancel(ctx)
-					go reconcilePeriodically(syncContext, cfg.Bluesky.ReconcileInterval, source, coordinator, scope, cfg.Bluesky.ListURIs, store, cfg.Shared.OutboxLimit, live, health)
+					reconcileDone := make(chan struct{})
+					go func() {
+						defer close(reconcileDone)
+						reconcilePeriodically(syncContext, cfg.Bluesky.ReconcileInterval, source, coordinator, scope, cfg.Bluesky.ListURIs, store, cfg.Shared.OutboxLimit, live, health)
+					}()
 					s := syncer.New(syncer.Options{Scope: scope, Source: source, OutboxStore: store, OutboxLimit: int64(cfg.Shared.OutboxLimit), MasterSeed: seed, TargetProvider: live.Get, TargetUpdates: live.Updates(), BackfillLimit: cfg.Bluesky.BackfillLimit, JetstreamURL: cfg.Bluesky.JetstreamURL, Observer: healthSyncObserver{health}})
 					reportSyncFailure(s.Run(syncContext))
 					stopSync()
+					<-reconcileDone
 				}
 			} else {
 				reportRuntimeFailure("source construction", sourceErr)
 			}
 		} else {
 			health.Update(func(metrics *HealthMetrics) { metrics.OAuthConnected = false; metrics.JetstreamConnected = false })
+			health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.Authenticated = false; m.StreamConnected = false })
 		}
+		if !waitRuntimeRetry(ctx) {
+			return
+		}
+	}
+}
+
+func (r *runtimeSync) runMastodon(ctx context.Context, cfg Config, seed []byte, store runtimeStore, oauthClient *mastodon.OAuthClient, health *Health, coordinator reconciliationCoordinator) {
+	scope := bridgestore.SourceScope{Provider: "mastodon", Account: normalizedMastodonAccount(cfg.Mastodon.Account, cfg.Mastodon.BaseURL)}
+	for ctx.Err() == nil {
+		token, err := oauthClient.Token(ctx)
+		if err == nil {
+			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Authenticated = true; m.OAuthExpiry = token.Expiry })
+			var client *mastodon.Client
+			var snapshot neutral.TargetSnapshot
+			var profiles []neutral.Profile
+			attemptErr := withProviderPending(health, "mastodon", func() error {
+				var err error
+				client, err = mastodon.NewClient(mastodon.ClientOptions{BaseURL: cfg.Mastodon.BaseURL, Tokens: oauthClient})
+				if err != nil {
+					return err
+				}
+				snapshot, profiles, err = mastodon.NewReconciler(client, cfg.Mastodon.ListIDs).Reconcile(ctx)
+				if err != nil {
+					return err
+				}
+				return coordinator.Reconcile(ctx, scope, snapshot, profiles)
+			})
+			if attemptErr == nil {
+				health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) {
+					m.Bootstrapped = true
+					m.TargetCount = len(snapshot.Union)
+					m.LastReconciliation = time.Now()
+				})
+				targets := newNeutralLiveTargets(snapshot.Union)
+				syncCtx, cancelSync := context.WithCancel(ctx)
+				reconcileDone := make(chan struct{})
+				go func() {
+					defer close(reconcileDone)
+					reconcileMastodonPeriodically(syncCtx, cfg.Mastodon.ReconcileInterval, client, coordinator, scope, cfg.Mastodon.ListIDs, targets, health)
+				}()
+				s := mastodon.NewSyncer(mastodon.SyncOptions{Scope: scope, API: mastodon.ClientTimelineAPI(client), Store: store, MasterSeed: seed, Targets: targets.Get, ListIDs: cfg.Mastodon.ListIDs, BackfillLimit: cfg.Mastodon.BackfillLimit, OutboxLimit: int64(cfg.Shared.OutboxLimit), StreamURL: mastodonStreamURL(cfg.Mastodon.BaseURL, token.AccessToken), Observer: mastodonHealthObserver{health}})
+				_ = s.Run(syncCtx)
+				cancelSync()
+				<-reconcileDone
+			}
+		} else {
+			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Authenticated = false; m.StreamConnected = false })
+		}
+		if !waitRuntimeRetry(ctx) {
+			return
+		}
+	}
+}
+
+type neutralLiveTargets struct {
+	mu     sync.RWMutex
+	values neutral.IdentitySet
+}
+
+func newNeutralLiveTargets(values neutral.IdentitySet) *neutralLiveTargets {
+	t := &neutralLiveTargets{}
+	t.Set(values)
+	return t
+}
+func (t *neutralLiveTargets) Set(values neutral.IdentitySet) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.values = make(neutral.IdentitySet, len(values))
+	for identity := range values {
+		t.values[identity] = struct{}{}
+	}
+}
+func (t *neutralLiveTargets) Get() neutral.IdentitySet {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	values := make(neutral.IdentitySet, len(t.values))
+	for identity := range t.values {
+		values[identity] = struct{}{}
+	}
+	return values
+}
+
+func reconcileMastodonPeriodically(ctx context.Context, interval time.Duration, client *mastodon.Client, coordinator reconciliationCoordinator, scope bridgestore.SourceScope, listIDs []string, targets *neutralLiveTargets, health *Health) {
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(10 * time.Second):
+		case <-ticker.C:
+			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.PendingWork++ })
+			snapshot, profiles, err := mastodon.NewReconciler(client, listIDs).Reconcile(ctx)
+			if err == nil {
+				err = coordinator.Reconcile(ctx, scope, snapshot, profiles)
+			}
+			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) {
+				if m.PendingWork > 0 {
+					m.PendingWork--
+				}
+				if err == nil {
+					m.TargetCount = len(snapshot.Union)
+					m.LastReconciliation = time.Now()
+				}
+			})
+			if err == nil {
+				targets.Set(snapshot.Union)
+			}
 		}
 	}
+}
+
+type mastodonHealthObserver struct{ health *Health }
+
+func (o mastodonHealthObserver) StreamConnected(connected bool) {
+	o.health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.StreamConnected = connected })
+}
+func (o mastodonHealthObserver) StreamEvent(at time.Time) {
+	o.health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.LastEvent = at })
+}
+
+func mastodonStreamURL(raw, accessToken string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
+	}
+	u.Path = "/api/v1/streaming"
+	u.RawQuery = url.Values{"access_token": {accessToken}}.Encode()
+	return u.String()
 }
 
 type syncTargetLoader interface {
@@ -193,6 +389,7 @@ func resolveInitialTargets(ctx context.Context, store syncTargetLoader, scope br
 		}
 	}
 	health.Update(func(metrics *HealthMetrics) { metrics.TargetDIDCount = len(targets.Union) })
+	health.UpdateProvider("bluesky", func(metrics *ProviderHealthMetrics) { metrics.TargetCount = len(targets.Union) })
 	return targets
 }
 
@@ -200,15 +397,24 @@ type healthSyncObserver struct{ health *Health }
 
 func (o healthSyncObserver) JetstreamConnected(connected bool) {
 	o.health.Update(func(m *HealthMetrics) { m.JetstreamConnected = connected })
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.StreamConnected = connected })
 }
 func (o healthSyncObserver) JetstreamEvent(at time.Time) {
 	o.health.Update(func(m *HealthMetrics) { m.LastJetstreamEvent = at })
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.LastEvent = at })
 }
 func (o healthSyncObserver) SyncCompleted(at time.Time) {
 	o.health.Update(func(m *HealthMetrics) { m.LastSync = at })
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.LastReconciliation = at })
 }
 func (o healthSyncObserver) PendingWork(delta int) {
 	o.health.Update(func(m *HealthMetrics) { m.PendingWork += delta })
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+		m.PendingWork += delta
+		if m.PendingWork < 0 {
+			m.PendingWork = 0
+		}
+	})
 }
 
 func reconcilePeriodically(ctx context.Context, interval time.Duration, source bluesky.SourceClient, coordinator reconciliationCoordinator, scope bridgestore.SourceScope, listURIs []string, store runtimeStore, outboxLimit int, live *liveTargets, health *Health) {
@@ -222,13 +428,21 @@ func reconcilePeriodically(ctx context.Context, interval time.Duration, source b
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			targets, err := bluesky.NewReconciler(source, listURIs).Reconcile(ctx)
+			var targets bluesky.TargetSet
+			err := withProviderPending(health, "bluesky", func() error {
+				var err error
+				targets, err = bluesky.NewReconciler(source, listURIs).Reconcile(ctx)
+				if err != nil {
+					reportReconciliationFailure("periodic reconciliation", err)
+					return err
+				}
+				err = applyPeriodicTargets(ctx, source, coordinator, scope, targets, store, outboxLimit, live, health)
+				if err != nil {
+					reportReconciliationFailure("periodic publication", err)
+				}
+				return err
+			})
 			if err != nil {
-				reportReconciliationFailure("periodic reconciliation", err)
-				continue
-			}
-			if err := applyPeriodicTargets(ctx, source, coordinator, scope, targets, store, outboxLimit, live, health); err != nil {
-				reportReconciliationFailure("periodic publication", err)
 				continue
 			}
 		}
@@ -256,6 +470,7 @@ func applyPeriodicTargets(ctx context.Context, source bluesky.SourceClient, coor
 	}
 	live.Set(targets.Union)
 	health.Update(func(m *HealthMetrics) { m.TargetDIDCount = len(targets.Union) })
+	health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.TargetCount = len(targets.Union); m.LastReconciliation = time.Now() })
 	return nil
 }
 
