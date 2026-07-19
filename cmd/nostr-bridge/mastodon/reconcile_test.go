@@ -67,6 +67,17 @@ func TestReconcileSkipsListDiscoveryWhenNoListsConfigured(t *testing.T) {
 	assertIdentitySet(t, snapshot.Union, mastodonIdentity("https://social.example/users/alice"))
 }
 
+func TestReconcileConvertsProfileNoteHTMLToText(t *testing.T) {
+	api := &fakeSource{account: Account{ID: "owner", URI: "https://social.example/users/owner", Note: `<p>Hello<img src="https://social.example/emoji/wave.png" alt=":wave:"><br><a href="https://example.com">site</a></p>`}}
+	_, profiles, err := NewReconciler(api, nil).Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) != 1 || profiles[0].Description != "Hello :wave:\nsite (https://example.com)" {
+		t.Fatalf("profiles = %#v", profiles)
+	}
+}
+
 func TestReconcileReturnsNoSnapshotOnProviderError(t *testing.T) {
 	down := errors.New("down")
 	cases := map[string]*fakeSource{

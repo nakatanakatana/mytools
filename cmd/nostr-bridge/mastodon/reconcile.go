@@ -112,7 +112,7 @@ func addProfiles(target map[source.ActorIdentity]source.Profile, accounts []Acco
 		if !ok {
 			continue
 		}
-		target[identity] = source.Profile{Identity: identity, DisplayName: account.DisplayName, Description: account.Note, AvatarURL: account.Avatar, ProfileURL: account.URL}
+		target[identity] = source.Profile{Identity: identity, DisplayName: account.DisplayName, Description: HTMLToText(account.Note), AvatarURL: account.Avatar, ProfileURL: account.URL}
 	}
 }
 func accountIdentity(account Account) (source.ActorIdentity, bool) {

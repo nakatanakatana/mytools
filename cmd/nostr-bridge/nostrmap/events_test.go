@@ -200,6 +200,25 @@ func TestPostEventAppendsLinksWithoutLeadingBlankLineForEmptyText(t *testing.T) 
 	}
 }
 
+func TestPostEventAddsContentWarningAndMastodonMediaMetadata(t *testing.T) {
+	post := source.Post{
+		ID: "mastodon:https://social.example/users/alice/statuses/42", Author: source.ActorIdentity{Provider: "mastodon", ID: "https://social.example/users/alice"},
+		SourceURL: "https://social.example/@alice/42", Text: "Spoiler\n\nBody", ContentWarning: "Spoiler", CreatedAt: time.Unix(1, 0),
+		Attachments: []source.Attachment{{URL: "https://cdn.example/movie.mp4", MIMEType: "video/mp4", Description: "Alt", Blurhash: "U8ABC", Width: 1920, Height: 1080}},
+	}
+	event, err := PostEvent(testSeed, post, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag := event.Tags.Find("content-warning"); len(tag) != 2 || tag[1] != "Spoiler" {
+		t.Fatalf("content-warning tag = %#v", tag)
+	}
+	want := nostr.Tag{"imeta", "url https://cdn.example/movie.mp4", "m video/mp4", "alt Alt", "blurhash U8ABC", "dim 1920x1080"}
+	if got := event.Tags.Find("imeta"); strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("imeta = %#v, want %#v", got, want)
+	}
+}
+
 func TestPostEventOmitsReplyTagsWhenParentIsUnknown(t *testing.T) {
 	event, err := PostEvent(testSeed, source.Post{ID: "at://did:plc:alice/app.bsky.feed.post/3k", Author: blueskyIdentity("did:plc:alice"), SourceURL: "https://bsky.app/profile/did:plc:alice/post/3k", CreatedAt: time.Unix(1, 0), ReplyToID: "at://did:plc:missing/app.bsky.feed.post/1"}, nil)
 	if err != nil {

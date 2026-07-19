@@ -64,6 +64,9 @@ func PostEvent(masterSeed []byte, post source.Post, parents map[string]nostr.Eve
 		return nostr.Event{}, err
 	}
 	tags := nostr.Tags{{"r", post.SourceURL}}
+	if post.ContentWarning != "" {
+		tags = append(tags, nostr.Tag{"content-warning", post.ContentWarning})
+	}
 	if parent, ok := parents[post.ReplyToID]; ok && post.ReplyToID != "" {
 		tags = append(tags, nostr.Tag{"e", parent.ID.Hex(), "", "reply"}, nostr.Tag{"p", parent.PubKey.Hex()})
 	}
