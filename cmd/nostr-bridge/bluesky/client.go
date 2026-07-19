@@ -115,7 +115,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if options.HTTPClient == nil {
 		options.HTTPClient = http.DefaultClient
 	}
-	return &Client{httpClient: options.HTTPClient, baseURL: strings.TrimRight(options.BaseURL, "/"), accessToken: options.Token.AccessToken, dpopKey: options.Token.DPoPKey, dpopNonce: options.Token.DPoPNonce, accountDID: options.AccountDID}, nil
+	return &Client{httpClient: options.HTTPClient, baseURL: strings.TrimRight(options.BaseURL, "/"), accessToken: options.Token.AccessToken, dpopKey: options.Token.DPoPKey, accountDID: options.AccountDID}, nil
 }
 
 // Timeline returns one authenticated timeline page.
@@ -305,7 +305,7 @@ func (c *Client) doGet(ctx context.Context, endpoint string, query url.Values) (
 	if err != nil {
 		return nil, fmt.Errorf("create Bluesky %s request: %w", endpoint, err)
 	}
-	proof, err := dpopProof(c.dpopKey, request.Method, request.URL, c.dpopNonce)
+	proof, err := dpopProof(c.dpopKey, request.Method, request.URL, c.dpopNonce, c.accessToken)
 	if err != nil {
 		return nil, fmt.Errorf("create Bluesky DPoP proof: %w", err)
 	}
@@ -318,11 +318,12 @@ func (c *Client) doGet(ctx context.Context, endpoint string, query url.Values) (
 	return response, nil
 }
 
-func dpopProof(key *ecdsa.PrivateKey, method string, requestURL *url.URL, nonce string) (string, error) {
+func dpopProof(key *ecdsa.PrivateKey, method string, requestURL *url.URL, nonce, accessToken string) (string, error) {
 	htu := *requestURL
 	htu.RawQuery = ""
 	htu.Fragment = ""
-	claims := map[string]any{"jti": randomString(16), "htm": method, "htu": htu.String(), "iat": time.Now().Unix()}
+	athDigest := sha256.Sum256([]byte(accessToken))
+	claims := map[string]any{"jti": randomString(16), "htm": method, "htu": htu.String(), "iat": time.Now().Unix(), "ath": base64.RawURLEncoding.EncodeToString(athDigest[:])}
 	if nonce != "" {
 		claims["nonce"] = nonce
 	}

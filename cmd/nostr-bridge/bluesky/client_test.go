@@ -25,9 +25,9 @@ func TestClientFetchesAuthenticatedPagedSources(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "DPoP access-token" {
-			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+			t.Fatal("unexpected Authorization header")
 		}
-		assertDPoPProof(t, r, key, "persisted-nonce")
+		assertDPoPProof(t, r, key, "", "access-token")
 		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
 		switch r.URL.Path {
 		case "/xrpc/app.bsky.feed.getTimeline":
@@ -100,7 +100,7 @@ func TestClientRetriesDPoPNonceChallenge(t *testing.T) {
 			http.Error(w, "use DPoP nonce", http.StatusUnauthorized)
 			return
 		}
-		assertDPoPProof(t, r, key, "challenge-nonce")
+		assertDPoPProof(t, r, key, "challenge-nonce", "access-token")
 		_ = json.NewEncoder(w).Encode(map[string]any{"feed": []any{}})
 	}))
 	defer server.Close()
@@ -116,11 +116,11 @@ func TestClientRetriesDPoPNonceChallenge(t *testing.T) {
 	}
 }
 
-func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.PrivateKey, wantNonce string) {
+func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.PrivateKey, wantNonce, accessToken string) {
 	t.Helper()
 	parts := strings.Split(request.Header.Get("DPoP"), ".")
 	if len(parts) != 3 {
-		t.Fatalf("invalid DPoP proof %q", request.Header.Get("DPoP"))
+		t.Fatal("invalid DPoP proof structure")
 	}
 	var header struct {
 		Typ string `json:"typ"`
@@ -137,6 +137,7 @@ func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.Private
 		HTU   string `json:"htu"`
 		Nonce string `json:"nonce"`
 		JTI   string `json:"jti"`
+		ATH   string `json:"ath"`
 	}
 	decodeJWTPart(t, parts[0], &header)
 	decodeJWTPart(t, parts[1], &claims)
@@ -147,7 +148,11 @@ func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.Private
 		t.Fatalf("DPoP JWK does not match persisted key: %#v", header.JWK)
 	}
 	if claims.HTM != request.Method || claims.HTU != "http://"+request.Host+request.URL.Path || claims.Nonce != wantNonce || claims.JTI == "" {
-		t.Fatalf("DPoP claims = %#v for request %s", claims, request.URL)
+		t.Fatalf("unexpected DPoP claims for request %s", request.URL)
+	}
+	ath := sha256.Sum256([]byte(accessToken))
+	if claims.ATH != base64.RawURLEncoding.EncodeToString(ath[:]) {
+		t.Fatal("unexpected DPoP ath claim")
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil || len(signature) != 64 {
