@@ -120,6 +120,48 @@ func TestReconcileAtomicallyReplacesTargetsAndQueuesWholeIdempotentBatch(t *test
 	}
 }
 
+func TestReconcileBatchRollsBackProviderTargetsWhenOwnerMappingFails(t *testing.T) {
+	ctx := context.Background()
+	s, closer, err := Open(ctx, filepath.Join(t.TempDir(), "batch-rollback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+	provider := SourceScope{Provider: "bluesky", Account: "owner"}
+	owner := SourceScope{Provider: "bridge-owner", Account: "home"}
+	if err := s.ReplaceSyncTargets(ctx, provider, []string{"old"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TEMP TRIGGER fail_owner_mapping BEFORE INSERT ON bridge_events WHEN NEW.provider = 'bridge-owner' BEGIN SELECT RAISE(ABORT, 'owner mapping failed'); END`); err != nil {
+		t.Fatal(err)
+	}
+	providerEvent := reconciliationTestEventForScope(t, provider, "provider-profile")
+	ownerEvent := reconciliationTestEventForScope(t, owner, "owner-profile")
+	before, _ := s.OutboxCount(ctx)
+	err = s.ReconcileBatch(ctx, ReconciliationBatchRequest{TargetScope: provider, Targets: []string{"new"}, EventScopes: []SourceScope{provider, owner}, Events: []EventEnqueueRequest{providerEvent, ownerEvent}, Limit: 100})
+	if err == nil {
+		t.Fatal("expected injected owner mapping failure")
+	}
+	if targets, _ := s.SyncTargets(ctx, provider); !slices.Equal(targets, []string{"old"}) {
+		t.Fatalf("targets = %#v", targets)
+	}
+	for _, request := range []EventEnqueueRequest{providerEvent, ownerEvent} {
+		if _, err := s.EventMappingBySourceURI(ctx, request.Mapping.Source); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("partial mapping %v: %v", request.Mapping.Source, err)
+		}
+	}
+	if after, _ := s.OutboxCount(ctx); after != before {
+		t.Fatalf("outbox count = %d, want %d", after, before)
+	}
+}
+
+func reconciliationTestEventForScope(t *testing.T, scope SourceScope, uri string) EventEnqueueRequest {
+	t.Helper()
+	request := reconciliationTestEvent(t, uri)
+	request.Mapping.Source = SourceRef{Scope: scope, URI: uri}
+	return request
+}
+
 func TestEnqueueEventEnforcesHardLimitAtomically(t *testing.T) {
 	ctx := context.Background()
 	s, closer, err := Open(ctx, filepath.Join(t.TempDir(), "limit.db"))

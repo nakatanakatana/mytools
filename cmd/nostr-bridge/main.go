@@ -154,6 +154,7 @@ func newOAuthClient(cfg Config, bridgeStore bridgestore.OAuthStore) (*bridgeoaut
 		return nil, fmt.Errorf("decode OAuth encryption key: %w", err)
 	}
 	client, err := bridgeoauth.NewClient(bridgeoauth.Options{
+		Scope:                  bridgestore.SourceScope{Provider: "bluesky", Account: cfg.Bluesky.AccountDID},
 		Store:                  bridgeStore,
 		AuthorizationServerURL: cfg.Bluesky.OAuthAuthorizationServerURL,
 		ClientID:               cfg.Bluesky.OAuthClientID,

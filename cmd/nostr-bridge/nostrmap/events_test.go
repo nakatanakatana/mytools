@@ -146,16 +146,17 @@ func TestPostEventAddsBlueskyImagesToContentAndIMetaTags(t *testing.T) {
 }
 
 func TestPostEventPreservesAndAppendsBlueskyLinks(t *testing.T) {
-	post := Post{
-		AuthorDID: "did:plc:alice",
-		URI:       "at://did:plc:alice/app.bsky.feed.post/3k",
+	post := source.Post{
+		ID:        "at://did:plc:alice/app.bsky.feed.post/3k",
+		Author:    blueskyIdentity("did:plc:alice"),
+		SourceURL: "https://bsky.app/profile/did:plc:alice/post/3k",
 		Text:      "Already https://same.example here",
 		CreatedAt: time.Unix(1, 0),
-		Links: []bluesky.Link{
-			{URI: "https://same.example"},
-			{URI: "https://missing.example"},
-			{URI: "https://missing.example"},
-			{URI: "https://bsky.app/profile/did:plc:alice/post/3k"},
+		Links: []source.Link{
+			{URL: "https://same.example"},
+			{URL: "https://missing.example"},
+			{URL: "https://missing.example"},
+			{URL: "https://bsky.app/profile/did:plc:alice/post/3k"},
 		},
 	}
 	event, err := PostEvent(testSeed, post, nil)
@@ -183,11 +184,12 @@ func TestPostEventPreservesAndAppendsBlueskyLinks(t *testing.T) {
 }
 
 func TestPostEventAppendsLinksWithoutLeadingBlankLineForEmptyText(t *testing.T) {
-	post := Post{
-		AuthorDID: "did:plc:alice",
-		URI:       "at://did:plc:alice/app.bsky.feed.post/3k",
+	post := source.Post{
+		ID:        "at://did:plc:alice/app.bsky.feed.post/3k",
+		Author:    blueskyIdentity("did:plc:alice"),
+		SourceURL: "https://bsky.app/profile/did:plc:alice/post/3k",
 		CreatedAt: time.Unix(1, 0),
-		Links:     []bluesky.Link{{URI: "https://one.example"}, {URI: "https://two.example"}},
+		Links:     []source.Link{{URL: "https://one.example"}, {URL: "https://two.example"}},
 	}
 	event, err := PostEvent(testSeed, post, nil)
 	if err != nil {

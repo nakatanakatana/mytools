@@ -274,6 +274,10 @@ func (s SQLiteStore) EnqueueEvent(ctx context.Context, request EventEnqueueReque
 }
 
 func (s SQLiteStore) Reconcile(ctx context.Context, request ReconciliationRequest) error {
+	return s.ReconcileBatch(ctx, ReconciliationBatchRequest{TargetScope: request.Scope, Targets: request.Targets, EventScopes: []SourceScope{request.Scope}, Events: request.Events, Limit: request.Limit})
+}
+
+func (s SQLiteStore) ReconcileBatch(ctx context.Context, request ReconciliationBatchRequest) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin reconciliation: %w", err)
@@ -287,8 +291,12 @@ func (s SQLiteStore) Reconcile(ctx context.Context, request ReconciliationReques
 	registered := map[string]bool{}
 	pending := make([]EventEnqueueRequest, 0, len(request.Events))
 	needed := int64(0)
+	allowedScopes := make(map[SourceScope]struct{}, len(request.EventScopes))
+	for _, scope := range request.EventScopes {
+		allowedScopes[scope] = struct{}{}
+	}
 	for _, event := range request.Events {
-		if event.Mapping.Source.Scope != request.Scope {
+		if _, ok := allowedScopes[event.Mapping.Source.Scope]; !ok {
 			return ErrSourceScopeMismatch
 		}
 		if event.Event.PubKey != event.Mapping.AuthorPubKey {
@@ -336,11 +344,11 @@ func (s SQLiteStore) Reconcile(ctx context.Context, request ReconciliationReques
 	if request.Limit <= 0 || count+needed > request.Limit {
 		return ErrOutboxFull
 	}
-	if err := queries.ReplaceSyncTargetsDelete(ctx, targetScopeParams(request.Scope)); err != nil {
+	if err := queries.ReplaceSyncTargetsDelete(ctx, targetScopeParams(request.TargetScope)); err != nil {
 		return fmt.Errorf("clear sync targets: %w", err)
 	}
 	for _, target := range request.Targets {
-		if err := queries.InsertSyncTarget(ctx, storesqlc.InsertSyncTargetParams{Provider: request.Scope.Provider, SourceAccount: request.Scope.Account, Target: target}); err != nil {
+		if err := queries.InsertSyncTarget(ctx, storesqlc.InsertSyncTargetParams{Provider: request.TargetScope.Provider, SourceAccount: request.TargetScope.Account, Target: target}); err != nil {
 			return fmt.Errorf("save sync target: %w", err)
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ func (e Event) URI() string { return "at://" + e.DID + "/" + e.Collection + "/" 
 
 // Options configures a Syncer.
 type Options struct {
+	Scope          bridgestore.SourceScope
 	Source         bluesky.SourceClient
 	OutboxStore    bridgestore.SyncDeliveryStore
 	OutboxLimit    int64
@@ -74,6 +76,10 @@ type Observer interface {
 
 // Syncer performs both the finite initial backfill and the continuing stream sync.
 type Syncer struct{ options Options }
+
+func (s *Syncer) ref(uri string) bridgestore.SourceRef {
+	return bridgestore.SourceRef{Scope: s.options.Scope, URI: uri}
+}
 
 func (s *Syncer) targets() bluesky.DIDSet {
 	if s.options.TargetProvider != nil {
@@ -158,10 +164,10 @@ func (s *Syncer) Handle(ctx context.Context, event Event) error {
 		if s.options.OutboxStore == nil {
 			return errors.New("syncer store is required")
 		}
-		_, err = s.options.OutboxStore.EventMappingBySourceURI(ctx, uri)
+		_, err = s.options.OutboxStore.EventMappingBySourceURI(ctx, s.ref(uri))
 		if err == nil {
 			if s.options.OutboxStore != nil && event.TimeUS > 0 {
-				err = s.options.OutboxStore.SaveCursor(ctx, jetstreamCursor, event.TimeUS)
+				err = s.options.OutboxStore.SaveCursor(ctx, s.options.Scope, jetstreamCursor, fmt.Sprint(event.TimeUS))
 			}
 			break
 		}
@@ -176,10 +182,10 @@ func (s *Syncer) Handle(ctx context.Context, event Event) error {
 		if s.options.OutboxStore == nil {
 			return errors.New("syncer store is required")
 		}
-		previous, lookupErr = s.options.OutboxStore.SourceOperationBySourceURI(ctx, uri)
+		previous, lookupErr = s.options.OutboxStore.SourceOperationBySourceURI(ctx, s.ref(uri))
 		if lookupErr == nil && previous == identity {
 			if s.options.OutboxStore != nil && event.TimeUS > 0 {
-				err = s.options.OutboxStore.SaveCursor(ctx, jetstreamCursor, event.TimeUS)
+				err = s.options.OutboxStore.SaveCursor(ctx, s.options.Scope, jetstreamCursor, fmt.Sprint(event.TimeUS))
 			}
 			break
 		}
@@ -320,7 +326,7 @@ func (s *Syncer) publishPost(ctx context.Context, sourceURI, did, text string, c
 		return errors.New("syncer store is required")
 	}
 	if s.options.OutboxStore != nil {
-		if _, err := s.options.OutboxStore.EventMappingBySourceURI(ctx, sourceURI); err == nil {
+		if _, err := s.options.OutboxStore.EventMappingBySourceURI(ctx, s.ref(sourceURI)); err == nil {
 			return nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("lookup source event: %w", err)
@@ -332,7 +338,7 @@ func (s *Syncer) publishPost(ctx context.Context, sourceURI, did, text string, c
 	}
 	parents := map[string]nostr.Event{}
 	if replyTo != "" {
-		parent, lookupErr := s.options.OutboxStore.EventMappingBySourceURI(ctx, replyTo)
+		parent, lookupErr := s.options.OutboxStore.EventMappingBySourceURI(ctx, s.ref(replyTo))
 		if lookupErr == nil {
 			id, idErr := nostr.IDFromHex(parent.NostrEventID)
 			pubkey, keyErr := nostr.PubKeyFromHex(parent.AuthorPubKey)
@@ -365,11 +371,11 @@ func (s *Syncer) enqueueMappedEvent(ctx context.Context, sourceURI string, event
 		limit = 10000
 	}
 	now := time.Now()
-	mapping := bridgestore.EventMapping{SourceURI: sourceURI, NostrEventID: event.ID.Hex(), SourceKind: postCollection, AuthorPubKey: event.PubKey.Hex(), UpdatedAt: now.Unix()}
+	mapping := bridgestore.EventMapping{Source: s.ref(sourceURI), NostrEventID: event.ID.Hex(), SourceKind: postCollection, AuthorPubKey: event.PubKey.Hex(), UpdatedAt: now.Unix()}
 	request := bridgestore.OutboxRequest{AggregateKey: event.PubKey.Hex(), Operation: bridgestore.OutboxPublishEvent, PubKey: event.PubKey.Hex(), Payload: payload, AvailableAt: now}
 	enqueue := bridgestore.EventEnqueueRequest{Mapping: mapping, Event: request, Limit: limit, SourceOperation: sourceOperation}
 	if cursor > 0 {
-		enqueue.Cursor = &bridgestore.CursorUpdate{Name: jetstreamCursor, Value: cursor}
+		enqueue.Cursor = &bridgestore.CursorUpdate{Name: jetstreamCursor, Value: fmt.Sprint(cursor)}
 	}
 	if err := s.options.OutboxStore.EnqueueEvent(ctx, enqueue); err != nil {
 		return fmt.Errorf("save mapped event and enqueue: %w", err)
@@ -382,7 +388,7 @@ func (s *Syncer) replaceRecord(ctx context.Context, event Event) error {
 }
 
 func (s *Syncer) enqueueReplacement(ctx context.Context, source Event, mappedURI, text string, createdAt time.Time, replyTo string, images []bluesky.Image, links []bluesky.Link) error {
-	old, err := s.options.OutboxStore.EventMappingBySourceURI(ctx, source.URI())
+	old, err := s.options.OutboxStore.EventMappingBySourceURI(ctx, s.ref(source.URI()))
 	if err != nil {
 		return fmt.Errorf("lookup source event: %w", err)
 	}
@@ -413,9 +419,9 @@ func (s *Syncer) enqueueReplacement(ctx context.Context, source Event, mappedURI
 	if limit <= 0 {
 		limit = 10000
 	}
-	request := bridgestore.UpdateEnqueueRequest{Mapping: bridgestore.EventMapping{SourceURI: source.URI(), NostrEventID: replacement.ID.Hex(), SourceKind: postCollection, AuthorPubKey: replacement.PubKey.Hex(), UpdatedAt: now.Unix()}, Deletion: bridgestore.OutboxRequest{AggregateKey: replacement.PubKey.Hex(), Operation: bridgestore.OutboxPublishEvent, PubKey: replacement.PubKey.Hex(), Payload: string(deletedPayload), AvailableAt: now}, Replacement: bridgestore.OutboxRequest{AggregateKey: replacement.PubKey.Hex(), Operation: bridgestore.OutboxPublishEvent, PubKey: replacement.PubKey.Hex(), Payload: string(replacementPayload), AvailableAt: now}, SourceOperation: source.updateIdentity(), Limit: limit}
+	request := bridgestore.UpdateEnqueueRequest{Mapping: bridgestore.EventMapping{Source: s.ref(source.URI()), NostrEventID: replacement.ID.Hex(), SourceKind: postCollection, AuthorPubKey: replacement.PubKey.Hex(), UpdatedAt: now.Unix()}, Deletion: bridgestore.OutboxRequest{AggregateKey: replacement.PubKey.Hex(), Operation: bridgestore.OutboxPublishEvent, PubKey: replacement.PubKey.Hex(), Payload: string(deletedPayload), AvailableAt: now}, Replacement: bridgestore.OutboxRequest{AggregateKey: replacement.PubKey.Hex(), Operation: bridgestore.OutboxPublishEvent, PubKey: replacement.PubKey.Hex(), Payload: string(replacementPayload), AvailableAt: now}, SourceOperation: source.updateIdentity(), Limit: limit}
 	if source.TimeUS > 0 {
-		request.Cursor = &bridgestore.CursorUpdate{Name: jetstreamCursor, Value: source.TimeUS}
+		request.Cursor = &bridgestore.CursorUpdate{Name: jetstreamCursor, Value: fmt.Sprint(source.TimeUS)}
 	}
 	return s.options.OutboxStore.EnqueueUpdate(ctx, request)
 }
@@ -451,10 +457,10 @@ func blueskyPostURL(uri string) (string, error) {
 
 func (s *Syncer) deleteSource(ctx context.Context, uri, did string, cursor int64) error {
 	if s.options.OutboxStore != nil {
-		persisted, err := s.options.OutboxStore.EventMappingBySourceURI(ctx, uri)
+		persisted, err := s.options.OutboxStore.EventMappingBySourceURI(ctx, s.ref(uri))
 		if errors.Is(err, sql.ErrNoRows) {
 			if cursor > 0 {
-				return s.options.OutboxStore.SaveCursor(ctx, jetstreamCursor, cursor)
+				return s.options.OutboxStore.SaveCursor(ctx, s.options.Scope, jetstreamCursor, fmt.Sprint(cursor))
 			}
 			return nil
 		}
@@ -481,9 +487,9 @@ func (s *Syncer) deleteSource(ctx context.Context, uri, did string, cursor int64
 		if limit <= 0 {
 			limit = 10000
 		}
-		req := bridgestore.DeleteEnqueueRequest{SourceURI: uri, Event: bridgestore.OutboxRequest{AggregateKey: deletion.PubKey.Hex(), Operation: bridgestore.OutboxPublishEvent, PubKey: deletion.PubKey.Hex(), Payload: string(payload), AvailableAt: time.Now()}, Limit: limit}
+		req := bridgestore.DeleteEnqueueRequest{Source: s.ref(uri), Event: bridgestore.OutboxRequest{AggregateKey: deletion.PubKey.Hex(), Operation: bridgestore.OutboxPublishEvent, PubKey: deletion.PubKey.Hex(), Payload: string(payload), AvailableAt: time.Now()}, Limit: limit}
 		if cursor > 0 {
-			req.Cursor = &bridgestore.CursorUpdate{Name: jetstreamCursor, Value: cursor}
+			req.Cursor = &bridgestore.CursorUpdate{Name: jetstreamCursor, Value: fmt.Sprint(cursor)}
 		}
 		return s.options.OutboxStore.EnqueueDelete(ctx, req)
 	}
@@ -515,9 +521,16 @@ func (s *Syncer) Subscription(ctx context.Context, endpoint string) (*url.URL, e
 	q.Add("wantedCollections", postCollection)
 	q.Add("wantedCollections", repostCollection)
 	var cursor int64
-	cursor, err = s.options.OutboxStore.Cursor(ctx, jetstreamCursor)
+	var rawCursor string
+	rawCursor, err = s.options.OutboxStore.Cursor(ctx, s.options.Scope, jetstreamCursor)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("load Jetstream cursor: %w", err)
+	}
+	if rawCursor != "" {
+		cursor, err = strconv.ParseInt(rawCursor, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse Jetstream cursor: %w", err)
+		}
 	}
 	if cursor > 0 {
 		cursor -= s.options.Rewind.Microseconds()
