@@ -1,0 +1,44 @@
+# Adjust namespace labels and DNS rules for your cluster before applying.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nostr-bridge-ingress
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: nostr-bridge}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {nostr.networking/bridge-access: "true"}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nostr-bridge-egress
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: nostr-bridge}
+  policyTypes: [Egress]
+  egress:
+    # Relay protocol and management listeners. Add an appropriate
+    # namespaceSelector alongside this podSelector if the relay is elsewhere.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: nostr-relay}
+      ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8081}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # NetworkPolicy cannot select public OAuth, Bluesky, or Jetstream hosts by
+    # DNS name. This reference permits their TLS port; restrict stable CIDRs
+    # when your environment supports doing so.
+    - ports:
+        - {protocol: TCP, port: 443}

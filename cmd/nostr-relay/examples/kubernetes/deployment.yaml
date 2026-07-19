@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nostr-relay
+  labels: &labels
+    app.kubernetes.io/name: nostr-relay
+spec:
+  # SQLite and the ReadWriteOnce PVC require a single writer.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nostr-relay
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: relay
+          image: ghcr.io/nakatanakatana/nostr-relay:latest # Pin a release or digest.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: protocol, containerPort: 8080}
+            - {name: management, containerPort: 8081}
+          env:
+            - {name: NOSTR_RELAY_HOST, value: 0.0.0.0}
+            - {name: NOSTR_RELAY_PORT, value: "8080"}
+            - {name: NOSTR_RELAY_MANAGEMENT_HOST, value: 0.0.0.0}
+            - {name: NOSTR_RELAY_MANAGEMENT_PORT, value: "8081"}
+            - {name: NOSTR_RELAY_MODE, value: private-sqlite}
+            - {name: NOSTR_RELAY_DATABASE_PATH, value: /var/lib/nostr-relay/relay.db}
+            - {name: NOSTR_RELAY_SERVICE_URL, value: REPLACE_WITH_CANONICAL_RELAY_HTTPS_URL}
+            - {name: NOSTR_RELAY_ADMIN_PUBKEY, value: REPLACE_WITH_64_HEX_ADMIN_PUBLIC_KEY}
+            - {name: NOSTR_RELAY_READER_PUBKEYS, value: REPLACE_WITH_COMMA_SEPARATED_64_HEX_READER_PUBLIC_KEYS}
+          readinessProbe:
+            httpGet: {path: /, port: protocol}
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: protocol}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/nostr-relay}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: nostr-relay-data}
+        - name: tmp
+          emptyDir: {}

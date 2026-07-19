@@ -1,0 +1,22 @@
+# Management port 8081 must not be exposed to readers or any workload other
+# than nostr-bridge. Adapt namespace labels to match your cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nostr-relay-ingress
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: nostr-relay}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {nostr.networking/relay-reader-access: "true"}
+      ports:
+        - {protocol: TCP, port: 8080}
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: nostr-bridge}
+      ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8081}
