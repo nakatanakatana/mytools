@@ -1,7 +1,10 @@
 package oauth
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,16 +12,28 @@ import (
 	"testing"
 )
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func TestHandlerStartReturnsAuthorizationURL(t *testing.T) {
-	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/par" {
+	var issuer *httptest.Server
+	issuer = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-authorization-server" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(issuer.URL)))
+			return
+		}
+		if r.URL.Path != "/oauth/par" {
 			t.Fatalf("path = %q", r.URL.Path)
 		}
 		w.Header().Set("DPoP-Nonce", "nonce")
 		_ = json.NewEncoder(w).Encode(map[string]string{"request_uri": "urn:test"})
 	}))
 	defer issuer.Close()
-	client, _ := newTestClient(t, issuer.URL)
+	client, _ := newTestClient(t, issuer.URL, issuer.Client())
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/oauth/start", strings.NewReader(`{"handle":"alice.test"}`))
@@ -34,8 +49,69 @@ func TestHandlerStartReturnsAuthorizationURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	parsed, err := url.Parse(response.AuthorizationURL)
-	if err != nil || parsed.Path != "/authorize" || parsed.Query().Get("request_uri") != "urn:test" {
+	if err != nil || parsed.Path != "/oauth/authorize" || parsed.Query().Get("request_uri") != "urn:test" {
 		t.Fatalf("authorization_url = %q", response.AuthorizationURL)
+	}
+}
+
+func TestHandlerStartLogsInternalFailureAndReturnsSanitizedError(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("metadata unavailable")
+	})}
+	client, _ := newTestClient(t, "https://issuer.example", httpClient)
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/oauth/start", strings.NewReader(`{"handle":"alice.test"}`))
+	client.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadGateway || recorder.Body.String() != "could not start OAuth authorization\n" {
+		t.Fatalf("response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(logs.String(), "start OAuth authorization: discover authorization server metadata") {
+		t.Fatalf("log = %q", logs.String())
+	}
+	for _, secret := range []string{"metadata unavailable", `{"handle":"alice.test"}`} {
+		if strings.Contains(recorder.Body.String(), secret) {
+			t.Fatalf("response leaked %q", secret)
+		}
+	}
+}
+
+func TestHandlerStartDoesNotLogAuthorizationServerResponseBody(t *testing.T) {
+	const secretResponse = `{"request_uri":"urn:secret","client_assertion":"secret-assertion"}`
+	var issuer *httptest.Server
+	issuer = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-authorization-server" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(issuer.URL)))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(secretResponse))
+	}))
+	defer issuer.Close()
+	client, _ := newTestClient(t, issuer.URL, issuer.Client())
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
+
+	recorder := httptest.NewRecorder()
+	client.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/oauth/start", strings.NewReader(`{"handle":"alice.test"}`)))
+
+	if recorder.Code != http.StatusBadGateway || !strings.Contains(logs.String(), "push authorization request: 400 Bad Request") {
+		t.Fatalf("response = %d, log = %q", recorder.Code, logs.String())
+	}
+	for _, secret := range []string{"urn:secret", "secret-assertion", "request_uri", "client_assertion"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("log leaked %q: %q", secret, logs.String())
+		}
 	}
 }
 

@@ -23,9 +23,16 @@ import (
 func TestStartAuthorizationPushesPKCEAuthenticatedRequestAndStoresEncryptedState(t *testing.T) {
 	var gotPAR url.Values
 	var gotDPoP string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/par" {
-			t.Fatalf("path = %q, want /par", r.URL.Path)
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
+			return
+		case "/oauth/par":
+		default:
+			t.Fatalf("path = %q, want metadata or /oauth/par", r.URL.Path)
 		}
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
@@ -36,7 +43,7 @@ func TestStartAuthorizationPushesPKCEAuthenticatedRequestAndStoresEncryptedState
 	}))
 	defer server.Close()
 
-	client, stateStore := newTestClient(t, server.URL)
+	client, stateStore := newTestClient(t, server.URL, server.Client())
 	redirect, err := client.StartAuthorization(context.Background(), "alice.test")
 	if err != nil {
 		t.Fatal(err)
@@ -52,8 +59,11 @@ func TestStartAuthorizationPushesPKCEAuthenticatedRequestAndStoresEncryptedState
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Path != "/authorize" || parsed.Query().Get("request_uri") != "urn:request:one" || parsed.Query().Get("client_id") != client.clientID {
+	if parsed.Path != "/oauth/authorize" || parsed.Query().Get("request_uri") != "urn:request:one" || parsed.Query().Get("client_id") != client.clientID {
 		t.Fatalf("redirect = %q", redirect)
+	}
+	if got := jwtClaims(t, gotDPoP)["htu"]; got != server.URL+"/oauth/par" {
+		t.Fatalf("DPoP htu = %#v", got)
 	}
 
 	session, err := stateStore.OAuthSessionByState(context.Background(), gotPAR.Get("state"))
@@ -76,20 +86,26 @@ func TestStartAuthorizationPushesPKCEAuthenticatedRequestAndStoresEncryptedState
 
 func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 	var tokenForm url.Values
+	var tokenDPoP string
 	var state string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/par":
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
+		case "/oauth/par":
 			_ = r.ParseForm()
 			state = r.Form.Get("state")
 			w.Header().Set("DPoP-Nonce", "par-nonce")
 			_ = json.NewEncoder(w).Encode(map[string]any{"request_uri": "urn:request:one"})
-		case "/token":
+		case "/oauth/token":
 			if err := r.ParseForm(); err != nil {
 				t.Fatal(err)
 			}
 			tokenForm = r.Form
-			if r.Header.Get("DPoP") == "" {
+			tokenDPoP = r.Header.Get("DPoP")
+			if tokenDPoP == "" {
 				t.Fatal("token request missing DPoP")
 			}
 			w.Header().Set("DPoP-Nonce", "token-nonce")
@@ -100,7 +116,7 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, stateStore := newTestClient(t, server.URL)
+	client, stateStore := newTestClient(t, server.URL, server.Client())
 	if _, err := client.StartAuthorization(context.Background(), "alice.test"); err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +128,10 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 	}
 	if tokenForm.Get("grant_type") != "authorization_code" || tokenForm.Get("code") != "authorization-code" || tokenForm.Get("code_verifier") == "" || tokenForm.Get("client_assertion") == "" {
 		t.Fatalf("token form = %#v", tokenForm)
+	}
+	assertClientAssertion(t, tokenForm.Get("client_assertion"), &client.clientSigningKey.PublicKey, client.clientID, server.URL)
+	if got := jwtClaims(t, tokenDPoP)["htu"]; got != server.URL+"/oauth/token" {
+		t.Fatalf("DPoP htu = %#v", got)
 	}
 	token, err := stateStore.OAuthTokenByAccountDID(context.Background(), "did:plc:alice")
 	if err != nil {
@@ -137,19 +157,27 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 
 func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T) {
 	var form url.Values
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/token" {
+	var tokenDPoP string
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-authorization-server" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
+			return
+		}
+		if r.URL.Path != "/oauth/token" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
 		form = r.Form
+		tokenDPoP = r.Header.Get("DPoP")
 		w.Header().Set("DPoP-Nonce", "refreshed-nonce")
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "atproto", "expires_in": 3600})
 	}))
 	defer server.Close()
-	client, store := newTestClient(t, server.URL)
+	client, store := newTestClient(t, server.URL, server.Client())
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +193,11 @@ func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T)
 	if err := store.SaveOAuthToken(context.Background(), bridgestore.OAuthToken{AccountDID: "did:plc:alice", EncryptedPayload: encrypted}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := client.TokenByAccountDID(context.Background(), "did:plc:alice")
+	restarted, err := NewClient(Options{Store: store, HTTPClient: server.Client(), AuthorizationServerURL: server.URL, ClientID: client.clientID, RedirectURL: client.redirectURL, ClientSigningKey: client.clientSigningKey, EncryptionKey: client.encryptionKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := restarted.TokenByAccountDID(context.Background(), "did:plc:alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +206,10 @@ func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T)
 	}
 	if form.Get("grant_type") != "refresh_token" || form.Get("refresh_token") != "old-refresh" || form.Get("client_assertion") == "" {
 		t.Fatalf("refresh form = %#v", form)
+	}
+	assertClientAssertion(t, form.Get("client_assertion"), &client.clientSigningKey.PublicKey, client.clientID, server.URL)
+	if got := jwtClaims(t, tokenDPoP)["htu"]; got != server.URL+"/oauth/token" {
+		t.Fatalf("DPoP htu = %#v", got)
 	}
 }
 
@@ -210,6 +246,23 @@ func assertClientAssertion(t *testing.T, token string, key *ecdsa.PublicKey, cli
 	}
 }
 
+func jwtClaims(t *testing.T, token string) map[string]any {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("JWT has %d parts", len(parts))
+	}
+	claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
+		t.Fatal(err)
+	}
+	return claims
+}
+
 func TestHandleCallbackRejectsUnknownOrExpiredState(t *testing.T) {
 	client, stateStore := newTestClient(t, "https://issuer.example")
 	for _, test := range []struct{ name, state string }{{"unknown", "missing"}, {"expired", "expired"}} {
@@ -230,8 +283,14 @@ func TestHandleCallbackRejectsUnknownOrExpiredState(t *testing.T) {
 
 func TestHandleCallbackRejectsMismatchedIssuer(t *testing.T) {
 	var state string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/par" {
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-authorization-server" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
+			return
+		}
+		if r.URL.Path != "/oauth/par" {
 			t.Fatalf("path = %q", r.URL.Path)
 		}
 		if err := r.ParseForm(); err != nil {
@@ -242,7 +301,7 @@ func TestHandleCallbackRejectsMismatchedIssuer(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"request_uri": "urn:test"})
 	}))
 	defer server.Close()
-	client, _ := newTestClient(t, server.URL)
+	client, _ := newTestClient(t, server.URL, server.Client())
 	if _, err := client.StartAuthorization(context.Background(), "alice.test"); err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +314,7 @@ func TestHandleCallbackRejectsMismatchedIssuer(t *testing.T) {
 	}
 }
 
-func newTestClient(t *testing.T, issuer string) (*Client, bridgestore.OAuthStore) {
+func newTestClient(t *testing.T, issuer string, httpClients ...*http.Client) (*Client, bridgestore.OAuthStore) {
 	t.Helper()
 	store, closer, err := bridgestore.Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -267,7 +326,11 @@ func newTestClient(t *testing.T, issuer string) (*Client, bridgestore.OAuthStore
 		t.Fatal(err)
 	}
 	encryptionKey := sha256.Sum256([]byte("test encryption key"))
-	client, err := NewClient(Options{Store: store, HTTPClient: http.DefaultClient, AuthorizationServerURL: issuer, ClientID: "https://bridge.example/oauth/client-metadata.json", RedirectURL: "https://bridge.example/oauth/callback", ClientSigningKey: key, EncryptionKey: encryptionKey[:]})
+	httpClient := http.DefaultClient
+	if len(httpClients) > 0 {
+		httpClient = httpClients[0]
+	}
+	client, err := NewClient(Options{Store: store, HTTPClient: httpClient, AuthorizationServerURL: issuer, ClientID: "https://bridge.example/oauth/client-metadata.json", RedirectURL: "https://bridge.example/oauth/callback", ClientSigningKey: key, EncryptionKey: encryptionKey[:]})
 	if err != nil {
 		t.Fatal(err)
 	}

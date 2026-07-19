@@ -104,6 +104,10 @@ func NewClient(options Options) (*Client, error) {
 
 // StartAuthorization creates a stateful PAR request and returns the user-facing authorization URL.
 func (c *Client) StartAuthorization(ctx context.Context, handle string) (string, error) {
+	metadata, err := c.discoverAuthorizationServer(ctx, c.issuer)
+	if err != nil {
+		return "", fmt.Errorf("discover authorization server metadata: %w", err)
+	}
 	state, err := randomString(32)
 	if err != nil {
 		return "", fmt.Errorf("generate OAuth state: %w", err)
@@ -124,13 +128,13 @@ func (c *Client) StartAuthorization(ctx context.Context, handle string) (string,
 		"state": {state}, "login_hint": {handle}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challengeHash[:])}, "code_challenge_method": {"S256"},
 		"client_assertion_type": {clientAssertionType},
 	}
-	assertion, err := c.clientAssertion(c.issuer)
+	assertion, err := c.clientAssertion(metadata.Issuer)
 	if err != nil {
 		return "", err
 	}
 	form.Set("client_assertion", assertion)
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.issuer+"/par", strings.NewReader(form.Encode()))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, metadata.PushedAuthorizationRequestEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("create PAR request: %w", err)
 	}
@@ -162,7 +166,7 @@ func (c *Client) StartAuthorization(ctx context.Context, handle string) (string,
 	if expiresIn <= 0 {
 		expiresIn = 600
 	}
-	payload, err := json.Marshal(sessionPayload{CodeVerifier: verifier, Issuer: c.issuer, DPoPKey: dpopJWK, DPoPNonce: response.Header.Get("DPoP-Nonce")})
+	payload, err := json.Marshal(sessionPayload{CodeVerifier: verifier, Issuer: metadata.Issuer, DPoPKey: dpopJWK, DPoPNonce: response.Header.Get("DPoP-Nonce")})
 	if err != nil {
 		return "", fmt.Errorf("encode OAuth session: %w", err)
 	}
@@ -173,7 +177,7 @@ func (c *Client) StartAuthorization(ctx context.Context, handle string) (string,
 	if err := c.store.SaveOAuthSession(ctx, bridgestore.OAuthSession{State: state, EncryptedPayload: encrypted, ExpiresAt: c.now().Add(time.Duration(expiresIn) * time.Second).Unix()}); err != nil {
 		return "", err
 	}
-	authorize, _ := url.Parse(c.issuer + "/authorize")
+	authorize, _ := url.Parse(metadata.AuthorizationEndpoint)
 	authorize.RawQuery = url.Values{"client_id": {c.clientID}, "request_uri": {par.RequestURI}}.Encode()
 	return authorize.String(), nil
 }
@@ -200,6 +204,11 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid OAuth issuer", http.StatusBadRequest)
 		return
 	}
+	metadata, err := c.discoverAuthorizationServer(r.Context(), payload.Issuer)
+	if err != nil {
+		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
+		return
+	}
 	dpopKey, err := payload.DPoPKey.ecdsa()
 	if err != nil {
 		http.Error(w, "invalid OAuth state", http.StatusBadRequest)
@@ -207,13 +216,13 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {c.redirectURL}, "client_id": {c.clientID}, "code_verifier": {payload.CodeVerifier}, "client_assertion_type": {clientAssertionType}}
-	assertion, err := c.clientAssertion(payload.Issuer)
+	assertion, err := c.clientAssertion(metadata.Issuer)
 	if err != nil {
 		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
 		return
 	}
 	form.Set("client_assertion", assertion)
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, payload.Issuer+"/token", strings.NewReader(form.Encode()))
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, metadata.TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
 		return
@@ -292,13 +301,17 @@ func (c *Client) refreshToken(ctx context.Context, accountDID string, current to
 	if strings.TrimSpace(current.RefreshToken) == "" {
 		return Token{}, errors.New("OAuth token has no refresh token")
 	}
+	metadata, err := c.discoverAuthorizationServer(ctx, c.issuer)
+	if err != nil {
+		return Token{}, fmt.Errorf("discover authorization server metadata: %w", err)
+	}
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {current.RefreshToken}, "client_id": {c.clientID}, "client_assertion_type": {clientAssertionType}}
-	assertion, err := c.clientAssertion(c.issuer)
+	assertion, err := c.clientAssertion(metadata.Issuer)
 	if err != nil {
 		return Token{}, err
 	}
 	form.Set("client_assertion", assertion)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.issuer+"/token", strings.NewReader(form.Encode()))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, metadata.TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return Token{}, fmt.Errorf("create OAuth refresh request: %w", err)
 	}
@@ -388,8 +401,8 @@ func (c *Client) decryptJSON(ciphertext []byte, value any) error {
 }
 
 func responseError(operation string, response *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-	return fmt.Errorf("%s: %s: %s", operation, response.Status, strings.TrimSpace(string(body)))
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	return fmt.Errorf("%s: %s", operation, response.Status)
 }
 func hasScope(scope, want string) bool {
 	for _, value := range strings.Fields(scope) {
