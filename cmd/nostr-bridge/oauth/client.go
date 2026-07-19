@@ -128,25 +128,17 @@ func (c *Client) StartAuthorization(ctx context.Context, handle string) (string,
 		"state": {state}, "login_hint": {handle}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challengeHash[:])}, "code_challenge_method": {"S256"},
 		"client_assertion_type": {clientAssertionType},
 	}
-	assertion, err := c.clientAssertion(metadata.Issuer)
+	response, err := c.doDPoPFormRequest(ctx, "push authorization request", metadata.PushedAuthorizationRequestEndpoint, dpopKey, "", func() (url.Values, error) {
+		attemptForm := cloneValues(form)
+		assertion, err := c.clientAssertion(metadata.Issuer)
+		if err != nil {
+			return nil, err
+		}
+		attemptForm.Set("client_assertion", assertion)
+		return attemptForm, nil
+	})
 	if err != nil {
 		return "", err
-	}
-	form.Set("client_assertion", assertion)
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, metadata.PushedAuthorizationRequestEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", fmt.Errorf("create PAR request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	proof, err := dpopProof(dpopKey, http.MethodPost, request.URL, "")
-	if err != nil {
-		return "", err
-	}
-	request.Header.Set("DPoP", proof)
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("push authorization request: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
@@ -216,25 +208,15 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {c.redirectURL}, "client_id": {c.clientID}, "code_verifier": {payload.CodeVerifier}, "client_assertion_type": {clientAssertionType}}
-	assertion, err := c.clientAssertion(metadata.Issuer)
-	if err != nil {
-		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
-		return
-	}
-	form.Set("client_assertion", assertion)
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, metadata.TokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
-		return
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	proof, err := dpopProof(dpopKey, http.MethodPost, request.URL, payload.DPoPNonce)
-	if err != nil {
-		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
-		return
-	}
-	request.Header.Set("DPoP", proof)
-	response, err := c.httpClient.Do(request)
+	response, err := c.doDPoPFormRequest(r.Context(), "exchange OAuth code", metadata.TokenEndpoint, dpopKey, payload.DPoPNonce, func() (url.Values, error) {
+		attemptForm := cloneValues(form)
+		assertion, err := c.clientAssertion(metadata.Issuer)
+		if err != nil {
+			return nil, err
+		}
+		attemptForm.Set("client_assertion", assertion)
+		return attemptForm, nil
+	})
 	if err != nil {
 		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
 		return
@@ -306,24 +288,17 @@ func (c *Client) refreshToken(ctx context.Context, accountDID string, current to
 		return Token{}, fmt.Errorf("discover authorization server metadata: %w", err)
 	}
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {current.RefreshToken}, "client_id": {c.clientID}, "client_assertion_type": {clientAssertionType}}
-	assertion, err := c.clientAssertion(metadata.Issuer)
+	response, err := c.doDPoPFormRequest(ctx, "refresh OAuth token", metadata.TokenEndpoint, key, current.DPoPNonce, func() (url.Values, error) {
+		attemptForm := cloneValues(form)
+		assertion, err := c.clientAssertion(metadata.Issuer)
+		if err != nil {
+			return nil, err
+		}
+		attemptForm.Set("client_assertion", assertion)
+		return attemptForm, nil
+	})
 	if err != nil {
 		return Token{}, err
-	}
-	form.Set("client_assertion", assertion)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, metadata.TokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return Token{}, fmt.Errorf("create OAuth refresh request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	proof, err := dpopProof(key, http.MethodPost, request.URL, current.DPoPNonce)
-	if err != nil {
-		return Token{}, err
-	}
-	request.Header.Set("DPoP", proof)
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return Token{}, fmt.Errorf("refresh OAuth token: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
