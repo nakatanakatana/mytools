@@ -1,5 +1,9 @@
 name: CI
 
+env:
+  # renovate: datasource=github-releases depName=moznion/cccc
+  CCCC_VERSION: v1.5.0
+
 on:
   pull_request:
   push:
@@ -75,7 +79,13 @@ jobs:
         env:
           GO_VERSION: ${{ steps.parse-go-version.outputs.GO_VERSION }}
       - run: go test ./... -v -coverprofile=coverage.out -covermode=atomic
+      - uses: moznion/cccc-action@8fa5a4b13bf907676709cece09147a047b7be7b0 # v1
+        with:
+          version: ${{ env.CCCC_VERSION }}
+      - run: go run ./scripts/gather-metrics.go
       - uses: k1LoW/octocov-action@b3b6ee60482a667950f87553abf1df63217235d9 # v1.5.1
+        env:
+          OCTOCOV_CUSTOM_METRICS_CCCC: cccc-metrics.json
 
   aqua-checksum:
     runs-on: ubuntu-latest
