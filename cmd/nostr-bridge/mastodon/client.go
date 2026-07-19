@@ -98,6 +98,56 @@ func (c *Client) ListTimeline(ctx context.Context, listID string) ([]Status, err
 	return result, err
 }
 
+// HomeTimelineSince reads the authenticated home timeline after a durable ID.
+func (c *Client) HomeTimelineSince(ctx context.Context, sinceID string, limit int) ([]Status, error) {
+	page, err := c.HomeTimelinePage(ctx, sinceID, "", limit)
+	return page.Statuses, err
+}
+
+// ListTimelineSince reads one configured list timeline after a durable ID.
+func (c *Client) ListTimelineSince(ctx context.Context, listID, sinceID string, limit int) ([]Status, error) {
+	page, err := c.ListTimelinePage(ctx, listID, sinceID, "", limit)
+	return page.Statuses, err
+}
+
+func (c *Client) HomeTimelinePage(ctx context.Context, sinceID, maxID string, limit int) (TimelinePage, error) {
+	return c.statusTimelinePage(ctx, "/api/v1/timelines/home", sinceID, maxID, limit)
+}
+func (c *Client) ListTimelinePage(ctx context.Context, listID, sinceID, maxID string, limit int) (TimelinePage, error) {
+	return c.statusTimelinePage(ctx, "/api/v1/timelines/list/"+url.PathEscape(listID), sinceID, maxID, limit)
+}
+func (c *Client) statusTimelinePage(ctx context.Context, path, sinceID, maxID string, limit int) (TimelinePage, error) {
+	u := c.base.ResolveReference(&url.URL{Path: path})
+	q := u.Query()
+	if strings.TrimSpace(sinceID) != "" {
+		q.Set("since_id", sinceID)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(min(limit, 40)))
+	}
+	if strings.TrimSpace(maxID) != "" {
+		q.Set("max_id", maxID)
+	}
+	u.RawQuery = q.Encode()
+	var values []Status
+	link, err := c.getJSONPage(ctx, u, &values)
+	if err != nil {
+		return TimelinePage{}, err
+	}
+	next, err := c.nextURL(link)
+	if err != nil {
+		return TimelinePage{}, err
+	}
+	nextID := ""
+	if next != nil {
+		nextID = next.Query().Get("max_id")
+	}
+	if limit > 0 && len(values) > limit {
+		values = values[:limit]
+	}
+	return TimelinePage{Statuses: values, NextMaxID: nextID}, nil
+}
+
 func (c *Client) getOne(ctx context.Context, path string, target any) error {
 	u := c.base.ResolveReference(&url.URL{Path: path})
 	return c.getJSON(ctx, u, target)
