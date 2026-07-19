@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -28,6 +29,7 @@ func (c *Client) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	authorizationURL, err := c.StartAuthorization(r.Context(), request.Handle)
 	if err != nil {
+		log.Printf("start OAuth authorization: %v", err)
 		http.Error(w, "could not start OAuth authorization", http.StatusBadGateway)
 		return
 	}
