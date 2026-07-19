@@ -7,13 +7,39 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
-	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
 )
 
 var testSeed = []byte("01234567890123456789012345678901")
 
+func TestOwnerFollowEventContainsBothProviders(t *testing.T) {
+	owner := source.ActorIdentity{Provider: "bridge-owner", ID: "home"}
+	follows := source.IdentitySet{
+		{Provider: "bluesky", ID: "did:plc:alice"}:                     {},
+		{Provider: "mastodon", ID: "https://social.example/users/bob"}: {},
+	}
+	event, err := FollowEvent(testSeed, owner, follows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPTagsForIdentities(t, event.Tags, follows)
+}
+
+func assertPTagsForIdentities(t *testing.T, tags nostr.Tags, identities source.IdentitySet) {
+	t.Helper()
+	for identity := range identities {
+		key, err := DeriveActorKey(testSeed, identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tags.FindWithValue("p", key.Public().Hex()) == nil {
+			t.Errorf("p tag for %#v missing from %#v", identity, tags)
+		}
+	}
+}
+
 func TestProfileEventMapsBlueskyProfileAndSignsIt(t *testing.T) {
-	profile := bluesky.Profile{DID: "did:plc:alice", Handle: "alice.bsky.social", DisplayName: "Alice", Description: "Hello", Avatar: "https://example.com/a.png"}
+	profile := source.Profile{Identity: blueskyIdentity("did:plc:alice"), DisplayName: "Alice", Description: "Hello", AvatarURL: "https://example.com/a.png", ProfileURL: "https://bsky.app/profile/alice.bsky.social"}
 	event, err := ProfileEvent(testSeed, profile)
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +59,7 @@ func TestProfileEventMapsBlueskyProfileAndSignsIt(t *testing.T) {
 }
 
 func TestFollowEventMapsAllFollowedDIDs(t *testing.T) {
-	event, err := FollowEvent(testSeed, "did:plc:owner", bluesky.DIDSet{"did:plc:bob": {}, "did:plc:carol": {}})
+	event, err := FollowEvent(testSeed, blueskyIdentity("did:plc:owner"), identitySet("did:plc:bob", "did:plc:carol"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +70,7 @@ func TestFollowEventMapsAllFollowedDIDs(t *testing.T) {
 }
 
 func TestFollowSetEventMapsMetadataAndMembers(t *testing.T) {
-	event, err := FollowSetEvent(testSeed, "did:plc:owner", "at://did:plc:owner/app.bsky.graph.list/friends", "Friends", "People I know", bluesky.DIDSet{"did:plc:bob": {}})
+	event, err := FollowSetEvent(testSeed, blueskyIdentity("did:plc:owner"), source.List{ID: "at://did:plc:owner/app.bsky.graph.list/friends", Title: "Friends", Description: "People I know", Members: identitySet("did:plc:bob")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +92,7 @@ func TestPostEventRetainsTimestampURLAndKnownReplyParent(t *testing.T) {
 	}
 	parent := nostr.Event{ID: nostr.ID{1}, PubKey: parentKey.Public()}
 	createdAt := time.Unix(1_700_000_000, 0)
-	event, err := PostEvent(testSeed, Post{AuthorDID: "did:plc:alice", URI: "at://did:plc:alice/app.bsky.feed.post/3k", Text: "A reply", CreatedAt: createdAt, ReplyToURI: "at://did:plc:parent/app.bsky.feed.post/1"}, map[string]nostr.Event{"at://did:plc:parent/app.bsky.feed.post/1": parent})
+	event, err := PostEvent(testSeed, source.Post{ID: "at://did:plc:alice/app.bsky.feed.post/3k", Author: blueskyIdentity("did:plc:alice"), SourceURL: "https://bsky.app/profile/did:plc:alice/post/3k", Text: "A reply", CreatedAt: createdAt, ReplyToID: "at://did:plc:parent/app.bsky.feed.post/1"}, map[string]nostr.Event{"at://did:plc:parent/app.bsky.feed.post/1": parent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,14 +108,15 @@ func TestPostEventRetainsTimestampURLAndKnownReplyParent(t *testing.T) {
 }
 
 func TestPostEventAddsBlueskyImagesToContentAndIMetaTags(t *testing.T) {
-	post := Post{
-		AuthorDID: "did:plc:alice",
-		URI:       "at://did:plc:alice/app.bsky.feed.post/3k",
+	post := source.Post{
+		ID:        "at://did:plc:alice/app.bsky.feed.post/3k",
+		Author:    blueskyIdentity("did:plc:alice"),
+		SourceURL: "https://bsky.app/profile/did:plc:alice/post/3k",
 		Text:      "Two images",
 		CreatedAt: time.Unix(1, 0),
-		Images: []bluesky.Image{
-			{URL: "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/first@jpeg", MIMEType: "image/jpeg", Alt: "First image", Width: 1280, Height: 720},
-			{URL: "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/second@png", MIMEType: "image/png", Alt: "Second image"},
+		Attachments: []source.Attachment{
+			{URL: "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/first@jpeg", MIMEType: "image/jpeg", Description: "First image", Width: 1280, Height: 720},
+			{URL: "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/second@png", MIMEType: "image/png", Description: "Second image"},
 		},
 	}
 	event, err := PostEvent(testSeed, post, nil)
@@ -172,13 +199,25 @@ func TestPostEventAppendsLinksWithoutLeadingBlankLineForEmptyText(t *testing.T) 
 }
 
 func TestPostEventOmitsReplyTagsWhenParentIsUnknown(t *testing.T) {
-	event, err := PostEvent(testSeed, Post{AuthorDID: "did:plc:alice", URI: "at://did:plc:alice/app.bsky.feed.post/3k", CreatedAt: time.Unix(1, 0), ReplyToURI: "at://did:plc:missing/app.bsky.feed.post/1"}, nil)
+	event, err := PostEvent(testSeed, source.Post{ID: "at://did:plc:alice/app.bsky.feed.post/3k", Author: blueskyIdentity("did:plc:alice"), SourceURL: "https://bsky.app/profile/did:plc:alice/post/3k", CreatedAt: time.Unix(1, 0), ReplyToID: "at://did:plc:missing/app.bsky.feed.post/1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if event.Tags.Has("e") || event.Tags.Has("p") {
 		t.Fatalf("unknown reply parent produced reply tags: %#v", event.Tags)
 	}
+}
+
+func blueskyIdentity(did string) source.ActorIdentity {
+	return source.ActorIdentity{Provider: "bluesky", ID: did}
+}
+
+func identitySet(dids ...string) source.IdentitySet {
+	set := make(source.IdentitySet, len(dids))
+	for _, did := range dids {
+		set[blueskyIdentity(did)] = struct{}{}
+	}
+	return set
 }
 
 func assertPTagsForDIDs(t *testing.T, tags nostr.Tags, dids ...string) {

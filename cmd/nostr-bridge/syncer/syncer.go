@@ -16,6 +16,7 @@ import (
 	"fiatjaf.com/nostr"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/nostrmap"
+	neutral "github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
 
@@ -343,7 +344,11 @@ func (s *Syncer) publishPost(ctx context.Context, sourceURI, did, text string, c
 			return fmt.Errorf("lookup reply parent: %w", lookupErr)
 		}
 	}
-	mapped, err := nostrmap.PostEvent(s.options.MasterSeed, nostrmap.Post{AuthorDID: did, URI: uri, Text: text, CreatedAt: createdAt, ReplyToURI: replyTo, Images: images, Links: links}, parents)
+	sourceURL, err := blueskyPostURL(uri)
+	if err != nil {
+		return fmt.Errorf("map Bluesky post: %w", err)
+	}
+	mapped, err := nostrmap.PostEvent(s.options.MasterSeed, neutral.Post{ID: uri, Author: blueskyIdentity(did), SourceURL: sourceURL, Text: text, CreatedAt: createdAt, ReplyToID: replyTo, Attachments: blueskyAttachments(images), Links: blueskyLinks(links)}, parents)
 	if err != nil {
 		return fmt.Errorf("map Bluesky post: %w", err)
 	}
@@ -393,7 +398,11 @@ func (s *Syncer) enqueueReplacement(ctx context.Context, source Event, mappedURI
 	if err := deletion.Sign(key); err != nil {
 		return fmt.Errorf("sign deletion event: %w", err)
 	}
-	replacement, err := nostrmap.PostEvent(s.options.MasterSeed, nostrmap.Post{AuthorDID: source.DID, URI: mappedURI, Text: text, CreatedAt: createdAt, ReplyToURI: replyTo, Images: images, Links: links}, nil)
+	sourceURL, err := blueskyPostURL(mappedURI)
+	if err != nil {
+		return err
+	}
+	replacement, err := nostrmap.PostEvent(s.options.MasterSeed, neutral.Post{ID: mappedURI, Author: blueskyIdentity(source.DID), SourceURL: sourceURL, Text: text, CreatedAt: createdAt, ReplyToID: replyTo, Attachments: blueskyAttachments(images), Links: blueskyLinks(links)}, nil)
 	if err != nil {
 		return err
 	}
@@ -409,6 +418,35 @@ func (s *Syncer) enqueueReplacement(ctx context.Context, source Event, mappedURI
 		request.Cursor = &bridgestore.CursorUpdate{Name: jetstreamCursor, Value: source.TimeUS}
 	}
 	return s.options.OutboxStore.EnqueueUpdate(ctx, request)
+}
+
+func blueskyIdentity(did string) neutral.ActorIdentity {
+	return neutral.ActorIdentity{Provider: "bluesky", ID: did}
+}
+
+func blueskyAttachments(images []bluesky.Image) []neutral.Attachment {
+	attachments := make([]neutral.Attachment, len(images))
+	for i, image := range images {
+		attachments[i] = neutral.Attachment{URL: image.URL, MIMEType: image.MIMEType, Description: image.Alt, Width: image.Width, Height: image.Height}
+	}
+	return attachments
+}
+
+func blueskyLinks(links []bluesky.Link) []neutral.Link {
+	values := make([]neutral.Link, len(links))
+	for i, link := range links {
+		values[i] = neutral.Link{URL: link.URI}
+	}
+	return values
+}
+
+func blueskyPostURL(uri string) (string, error) {
+	const prefix = "at://"
+	parts := strings.Split(strings.TrimPrefix(uri, prefix), "/")
+	if !strings.HasPrefix(uri, prefix) || len(parts) != 3 || parts[0] == "" || parts[1] != postCollection || parts[2] == "" {
+		return "", fmt.Errorf("invalid Bluesky post URI %q", uri)
+	}
+	return "https://bsky.app/profile/" + parts[0] + "/post/" + parts[2], nil
 }
 
 func (s *Syncer) deleteSource(ctx context.Context, uri, did string, cursor int64) error {

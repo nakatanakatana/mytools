@@ -16,6 +16,7 @@ import (
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/nostrmap"
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
+	neutral "github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/syncer"
 )
@@ -290,13 +291,13 @@ func publishReconciliation(ctx context.Context, source bluesky.SourceClient, see
 		if err != nil {
 			return fmt.Errorf("read profile %s: %w", did, err)
 		}
-		event, err := nostrmap.ProfileEvent(seed, profile)
+		event, err := nostrmap.ProfileEvent(seed, neutral.Profile{Identity: blueskyActorIdentity(profile.DID), DisplayName: profile.DisplayName, Description: profile.Description, AvatarURL: profile.Avatar, ProfileURL: "https://bsky.app/profile/" + profile.Handle})
 		if err != nil {
 			return err
 		}
 		requests = append(requests, reconciliationEventRequest("at://"+did+"/app.bsky.actor.profile/self", event))
 	}
-	follows, err := nostrmap.FollowEvent(seed, accountDID, targets.Union)
+	follows, err := nostrmap.FollowEvent(seed, blueskyActorIdentity(accountDID), blueskyIdentitySet(targets.Union))
 	if err != nil {
 		return err
 	}
@@ -307,7 +308,7 @@ func publishReconciliation(ctx context.Context, source bluesky.SourceClient, see
 		if identifier == "" {
 			identifier = uri
 		}
-		event, err := nostrmap.FollowSetEvent(seed, accountDID, identifier, metadata.Name, metadata.Description, members)
+		event, err := nostrmap.FollowSetEvent(seed, blueskyActorIdentity(accountDID), neutral.List{ID: identifier, Title: metadata.Name, Description: metadata.Description, Members: blueskyIdentitySet(members)})
 		if err != nil {
 			return err
 		}
@@ -319,6 +320,18 @@ func publishReconciliation(ctx context.Context, source bluesky.SourceClient, see
 	}
 	sort.Strings(dids)
 	return store.Reconcile(ctx, bridgestore.ReconciliationRequest{Targets: dids, Events: requests, Limit: int64(outboxLimit)})
+}
+
+func blueskyActorIdentity(did string) neutral.ActorIdentity {
+	return neutral.ActorIdentity{Provider: "bluesky", ID: did}
+}
+
+func blueskyIdentitySet(dids bluesky.DIDSet) neutral.IdentitySet {
+	identities := make(neutral.IdentitySet, len(dids))
+	for did := range dids {
+		identities[blueskyActorIdentity(did)] = struct{}{}
+	}
+	return identities
 }
 
 func reconciliationEventRequest(sourceURI string, event nostr.Event) bridgestore.EventEnqueueRequest {
