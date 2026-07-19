@@ -87,7 +87,7 @@ type runtimeStore interface {
 }
 
 func newRuntimeSync(cfg Config, store runtimeStore, oauthClient *bridgeoauth.Client, health *Health) (*runtimeSync, error) {
-	seed, err := base64.StdEncoding.DecodeString(cfg.MasterSeed)
+	seed, err := base64.StdEncoding.DecodeString(cfg.Shared.MasterSeed)
 	if err != nil || len(seed) != 32 {
 		return nil, errInvalidMasterSeed
 	}
@@ -125,7 +125,7 @@ func (r *runtimeSync) CloseContext(ctx context.Context) error {
 
 func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store runtimeStore, oauthClient *bridgeoauth.Client, health *Health) {
 	for ctx.Err() == nil {
-		token, err := oauthClient.TokenByAccountDID(ctx, cfg.AccountDID)
+		token, err := oauthClient.TokenByAccountDID(ctx, cfg.Bluesky.AccountDID)
 		if err == nil {
 			if !token.Expiry.IsZero() && !token.Expiry.After(time.Now()) {
 				health.Update(func(metrics *HealthMetrics) {
@@ -140,9 +140,9 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 				continue
 			}
 			health.Update(func(metrics *HealthMetrics) { metrics.OAuthConnected = true; metrics.OAuthExpiry = token.Expiry })
-			if source, sourceErr := bluesky.NewClient(bluesky.ClientOptions{BaseURL: cfg.BlueskyBaseURL, Token: token, AccountDID: cfg.AccountDID}); sourceErr == nil {
+			if source, sourceErr := bluesky.NewClient(bluesky.ClientOptions{BaseURL: cfg.Bluesky.BaseURL, Token: token, AccountDID: cfg.Bluesky.AccountDID}); sourceErr == nil {
 				health.Update(func(metrics *HealthMetrics) { metrics.PendingWork++ })
-				targets, reconcileErr := bluesky.NewReconciler(source, cfg.ListURIs).Reconcile(ctx)
+				targets, reconcileErr := bluesky.NewReconciler(source, cfg.Bluesky.ListURIs).Reconcile(ctx)
 				if reconcileErr != nil {
 					reportReconciliationFailure("initial reconciliation", reconcileErr)
 				}
@@ -153,7 +153,7 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 					}
 				})
 				if reconcileErr == nil {
-					if err := publishReconciliation(ctx, source, seed, cfg.AccountDID, targets, store, cfg.OutboxLimit); err != nil {
+					if err := publishReconciliation(ctx, source, seed, cfg.Bluesky.AccountDID, targets, store, cfg.Shared.OutboxLimit); err != nil {
 						reportReconciliationFailure("initial publication", err)
 						continue
 					}
@@ -161,8 +161,8 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 				if len(targets.Union) > 0 {
 					live := newLiveTargets(targets.Union)
 					syncContext, stopSync := context.WithCancel(ctx)
-					go reconcilePeriodically(syncContext, cfg.ReconcileInterval, source, seed, cfg.AccountDID, cfg.ListURIs, store, cfg.OutboxLimit, live, health)
-					s := syncer.New(syncer.Options{Source: source, OutboxStore: store, OutboxLimit: int64(cfg.OutboxLimit), MasterSeed: seed, TargetProvider: live.Get, TargetUpdates: live.Updates(), BackfillLimit: cfg.BackfillLimit, JetstreamURL: cfg.JetstreamURL, Observer: healthSyncObserver{health}})
+					go reconcilePeriodically(syncContext, cfg.Bluesky.ReconcileInterval, source, seed, cfg.Bluesky.AccountDID, cfg.Bluesky.ListURIs, store, cfg.Shared.OutboxLimit, live, health)
+					s := syncer.New(syncer.Options{Source: source, OutboxStore: store, OutboxLimit: int64(cfg.Shared.OutboxLimit), MasterSeed: seed, TargetProvider: live.Get, TargetUpdates: live.Updates(), BackfillLimit: cfg.Bluesky.BackfillLimit, JetstreamURL: cfg.Bluesky.JetstreamURL, Observer: healthSyncObserver{health}})
 					reportSyncFailure(s.Run(syncContext))
 					stopSync()
 				}
