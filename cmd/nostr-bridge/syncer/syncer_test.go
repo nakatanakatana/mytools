@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,6 +101,65 @@ func TestBackfillEnqueuesAllowThenEventWithoutDirectRelay(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].Operation != bridgestore.OutboxPublishEvent {
 		t.Fatalf("second claim = %#v, %v", items, err)
 	}
+}
+
+func TestBackfillPublishesTimelineImages(t *testing.T) {
+	ctx := context.Background()
+	durable, closer, err := bridgestore.Open(ctx, filepath.Join(t.TempDir(), "backfill-images.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+	post := bluesky.Post{URI: "at://did:plc:alice/app.bsky.feed.post/image", AuthorDID: "did:plc:alice", Text: "photo", CreatedAt: time.Unix(10, 0), Images: []bluesky.Image{{URL: "https://cdn.bsky.app/image.jpg", MIMEType: "image/jpeg", Alt: "Photo"}}}
+	s := New(Options{Source: fakeSource{pages: []bluesky.Page{{Posts: []bluesky.Post{post}}}}, OutboxStore: durable, MasterSeed: []byte("seed"), OutboxLimit: 10})
+	if err := s.Backfill(ctx); err != nil {
+		t.Fatal(err)
+	}
+	event := claimPublishedEvent(t, ctx, durable)
+	if !strings.Contains(event.Content, "https://cdn.bsky.app/image.jpg") || event.Tags.Find("imeta") == nil {
+		t.Fatalf("image event = content %q, tags %#v", event.Content, event.Tags)
+	}
+}
+
+func TestJetstreamPublishesImageBlobAsBlueskyCDNURL(t *testing.T) {
+	ctx := context.Background()
+	durable, closer, err := bridgestore.Open(ctx, filepath.Join(t.TempDir(), "jetstream-images.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+	s := New(Options{OutboxStore: durable, MasterSeed: []byte("seed"), OutboxLimit: 10})
+	record := json.RawMessage(`{"text":"photo","createdAt":"1970-01-01T00:00:10Z","embed":{"$type":"app.bsky.embed.images","images":[{"alt":"Photo","image":{"$type":"blob","ref":{"$link":"bafkreihash"},"mimeType":"image/jpeg","size":123},"aspectRatio":{"width":640,"height":480}}]}}`)
+	if err := s.Handle(ctx, Event{DID: "did:plc:alice", Collection: postCollection, RKey: "image", Operation: Create, Record: record}); err != nil {
+		t.Fatal(err)
+	}
+	event := claimPublishedEvent(t, ctx, durable)
+	want := "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/bafkreihash@jpeg"
+	if !strings.Contains(event.Content, want) || event.Tags.Find("imeta") == nil {
+		t.Fatalf("image event = content %q, tags %#v", event.Content, event.Tags)
+	}
+}
+
+func claimPublishedEvent(t *testing.T, ctx context.Context, store bridgestore.SQLiteStore) nostr.Event {
+	t.Helper()
+	items, err := store.ClaimOutbox(ctx, time.Now().Add(time.Second), time.Minute, 10)
+	if err != nil || len(items) == 0 {
+		t.Fatalf("claim publisher registration = %#v, %v", items, err)
+	}
+	if items[0].Operation == bridgestore.OutboxAllowPublisher {
+		if err := store.CompletePublisherRegistration(ctx, items[0].ID, items[0].ClaimToken, items[0].PubKey, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		items, err = store.ClaimOutbox(ctx, time.Now().Add(time.Second), time.Minute, 10)
+	}
+	if err != nil || len(items) == 0 {
+		t.Fatalf("claim publish = %#v, %v", items, err)
+	}
+	var event nostr.Event
+	if err := json.Unmarshal([]byte(items[0].Payload), &event); err != nil {
+		t.Fatal(err)
+	}
+	return event
 }
 
 func TestRegisteredPublisherSkipsAllowEnqueue(t *testing.T) {

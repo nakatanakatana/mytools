@@ -18,6 +18,7 @@ type Post struct {
 	Text       string
 	CreatedAt  time.Time
 	ReplyToURI string
+	Images     []bluesky.Image
 }
 
 // ProfileEvent creates a signed kind 0 event for a Bluesky profile.
@@ -81,7 +82,37 @@ func PostEvent(masterSeed []byte, post Post, parents map[string]nostr.Event) (no
 	if parent, ok := parents[post.ReplyToURI]; ok && post.ReplyToURI != "" {
 		tags = append(tags, nostr.Tag{"e", parent.ID.Hex(), "", "reply"}, nostr.Tag{"p", parent.PubKey.Hex()})
 	}
-	return signedEvent(key, nostr.Event{CreatedAt: nostr.Timestamp(post.CreatedAt.Unix()), Kind: nostr.KindTextNote, Tags: tags, Content: post.Text})
+	content := post.Text
+	seen := make(map[string]struct{}, len(post.Images))
+	imageCount := 0
+	for _, image := range post.Images {
+		if image.URL == "" {
+			continue
+		}
+		if _, ok := seen[image.URL]; ok {
+			continue
+		}
+		seen[image.URL] = struct{}{}
+		if imageCount > 0 {
+			content += "\n"
+		} else if content != "" {
+			content += "\n\n"
+		}
+		content += image.URL
+		imageCount++
+		metadata := nostr.Tag{"imeta", "url " + image.URL}
+		if image.MIMEType != "" {
+			metadata = append(metadata, "m "+image.MIMEType)
+		}
+		if image.Alt != "" {
+			metadata = append(metadata, "alt "+image.Alt)
+		}
+		if image.Width > 0 && image.Height > 0 {
+			metadata = append(metadata, fmt.Sprintf("dim %dx%d", image.Width, image.Height))
+		}
+		tags = append(tags, metadata)
+	}
+	return signedEvent(key, nostr.Event{CreatedAt: nostr.Timestamp(post.CreatedAt.Unix()), Kind: nostr.KindTextNote, Tags: tags, Content: content})
 }
 
 func signedEvent(key nostr.SecretKey, event nostr.Event) (nostr.Event, error) {

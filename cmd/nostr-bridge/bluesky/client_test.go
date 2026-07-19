@@ -31,7 +31,12 @@ func TestClientFetchesAuthenticatedPagedSources(t *testing.T) {
 		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
 		switch r.URL.Path {
 		case "/xrpc/app.bsky.feed.getTimeline":
-			_ = json.NewEncoder(w).Encode(map[string]any{"cursor": "next", "feed": []any{map[string]any{"post": map[string]any{"uri": "at://did:plc:one/app.bsky.feed.post/1", "cid": "cid", "author": map[string]any{"did": "did:plc:one"}}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"cursor": "next", "feed": []any{map[string]any{"post": map[string]any{
+				"uri": "at://did:plc:one/app.bsky.feed.post/1", "cid": "cid", "author": map[string]any{"did": "did:plc:one"},
+				"embed": map[string]any{"$type": "app.bsky.embed.images#view", "images": []any{map[string]any{
+					"fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:one/image@jpeg", "alt": "A description", "aspectRatio": map[string]any{"width": 1200, "height": 800},
+				}}},
+			}}}})
 		case "/xrpc/app.bsky.graph.getFollows":
 			if r.URL.Query().Get("actor") != "did:plc:owner" {
 				t.Fatalf("actor = %q", r.URL.Query().Get("actor"))
@@ -61,6 +66,9 @@ func TestClientFetchesAuthenticatedPagedSources(t *testing.T) {
 	page, err := client.Timeline(context.Background(), "", 25)
 	if err != nil || page.Cursor != "next" || len(page.Posts) != 1 || page.Posts[0].AuthorDID != "did:plc:one" {
 		t.Fatalf("Timeline = %#v, %v", page, err)
+	}
+	if images := page.Posts[0].Images; len(images) != 1 || images[0].URL != "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:one/image@jpeg" || images[0].MIMEType != "image/jpeg" || images[0].Alt != "A description" || images[0].Width != 1200 || images[0].Height != 800 {
+		t.Fatalf("Timeline images = %#v", images)
 	}
 	follows, err := client.Follows(context.Background())
 	if err != nil || len(follows) != 2 || follows[0].DID != "did:plc:one" || follows[1].DID != "did:plc:two" {

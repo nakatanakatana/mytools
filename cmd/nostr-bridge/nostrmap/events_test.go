@@ -2,6 +2,7 @@ package nostrmap
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +78,43 @@ func TestPostEventRetainsTimestampURLAndKnownReplyParent(t *testing.T) {
 	}
 	if event.Tags.FindWithValue("e", parent.ID.Hex()) == nil || event.Tags.FindWithValue("p", parent.PubKey.Hex()) == nil {
 		t.Fatalf("reply tags = %#v", event.Tags)
+	}
+}
+
+func TestPostEventAddsBlueskyImagesToContentAndIMetaTags(t *testing.T) {
+	post := Post{
+		AuthorDID: "did:plc:alice",
+		URI:       "at://did:plc:alice/app.bsky.feed.post/3k",
+		Text:      "Two images",
+		CreatedAt: time.Unix(1, 0),
+		Images: []bluesky.Image{
+			{URL: "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/first@jpeg", MIMEType: "image/jpeg", Alt: "First image", Width: 1280, Height: 720},
+			{URL: "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/second@png", MIMEType: "image/png", Alt: "Second image"},
+		},
+	}
+	event, err := PostEvent(testSeed, post, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContent := "Two images\n\nhttps://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/first@jpeg\nhttps://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/second@png"
+	if event.Content != wantContent {
+		t.Fatalf("content = %q, want %q", event.Content, wantContent)
+	}
+	wantTags := []nostr.Tag{
+		{"imeta", "url https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/first@jpeg", "m image/jpeg", "alt First image", "dim 1280x720"},
+		{"imeta", "url https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/second@png", "m image/png", "alt Second image"},
+	}
+	for _, want := range wantTags {
+		found := false
+		for _, tag := range event.Tags {
+			if len(tag) == len(want) && strings.Join(tag, "\x00") == strings.Join(want, "\x00") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("imeta tag %#v missing from %#v", want, event.Tags)
+		}
 	}
 }
 

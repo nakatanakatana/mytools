@@ -74,6 +74,31 @@ type Post struct {
 	Text       string    `json:"-"`
 	CreatedAt  time.Time `json:"-"`
 	ReplyToURI string    `json:"-"`
+	Images     []Image   `json:"-"`
+}
+
+// Image is the media metadata needed to attach a Bluesky image to a Nostr note.
+type Image struct {
+	URL      string
+	MIMEType string
+	Alt      string
+	Width    int
+	Height   int
+}
+
+type imageEmbedView struct {
+	Type   string          `json:"$type"`
+	Images []imageView     `json:"images"`
+	Media  *imageEmbedView `json:"media"`
+}
+
+type imageView struct {
+	Fullsize    string `json:"fullsize"`
+	Alt         string `json:"alt"`
+	AspectRatio *struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"aspectRatio"`
 }
 
 // Page is one page of timeline results.
@@ -106,9 +131,10 @@ func (c *Client) Timeline(ctx context.Context, cursor string, limit int) (Page, 
 		Cursor string `json:"cursor"`
 		Feed   []struct {
 			Post struct {
-				URI    string `json:"uri"`
-				CID    string `json:"cid"`
-				Author Actor  `json:"author"`
+				URI    string         `json:"uri"`
+				CID    string         `json:"cid"`
+				Author Actor          `json:"author"`
+				Embed  imageEmbedView `json:"embed"`
 				Record struct {
 					Text      string    `json:"text"`
 					CreatedAt time.Time `json:"createdAt"`
@@ -126,13 +152,51 @@ func (c *Client) Timeline(ctx context.Context, cursor string, limit int) (Page, 
 	}
 	page := Page{Cursor: response.Cursor, Posts: make([]Post, 0, len(response.Feed))}
 	for _, item := range response.Feed {
-		post := Post{URI: item.Post.URI, CID: item.Post.CID, AuthorDID: item.Post.Author.DID, Text: item.Post.Record.Text, CreatedAt: item.Post.Record.CreatedAt}
+		post := Post{URI: item.Post.URI, CID: item.Post.CID, AuthorDID: item.Post.Author.DID, Text: item.Post.Record.Text, CreatedAt: item.Post.Record.CreatedAt, Images: imagesFromView(item.Post.Embed)}
 		if item.Post.Record.Reply != nil {
 			post.ReplyToURI = item.Post.Record.Reply.Parent.URI
 		}
 		page.Posts = append(page.Posts, post)
 	}
 	return page, nil
+}
+
+func imagesFromView(embed imageEmbedView) []Image {
+	if embed.Media != nil {
+		return imagesFromView(*embed.Media)
+	}
+	images := make([]Image, 0, len(embed.Images))
+	for _, view := range embed.Images {
+		image := Image{URL: view.Fullsize, MIMEType: imageMIMEType(view.Fullsize), Alt: view.Alt}
+		if view.AspectRatio != nil {
+			image.Width = view.AspectRatio.Width
+			image.Height = view.AspectRatio.Height
+		}
+		images = append(images, image)
+	}
+	return images
+}
+
+func imageMIMEType(rawURL string) string {
+	extension := rawURL
+	if index := strings.LastIndex(extension, "@"); index >= 0 {
+		extension = extension[index+1:]
+	}
+	if index := strings.IndexByte(extension, '?'); index >= 0 {
+		extension = extension[:index]
+	}
+	switch strings.ToLower(extension) {
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	case "png":
+		return "image/png"
+	case "webp":
+		return "image/webp"
+	case "gif":
+		return "image/gif"
+	default:
+		return ""
+	}
 }
 
 // Follows returns every account actually followed by the authenticated account.

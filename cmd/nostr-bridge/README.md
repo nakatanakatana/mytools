@@ -4,6 +4,23 @@
 relay. It owns OAuth/health HTTP endpoints, SQLite outbox state, Jetstream, and
 external relay delivery clients; it does not host a relay.
 
+## Synchronized data
+
+| Source service | Source data | Sync target | Nostr event | Synchronized fields |
+| --- | --- | --- | --- | --- |
+| Bluesky | Profile | The authorized account, followed accounts, and members of configured lists | kind 0 (profile metadata) | Display name, description, Bluesky avatar URL, and Bluesky profile URL |
+| Bluesky | Post | Followed accounts and members of configured lists | kind 1 (text note) | Text, attached image URLs and NIP-92 metadata, creation time, source post URL, and a reply reference when the parent post has already been mapped |
+| Bluesky | Follows | The authorized account | kind 3 (follow list) | The union of accounts actually followed on Bluesky and members of configured lists |
+| Bluesky | Configured list | Lists named in `NOSTR_BRIDGE_LIST_URIS` | kind 30000 (follow set) | List name, description, and members |
+
+Lists not named in `NOSTR_BRIDGE_LIST_URIS` are not synchronized. A member of a
+configured list is synchronized as a follow even when the authorized Bluesky
+account does not actually follow that member. Profile avatar URLs continue to
+refer to Bluesky-hosted media. Post images also continue to refer to
+Bluesky-hosted full-size media; the bridge does not copy image data. Video,
+external-card, quote-post, facet, and other embed metadata are not currently
+synchronized.
+
 ## Configuration
 
 | Variable | Description | Default | Required |

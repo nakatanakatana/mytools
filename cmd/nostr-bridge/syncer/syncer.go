@@ -119,7 +119,7 @@ func (s *Syncer) Backfill(ctx context.Context) error {
 					continue
 				}
 			}
-			if err := s.publishPost(ctx, post.URI, post.AuthorDID, post.Text, post.CreatedAt, post.ReplyToURI, 0, ""); err != nil {
+			if err := s.publishPost(ctx, post.URI, post.AuthorDID, post.Text, post.CreatedAt, post.ReplyToURI, post.Images, 0, ""); err != nil {
 				return err
 			}
 			remaining--
@@ -223,6 +223,7 @@ func (s *Syncer) publishRecord(ctx context.Context, event Event) error {
 		Subject struct {
 			URI string `json:"uri"`
 		} `json:"subject"`
+		Embed imageEmbed `json:"embed"`
 	}
 	if err := json.Unmarshal(event.Record, &record); err != nil {
 		return fmt.Errorf("decode %s record: %w", event.Collection, err)
@@ -238,16 +239,68 @@ func (s *Syncer) publishRecord(ctx context.Context, event Event) error {
 		}
 	}
 	if event.Operation == Update && s.options.OutboxStore != nil {
-		return s.enqueueReplacement(ctx, event, postURI, record.Text, record.CreatedAt, replyTo)
+		return s.enqueueReplacement(ctx, event, postURI, record.Text, record.CreatedAt, replyTo, jetstreamImages(event.DID, record.Embed))
 	}
 	operation := ""
 	if event.Operation == Update {
 		operation = event.updateIdentity()
 	}
-	return s.publishPost(ctx, event.URI(), event.DID, record.Text, record.CreatedAt, replyTo, event.TimeUS, operation, postURI)
+	return s.publishPost(ctx, event.URI(), event.DID, record.Text, record.CreatedAt, replyTo, jetstreamImages(event.DID, record.Embed), event.TimeUS, operation, postURI)
 }
 
-func (s *Syncer) publishPost(ctx context.Context, sourceURI, did, text string, createdAt time.Time, replyTo string, cursor int64, sourceOperation string, mappedURI ...string) error {
+type imageEmbed struct {
+	Images []struct {
+		Alt   string `json:"alt"`
+		Image struct {
+			Ref struct {
+				Link string `json:"$link"`
+			} `json:"ref"`
+			MIMEType string `json:"mimeType"`
+		} `json:"image"`
+		AspectRatio *struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"aspectRatio"`
+	} `json:"images"`
+	Media *imageEmbed `json:"media"`
+}
+
+func jetstreamImages(did string, embed imageEmbed) []bluesky.Image {
+	if embed.Media != nil {
+		return jetstreamImages(did, *embed.Media)
+	}
+	images := make([]bluesky.Image, 0, len(embed.Images))
+	for _, source := range embed.Images {
+		extension := imageExtension(source.Image.MIMEType)
+		if source.Image.Ref.Link == "" || extension == "" {
+			continue
+		}
+		image := bluesky.Image{URL: "https://cdn.bsky.app/img/feed_fullsize/plain/" + did + "/" + source.Image.Ref.Link + "@" + extension, MIMEType: source.Image.MIMEType, Alt: source.Alt}
+		if source.AspectRatio != nil {
+			image.Width = source.AspectRatio.Width
+			image.Height = source.AspectRatio.Height
+		}
+		images = append(images, image)
+	}
+	return images
+}
+
+func imageExtension(mimeType string) string {
+	switch strings.ToLower(mimeType) {
+	case "image/jpeg":
+		return "jpeg"
+	case "image/png":
+		return "png"
+	case "image/webp":
+		return "webp"
+	case "image/gif":
+		return "gif"
+	default:
+		return ""
+	}
+}
+
+func (s *Syncer) publishPost(ctx context.Context, sourceURI, did, text string, createdAt time.Time, replyTo string, images []bluesky.Image, cursor int64, sourceOperation string, mappedURI ...string) error {
 	if s.options.OutboxStore == nil {
 		return errors.New("syncer store is required")
 	}
@@ -276,7 +329,7 @@ func (s *Syncer) publishPost(ctx context.Context, sourceURI, did, text string, c
 			return fmt.Errorf("lookup reply parent: %w", lookupErr)
 		}
 	}
-	mapped, err := nostrmap.PostEvent(s.options.MasterSeed, nostrmap.Post{AuthorDID: did, URI: uri, Text: text, CreatedAt: createdAt, ReplyToURI: replyTo}, parents)
+	mapped, err := nostrmap.PostEvent(s.options.MasterSeed, nostrmap.Post{AuthorDID: did, URI: uri, Text: text, CreatedAt: createdAt, ReplyToURI: replyTo, Images: images}, parents)
 	if err != nil {
 		return fmt.Errorf("map Bluesky post: %w", err)
 	}
@@ -309,7 +362,7 @@ func (s *Syncer) replaceRecord(ctx context.Context, event Event) error {
 	return s.publishRecord(ctx, event)
 }
 
-func (s *Syncer) enqueueReplacement(ctx context.Context, source Event, mappedURI, text string, createdAt time.Time, replyTo string) error {
+func (s *Syncer) enqueueReplacement(ctx context.Context, source Event, mappedURI, text string, createdAt time.Time, replyTo string, images []bluesky.Image) error {
 	old, err := s.options.OutboxStore.EventMappingBySourceURI(ctx, source.URI())
 	if err != nil {
 		return fmt.Errorf("lookup source event: %w", err)
@@ -326,7 +379,7 @@ func (s *Syncer) enqueueReplacement(ctx context.Context, source Event, mappedURI
 	if err := deletion.Sign(key); err != nil {
 		return fmt.Errorf("sign deletion event: %w", err)
 	}
-	replacement, err := nostrmap.PostEvent(s.options.MasterSeed, nostrmap.Post{AuthorDID: source.DID, URI: mappedURI, Text: text, CreatedAt: createdAt, ReplyToURI: replyTo}, nil)
+	replacement, err := nostrmap.PostEvent(s.options.MasterSeed, nostrmap.Post{AuthorDID: source.DID, URI: mappedURI, Text: text, CreatedAt: createdAt, ReplyToURI: replyTo, Images: images}, nil)
 	if err != nil {
 		return err
 	}
