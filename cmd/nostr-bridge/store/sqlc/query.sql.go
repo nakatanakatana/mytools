@@ -136,31 +136,49 @@ func (q *Queries) CompleteOutbox(ctx context.Context, arg CompleteOutboxParams) 
 }
 
 const cursor = `-- name: Cursor :one
-SELECT ` + "`" + `value` + "`" + ` AS cursor_value FROM sync_cursors WHERE name=?
+SELECT ` + "`" + `value` + "`" + ` AS cursor_value FROM sync_cursors WHERE provider=? AND source_account=? AND name=?
 `
 
-func (q *Queries) Cursor(ctx context.Context, name string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, cursor, name)
-	var cursor_value int64
+type CursorParams struct {
+	Provider      string
+	SourceAccount string
+	Name          string
+}
+
+func (q *Queries) Cursor(ctx context.Context, arg CursorParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, cursor, arg.Provider, arg.SourceAccount, arg.Name)
+	var cursor_value string
 	err := row.Scan(&cursor_value)
 	return cursor_value, err
 }
 
 const deleteEventMapping = `-- name: DeleteEventMapping :exec
-DELETE FROM bridge_events WHERE source_uri=?
+DELETE FROM bridge_events WHERE provider=? AND source_account=? AND source_uri=?
 `
 
-func (q *Queries) DeleteEventMapping(ctx context.Context, sourceUri string) error {
-	_, err := q.db.ExecContext(ctx, deleteEventMapping, sourceUri)
+type DeleteEventMappingParams struct {
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+}
+
+func (q *Queries) DeleteEventMapping(ctx context.Context, arg DeleteEventMappingParams) error {
+	_, err := q.db.ExecContext(ctx, deleteEventMapping, arg.Provider, arg.SourceAccount, arg.SourceUri)
 	return err
 }
 
 const deleteOAuthSession = `-- name: DeleteOAuthSession :exec
-DELETE FROM oauth_sessions WHERE state=?
+DELETE FROM oauth_sessions WHERE provider=? AND source_account=? AND state=?
 `
 
-func (q *Queries) DeleteOAuthSession(ctx context.Context, state string) error {
-	_, err := q.db.ExecContext(ctx, deleteOAuthSession, state)
+type DeleteOAuthSessionParams struct {
+	Provider      string
+	SourceAccount string
+	State         string
+}
+
+func (q *Queries) DeleteOAuthSession(ctx context.Context, arg DeleteOAuthSessionParams) error {
+	_, err := q.db.ExecContext(ctx, deleteOAuthSession, arg.Provider, arg.SourceAccount, arg.State)
 	return err
 }
 
@@ -174,7 +192,14 @@ func (q *Queries) DeletePublisherMappings(ctx context.Context, authorPubkey stri
 }
 
 const deletePublisherSourceOperations = `-- name: DeletePublisherSourceOperations :exec
-DELETE FROM source_operations WHERE source_uri IN (SELECT source_uri FROM bridge_events WHERE author_pubkey=?)
+DELETE FROM source_operations
+WHERE EXISTS (
+    SELECT 1 FROM bridge_events
+    WHERE bridge_events.provider=source_operations.provider
+      AND bridge_events.source_account=source_operations.source_account
+      AND bridge_events.source_uri=source_operations.source_uri
+      AND bridge_events.author_pubkey=?
+)
 `
 
 func (q *Queries) DeletePublisherSourceOperations(ctx context.Context, authorPubkey string) error {
@@ -183,11 +208,17 @@ func (q *Queries) DeletePublisherSourceOperations(ctx context.Context, authorPub
 }
 
 const deleteSourceOperation = `-- name: DeleteSourceOperation :exec
-DELETE FROM source_operations WHERE source_uri=?
+DELETE FROM source_operations WHERE provider=? AND source_account=? AND source_uri=?
 `
 
-func (q *Queries) DeleteSourceOperation(ctx context.Context, sourceUri string) error {
-	_, err := q.db.ExecContext(ctx, deleteSourceOperation, sourceUri)
+type DeleteSourceOperationParams struct {
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+}
+
+func (q *Queries) DeleteSourceOperation(ctx context.Context, arg DeleteSourceOperationParams) error {
+	_, err := q.db.ExecContext(ctx, deleteSourceOperation, arg.Provider, arg.SourceAccount, arg.SourceUri)
 	return err
 }
 
@@ -219,22 +250,34 @@ func (q *Queries) EnqueueOutbox(ctx context.Context, arg EnqueueOutboxParams) er
 }
 
 const eventAuthorBySourceURI = `-- name: EventAuthorBySourceURI :one
-SELECT author_pubkey FROM bridge_events WHERE source_uri=?
+SELECT author_pubkey FROM bridge_events WHERE provider=? AND source_account=? AND source_uri=?
 `
 
-func (q *Queries) EventAuthorBySourceURI(ctx context.Context, sourceUri string) (string, error) {
-	row := q.db.QueryRowContext(ctx, eventAuthorBySourceURI, sourceUri)
+type EventAuthorBySourceURIParams struct {
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+}
+
+func (q *Queries) EventAuthorBySourceURI(ctx context.Context, arg EventAuthorBySourceURIParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, eventAuthorBySourceURI, arg.Provider, arg.SourceAccount, arg.SourceUri)
 	var author_pubkey string
 	err := row.Scan(&author_pubkey)
 	return author_pubkey, err
 }
 
 const eventIDBySourceURI = `-- name: EventIDBySourceURI :one
-SELECT nostr_event_id FROM bridge_events WHERE source_uri=?
+SELECT nostr_event_id FROM bridge_events WHERE provider=? AND source_account=? AND source_uri=?
 `
 
-func (q *Queries) EventIDBySourceURI(ctx context.Context, sourceUri string) (string, error) {
-	row := q.db.QueryRowContext(ctx, eventIDBySourceURI, sourceUri)
+type EventIDBySourceURIParams struct {
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+}
+
+func (q *Queries) EventIDBySourceURI(ctx context.Context, arg EventIDBySourceURIParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, eventIDBySourceURI, arg.Provider, arg.SourceAccount, arg.SourceUri)
 	var nostr_event_id string
 	err := row.Scan(&nostr_event_id)
 	return nostr_event_id, err
@@ -268,13 +311,21 @@ func (q *Queries) EventIDsByAuthor(ctx context.Context, authorPubkey string) ([]
 }
 
 const eventMappingBySourceURI = `-- name: EventMappingBySourceURI :one
-SELECT source_uri, nostr_event_id, source_kind, author_pubkey, updated_at FROM bridge_events WHERE source_uri=?
+SELECT provider, source_account, source_uri, nostr_event_id, source_kind, author_pubkey, updated_at FROM bridge_events WHERE provider=? AND source_account=? AND source_uri=?
 `
 
-func (q *Queries) EventMappingBySourceURI(ctx context.Context, sourceUri string) (BridgeEvent, error) {
-	row := q.db.QueryRowContext(ctx, eventMappingBySourceURI, sourceUri)
+type EventMappingBySourceURIParams struct {
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+}
+
+func (q *Queries) EventMappingBySourceURI(ctx context.Context, arg EventMappingBySourceURIParams) (BridgeEvent, error) {
+	row := q.db.QueryRowContext(ctx, eventMappingBySourceURI, arg.Provider, arg.SourceAccount, arg.SourceUri)
 	var i BridgeEvent
 	err := row.Scan(
+		&i.Provider,
+		&i.SourceAccount,
 		&i.SourceUri,
 		&i.NostrEventID,
 		&i.SourceKind,
@@ -332,11 +383,17 @@ func (q *Queries) InsertRecoveredPublish(ctx context.Context, arg InsertRecovere
 }
 
 const insertSyncTarget = `-- name: InsertSyncTarget :exec
-INSERT OR IGNORE INTO sync_targets(did) VALUES(?)
+INSERT OR IGNORE INTO sync_targets(provider,source_account,target) VALUES(?,?,?)
 `
 
-func (q *Queries) InsertSyncTarget(ctx context.Context, did string) error {
-	_, err := q.db.ExecContext(ctx, insertSyncTarget, did)
+type InsertSyncTargetParams struct {
+	Provider      string
+	SourceAccount string
+	Target        string
+}
+
+func (q *Queries) InsertSyncTarget(ctx context.Context, arg InsertSyncTargetParams) error {
+	_, err := q.db.ExecContext(ctx, insertSyncTarget, arg.Provider, arg.SourceAccount, arg.Target)
 	return err
 }
 
@@ -355,24 +412,48 @@ func (q *Queries) NegateLaterOutboxSequences(ctx context.Context, arg NegateLate
 }
 
 const oAuthSessionByState = `-- name: OAuthSessionByState :one
-SELECT state,encrypted_payload,expires_at FROM oauth_sessions WHERE state=?
+SELECT provider,source_account,state,encrypted_payload,expires_at FROM oauth_sessions WHERE provider=? AND source_account=? AND state=?
 `
 
-func (q *Queries) OAuthSessionByState(ctx context.Context, state string) (OauthSession, error) {
-	row := q.db.QueryRowContext(ctx, oAuthSessionByState, state)
+type OAuthSessionByStateParams struct {
+	Provider      string
+	SourceAccount string
+	State         string
+}
+
+func (q *Queries) OAuthSessionByState(ctx context.Context, arg OAuthSessionByStateParams) (OauthSession, error) {
+	row := q.db.QueryRowContext(ctx, oAuthSessionByState, arg.Provider, arg.SourceAccount, arg.State)
 	var i OauthSession
-	err := row.Scan(&i.State, &i.EncryptedPayload, &i.ExpiresAt)
+	err := row.Scan(
+		&i.Provider,
+		&i.SourceAccount,
+		&i.State,
+		&i.EncryptedPayload,
+		&i.ExpiresAt,
+	)
 	return i, err
 }
 
 const oAuthTokenByAccountDID = `-- name: OAuthTokenByAccountDID :one
-SELECT account_did,encrypted_payload,updated_at FROM oauth_tokens WHERE account_did=?
+SELECT provider,source_account,account_did,encrypted_payload,updated_at FROM oauth_tokens WHERE provider=? AND source_account=? AND account_did=?
 `
 
-func (q *Queries) OAuthTokenByAccountDID(ctx context.Context, accountDid string) (OauthToken, error) {
-	row := q.db.QueryRowContext(ctx, oAuthTokenByAccountDID, accountDid)
+type OAuthTokenByAccountDIDParams struct {
+	Provider      string
+	SourceAccount string
+	AccountDid    string
+}
+
+func (q *Queries) OAuthTokenByAccountDID(ctx context.Context, arg OAuthTokenByAccountDIDParams) (OauthToken, error) {
+	row := q.db.QueryRowContext(ctx, oAuthTokenByAccountDID, arg.Provider, arg.SourceAccount, arg.AccountDid)
 	var i OauthToken
-	err := row.Scan(&i.AccountDid, &i.EncryptedPayload, &i.UpdatedAt)
+	err := row.Scan(
+		&i.Provider,
+		&i.SourceAccount,
+		&i.AccountDid,
+		&i.EncryptedPayload,
+		&i.UpdatedAt,
+	)
 	return i, err
 }
 
@@ -448,11 +529,16 @@ func (q *Queries) PublisherUnallowPending(ctx context.Context, aggregateKey stri
 }
 
 const replaceSyncTargetsDelete = `-- name: ReplaceSyncTargetsDelete :exec
-DELETE FROM sync_targets
+DELETE FROM sync_targets WHERE provider=? AND source_account=?
 `
 
-func (q *Queries) ReplaceSyncTargetsDelete(ctx context.Context) error {
-	_, err := q.db.ExecContext(ctx, replaceSyncTargetsDelete)
+type ReplaceSyncTargetsDeleteParams struct {
+	Provider      string
+	SourceAccount string
+}
+
+func (q *Queries) ReplaceSyncTargetsDelete(ctx context.Context, arg ReplaceSyncTargetsDeleteParams) error {
+	_, err := q.db.ExecContext(ctx, replaceSyncTargetsDelete, arg.Provider, arg.SourceAccount)
 	return err
 }
 
@@ -493,60 +579,90 @@ func (q *Queries) RetryOutbox(ctx context.Context, arg RetryOutboxParams) (sql.R
 }
 
 const saveCursor = `-- name: SaveCursor :exec
-INSERT INTO sync_cursors(name,` + "`" + `value` + "`" + `) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET ` + "`" + `value` + "`" + `=excluded.` + "`" + `value` + "`" + `
+INSERT INTO sync_cursors(provider,source_account,name,` + "`" + `value` + "`" + `) VALUES(?,?,?,?) ON CONFLICT(provider,source_account,name) DO UPDATE SET ` + "`" + `value` + "`" + `=excluded.` + "`" + `value` + "`" + `
 `
 
 type SaveCursorParams struct {
-	Name  string
-	Value int64
+	Provider      string
+	SourceAccount string
+	Name          string
+	Value         string
 }
 
 func (q *Queries) SaveCursor(ctx context.Context, arg SaveCursorParams) error {
-	_, err := q.db.ExecContext(ctx, saveCursor, arg.Name, arg.Value)
+	_, err := q.db.ExecContext(ctx, saveCursor,
+		arg.Provider,
+		arg.SourceAccount,
+		arg.Name,
+		arg.Value,
+	)
 	return err
 }
 
 const saveOAuthSession = `-- name: SaveOAuthSession :exec
-INSERT INTO oauth_sessions(state,encrypted_payload,expires_at) VALUES(?,?,?) ON CONFLICT(state) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,expires_at=excluded.expires_at
+INSERT INTO oauth_sessions(provider,source_account,state,encrypted_payload,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(provider,source_account,state) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,expires_at=excluded.expires_at
 `
 
 type SaveOAuthSessionParams struct {
+	Provider         string
+	SourceAccount    string
 	State            string
 	EncryptedPayload []byte
 	ExpiresAt        int64
 }
 
 func (q *Queries) SaveOAuthSession(ctx context.Context, arg SaveOAuthSessionParams) error {
-	_, err := q.db.ExecContext(ctx, saveOAuthSession, arg.State, arg.EncryptedPayload, arg.ExpiresAt)
+	_, err := q.db.ExecContext(ctx, saveOAuthSession,
+		arg.Provider,
+		arg.SourceAccount,
+		arg.State,
+		arg.EncryptedPayload,
+		arg.ExpiresAt,
+	)
 	return err
 }
 
 const saveOAuthToken = `-- name: SaveOAuthToken :exec
-INSERT INTO oauth_tokens(account_did,encrypted_payload,updated_at) VALUES(?,?,?) ON CONFLICT(account_did) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,updated_at=excluded.updated_at
+INSERT INTO oauth_tokens(provider,source_account,account_did,encrypted_payload,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(provider,source_account,account_did) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,updated_at=excluded.updated_at
 `
 
 type SaveOAuthTokenParams struct {
+	Provider         string
+	SourceAccount    string
 	AccountDid       string
 	EncryptedPayload []byte
 	UpdatedAt        int64
 }
 
 func (q *Queries) SaveOAuthToken(ctx context.Context, arg SaveOAuthTokenParams) error {
-	_, err := q.db.ExecContext(ctx, saveOAuthToken, arg.AccountDid, arg.EncryptedPayload, arg.UpdatedAt)
+	_, err := q.db.ExecContext(ctx, saveOAuthToken,
+		arg.Provider,
+		arg.SourceAccount,
+		arg.AccountDid,
+		arg.EncryptedPayload,
+		arg.UpdatedAt,
+	)
 	return err
 }
 
 const saveSourceOperation = `-- name: SaveSourceOperation :exec
-INSERT INTO source_operations(source_uri,` + "`" + `identity` + "`" + `) VALUES(?,?) ON CONFLICT(source_uri) DO UPDATE SET ` + "`" + `identity` + "`" + `=excluded.` + "`" + `identity` + "`" + `
+INSERT INTO source_operations(provider,source_account,source_uri,` + "`" + `identity` + "`" + `) VALUES(?,?,?,?) ON CONFLICT(provider,source_account,source_uri) DO UPDATE SET ` + "`" + `identity` + "`" + `=excluded.` + "`" + `identity` + "`" + `
 `
 
 type SaveSourceOperationParams struct {
-	SourceUri string
-	Identity  string
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+	Identity      string
 }
 
 func (q *Queries) SaveSourceOperation(ctx context.Context, arg SaveSourceOperationParams) error {
-	_, err := q.db.ExecContext(ctx, saveSourceOperation, arg.SourceUri, arg.Identity)
+	_, err := q.db.ExecContext(ctx, saveSourceOperation,
+		arg.Provider,
+		arg.SourceAccount,
+		arg.SourceUri,
+		arg.Identity,
+	)
 	return err
 }
 
@@ -575,33 +691,44 @@ func (q *Queries) ShiftNegatedOutboxSequences(ctx context.Context, aggregateKey 
 }
 
 const sourceOperationBySourceURI = `-- name: SourceOperationBySourceURI :one
-SELECT ` + "`" + `identity` + "`" + ` AS operation_identity FROM source_operations WHERE source_uri=?
+SELECT ` + "`" + `identity` + "`" + ` AS operation_identity FROM source_operations WHERE provider=? AND source_account=? AND source_uri=?
 `
 
-func (q *Queries) SourceOperationBySourceURI(ctx context.Context, sourceUri string) (string, error) {
-	row := q.db.QueryRowContext(ctx, sourceOperationBySourceURI, sourceUri)
+type SourceOperationBySourceURIParams struct {
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+}
+
+func (q *Queries) SourceOperationBySourceURI(ctx context.Context, arg SourceOperationBySourceURIParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, sourceOperationBySourceURI, arg.Provider, arg.SourceAccount, arg.SourceUri)
 	var operation_identity string
 	err := row.Scan(&operation_identity)
 	return operation_identity, err
 }
 
 const syncTargets = `-- name: SyncTargets :many
-SELECT did FROM sync_targets ORDER BY did
+SELECT target FROM sync_targets WHERE provider=? AND source_account=? ORDER BY target
 `
 
-func (q *Queries) SyncTargets(ctx context.Context) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, syncTargets)
+type SyncTargetsParams struct {
+	Provider      string
+	SourceAccount string
+}
+
+func (q *Queries) SyncTargets(ctx context.Context, arg SyncTargetsParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, syncTargets, arg.Provider, arg.SourceAccount)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var items []string
 	for rows.Next() {
-		var did string
-		if err := rows.Scan(&did); err != nil {
+		var target string
+		if err := rows.Scan(&target); err != nil {
 			return nil, err
 		}
-		items = append(items, did)
+		items = append(items, target)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -613,20 +740,24 @@ func (q *Queries) SyncTargets(ctx context.Context) ([]string, error) {
 }
 
 const upsertEventMapping = `-- name: UpsertEventMapping :exec
-INSERT INTO bridge_events(source_uri,nostr_event_id,source_kind,author_pubkey,updated_at) VALUES(?,?,?,?,?)
-ON CONFLICT(source_uri) DO UPDATE SET nostr_event_id=excluded.nostr_event_id,source_kind=excluded.source_kind,author_pubkey=excluded.author_pubkey,updated_at=excluded.updated_at
+INSERT INTO bridge_events(provider,source_account,source_uri,nostr_event_id,source_kind,author_pubkey,updated_at) VALUES(?,?,?,?,?,?,?)
+ON CONFLICT(provider,source_account,source_uri) DO UPDATE SET nostr_event_id=excluded.nostr_event_id,source_kind=excluded.source_kind,author_pubkey=excluded.author_pubkey,updated_at=excluded.updated_at
 `
 
 type UpsertEventMappingParams struct {
-	SourceUri    string
-	NostrEventID string
-	SourceKind   string
-	AuthorPubkey string
-	UpdatedAt    int64
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+	NostrEventID  string
+	SourceKind    string
+	AuthorPubkey  string
+	UpdatedAt     int64
 }
 
 func (q *Queries) UpsertEventMapping(ctx context.Context, arg UpsertEventMappingParams) error {
 	_, err := q.db.ExecContext(ctx, upsertEventMapping,
+		arg.Provider,
+		arg.SourceAccount,
 		arg.SourceUri,
 		arg.NostrEventID,
 		arg.SourceKind,

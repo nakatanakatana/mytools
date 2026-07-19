@@ -11,8 +11,8 @@ FROM outbox_sequences WHERE outbox_sequences.aggregate_key=sqlc.arg(sequence_agg
 SELECT EXISTS(SELECT 1 FROM publisher_purges WHERE publisher_purges.pubkey=sqlc.arg(pubkey));
 
 -- name: UpsertEventMapping :exec
-INSERT INTO bridge_events(source_uri,nostr_event_id,source_kind,author_pubkey,updated_at) VALUES(?,?,?,?,?)
-ON CONFLICT(source_uri) DO UPDATE SET nostr_event_id=excluded.nostr_event_id,source_kind=excluded.source_kind,author_pubkey=excluded.author_pubkey,updated_at=excluded.updated_at;
+INSERT INTO bridge_events(provider,source_account,source_uri,nostr_event_id,source_kind,author_pubkey,updated_at) VALUES(?,?,?,?,?,?,?)
+ON CONFLICT(provider,source_account,source_uri) DO UPDATE SET nostr_event_id=excluded.nostr_event_id,source_kind=excluded.source_kind,author_pubkey=excluded.author_pubkey,updated_at=excluded.updated_at;
 
 -- name: OutboxCount :one
 SELECT COUNT(*) FROM outbox;
@@ -21,22 +21,22 @@ SELECT COUNT(*) FROM outbox;
 SELECT EXISTS(SELECT 1 FROM publisher_registrations WHERE publisher_registrations.pubkey=sqlc.arg(pubkey) UNION ALL SELECT 1 FROM outbox WHERE aggregate_key=sqlc.arg(aggregate_key) AND operation='allow-publisher');
 
 -- name: EventIDBySourceURI :one
-SELECT nostr_event_id FROM bridge_events WHERE source_uri=?;
+SELECT nostr_event_id FROM bridge_events WHERE provider=? AND source_account=? AND source_uri=?;
 
 -- name: EventAuthorBySourceURI :one
-SELECT author_pubkey FROM bridge_events WHERE source_uri=?;
+SELECT author_pubkey FROM bridge_events WHERE provider=? AND source_account=? AND source_uri=?;
 
 -- name: ReplaceSyncTargetsDelete :exec
-DELETE FROM sync_targets;
+DELETE FROM sync_targets WHERE provider=? AND source_account=?;
 
 -- name: InsertSyncTarget :exec
-INSERT OR IGNORE INTO sync_targets(did) VALUES(?);
+INSERT OR IGNORE INTO sync_targets(provider,source_account,target) VALUES(?,?,?);
 
 -- name: DeleteEventMapping :exec
-DELETE FROM bridge_events WHERE source_uri=?;
+DELETE FROM bridge_events WHERE provider=? AND source_account=? AND source_uri=?;
 
 -- name: DeleteSourceOperation :exec
-DELETE FROM source_operations WHERE source_uri=?;
+DELETE FROM source_operations WHERE provider=? AND source_account=? AND source_uri=?;
 
 -- name: EventIDsByAuthor :many
 SELECT DISTINCT nostr_event_id FROM bridge_events WHERE author_pubkey=? ORDER BY nostr_event_id;
@@ -91,7 +91,14 @@ UPDATE outbox_sequences SET last_sequence=last_sequence+1 WHERE aggregate_key=?;
 INSERT INTO outbox(aggregate_key,`sequence`,operation,pubkey,payload,available_at) VALUES(?,?,'publish-event',?,?,?);
 
 -- name: DeletePublisherSourceOperations :exec
-DELETE FROM source_operations WHERE source_uri IN (SELECT source_uri FROM bridge_events WHERE author_pubkey=?);
+DELETE FROM source_operations
+WHERE EXISTS (
+    SELECT 1 FROM bridge_events
+    WHERE bridge_events.provider=source_operations.provider
+      AND bridge_events.source_account=source_operations.source_account
+      AND bridge_events.source_uri=source_operations.source_uri
+      AND bridge_events.author_pubkey=?
+);
 
 -- name: DeletePublisherMappings :exec
 DELETE FROM bridge_events WHERE author_pubkey=?;
@@ -100,34 +107,34 @@ DELETE FROM bridge_events WHERE author_pubkey=?;
 UPDATE outbox SET attempts=attempts+1, available_at=?, last_error=?, claim_token='', claimed_until=0 WHERE id=? AND claim_token=? AND claim_token<>'' AND claimed_until>?;
 
 -- name: SyncTargets :many
-SELECT did FROM sync_targets ORDER BY did;
+SELECT target FROM sync_targets WHERE provider=? AND source_account=? ORDER BY target;
 
 -- name: EventMappingBySourceURI :one
-SELECT source_uri, nostr_event_id, source_kind, author_pubkey, updated_at FROM bridge_events WHERE source_uri=?;
+SELECT provider, source_account, source_uri, nostr_event_id, source_kind, author_pubkey, updated_at FROM bridge_events WHERE provider=? AND source_account=? AND source_uri=?;
 
 -- name: SaveSourceOperation :exec
-INSERT INTO source_operations(source_uri,`identity`) VALUES(?,?) ON CONFLICT(source_uri) DO UPDATE SET `identity`=excluded.`identity`;
+INSERT INTO source_operations(provider,source_account,source_uri,`identity`) VALUES(?,?,?,?) ON CONFLICT(provider,source_account,source_uri) DO UPDATE SET `identity`=excluded.`identity`;
 
 -- name: SourceOperationBySourceURI :one
-SELECT `identity` AS operation_identity FROM source_operations WHERE source_uri=?;
+SELECT `identity` AS operation_identity FROM source_operations WHERE provider=? AND source_account=? AND source_uri=?;
 
 -- name: SaveCursor :exec
-INSERT INTO sync_cursors(name,`value`) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET `value`=excluded.`value`;
+INSERT INTO sync_cursors(provider,source_account,name,`value`) VALUES(?,?,?,?) ON CONFLICT(provider,source_account,name) DO UPDATE SET `value`=excluded.`value`;
 
 -- name: Cursor :one
-SELECT `value` AS cursor_value FROM sync_cursors WHERE name=?;
+SELECT `value` AS cursor_value FROM sync_cursors WHERE provider=? AND source_account=? AND name=?;
 
 -- name: SaveOAuthSession :exec
-INSERT INTO oauth_sessions(state,encrypted_payload,expires_at) VALUES(?,?,?) ON CONFLICT(state) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,expires_at=excluded.expires_at;
+INSERT INTO oauth_sessions(provider,source_account,state,encrypted_payload,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(provider,source_account,state) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,expires_at=excluded.expires_at;
 
 -- name: OAuthSessionByState :one
-SELECT state,encrypted_payload,expires_at FROM oauth_sessions WHERE state=?;
+SELECT provider,source_account,state,encrypted_payload,expires_at FROM oauth_sessions WHERE provider=? AND source_account=? AND state=?;
 
 -- name: DeleteOAuthSession :exec
-DELETE FROM oauth_sessions WHERE state=?;
+DELETE FROM oauth_sessions WHERE provider=? AND source_account=? AND state=?;
 
 -- name: SaveOAuthToken :exec
-INSERT INTO oauth_tokens(account_did,encrypted_payload,updated_at) VALUES(?,?,?) ON CONFLICT(account_did) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,updated_at=excluded.updated_at;
+INSERT INTO oauth_tokens(provider,source_account,account_did,encrypted_payload,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(provider,source_account,account_did) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,updated_at=excluded.updated_at;
 
 -- name: OAuthTokenByAccountDID :one
-SELECT account_did,encrypted_payload,updated_at FROM oauth_tokens WHERE account_did=?;
+SELECT provider,source_account,account_did,encrypted_payload,updated_at FROM oauth_tokens WHERE provider=? AND source_account=? AND account_did=?;

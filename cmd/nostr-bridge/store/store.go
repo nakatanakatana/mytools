@@ -10,11 +10,21 @@ import (
 // EventMapping is durable source metadata. Event JSON belongs in an incomplete
 // publish outbox payload, never in this final mapping.
 type EventMapping struct {
-	SourceURI    string
+	Source       SourceRef
 	NostrEventID string
 	SourceKind   string
 	AuthorPubKey string
 	UpdatedAt    int64
+}
+
+type SourceScope struct {
+	Provider string
+	Account  string
+}
+
+type SourceRef struct {
+	Scope SourceScope
+	URI   string
 }
 
 var ErrClaimLost = errors.New("outbox claim lost")
@@ -24,6 +34,7 @@ var ErrPurgePending = errors.New("publisher purge pending or complete")
 var ErrPurgeConflict = errors.New("publisher purge conflicts with existing unallow")
 var ErrAuthorMismatch = errors.New("outbox author identity mismatch")
 var ErrInvalidOutboxPayload = errors.New("invalid outbox payload")
+var ErrSourceScopeMismatch = errors.New("source scope mismatch")
 
 type OutboxOperation string
 
@@ -57,7 +68,7 @@ type OutboxItem struct {
 
 type CursorUpdate struct {
 	Name  string
-	Value int64
+	Value string
 }
 type EventEnqueueRequest struct {
 	Mapping         EventMapping
@@ -67,15 +78,16 @@ type EventEnqueueRequest struct {
 	SourceOperation string
 }
 type ReconciliationRequest struct {
+	Scope   SourceScope
 	Targets []string
 	Events  []EventEnqueueRequest
 	Limit   int64
 }
 type DeleteEnqueueRequest struct {
-	SourceURI string
-	Event     OutboxRequest
-	Limit     int64
-	Cursor    *CursorUpdate
+	Source SourceRef
+	Event  OutboxRequest
+	Limit  int64
+	Cursor *CursorUpdate
 }
 type UpdateEnqueueRequest struct {
 	Mapping         EventMapping
@@ -106,25 +118,25 @@ type OAuthToken struct {
 }
 
 type OAuthStore interface {
-	SaveOAuthSession(context.Context, OAuthSession) error
-	OAuthSessionByState(context.Context, string) (OAuthSession, error)
-	DeleteOAuthSession(context.Context, string) error
-	SaveOAuthToken(context.Context, OAuthToken) error
-	OAuthTokenByAccountDID(context.Context, string) (OAuthToken, error)
+	SaveOAuthSession(context.Context, SourceScope, OAuthSession) error
+	OAuthSessionByState(context.Context, SourceScope, string) (OAuthSession, error)
+	DeleteOAuthSession(context.Context, SourceScope, string) error
+	SaveOAuthToken(context.Context, SourceScope, OAuthToken) error
+	OAuthTokenByAccountDID(context.Context, SourceScope, string) (OAuthToken, error)
 }
 
 type SyncDeliveryStore interface {
 	EnqueueEvent(context.Context, EventEnqueueRequest) error
 	EnqueueDelete(context.Context, DeleteEnqueueRequest) error
 	EnqueueUpdate(context.Context, UpdateEnqueueRequest) error
-	EventMappingBySourceURI(context.Context, string) (EventMapping, error)
-	SourceOperationBySourceURI(context.Context, string) (string, error)
-	SaveCursor(context.Context, string, int64) error
-	Cursor(context.Context, string) (int64, error)
+	EventMappingBySourceURI(context.Context, SourceRef) (EventMapping, error)
+	SourceOperationBySourceURI(context.Context, SourceRef) (string, error)
+	SaveCursor(context.Context, SourceScope, string, string) error
+	Cursor(context.Context, SourceScope, string) (string, error)
 }
 
 type TargetStore interface {
-	SyncTargets(context.Context) ([]string, error)
+	SyncTargets(context.Context, SourceScope) ([]string, error)
 }
 
 type ReconciliationStore interface {
@@ -141,12 +153,12 @@ type OutboxStore interface {
 	EnqueuePurge(context.Context, PurgeRequest) error
 	EventIDsByAuthor(context.Context, string) ([]string, error)
 	SaveEventAndEnqueue(context.Context, EventMapping, OutboxRequest) error
-	EventMappingBySourceURI(context.Context, string) (EventMapping, error)
-	DeleteEventBySourceURI(context.Context, string) error
-	SaveSourceOperation(context.Context, string, string) error
-	SourceOperationBySourceURI(context.Context, string) (string, error)
-	SaveCursor(context.Context, string, int64) error
-	Cursor(context.Context, string) (int64, error)
+	EventMappingBySourceURI(context.Context, SourceRef) (EventMapping, error)
+	DeleteEventBySourceURI(context.Context, SourceRef) error
+	SaveSourceOperation(context.Context, SourceRef, string) error
+	SourceOperationBySourceURI(context.Context, SourceRef) (string, error)
+	SaveCursor(context.Context, SourceScope, string, string) error
+	Cursor(context.Context, SourceScope, string) (string, error)
 	EnqueueOutbox(context.Context, OutboxRequest) error
 	ClaimOutbox(context.Context, time.Time, time.Duration, int) ([]OutboxItem, error)
 	CompleteOutbox(context.Context, int64, string, time.Time) error
@@ -158,8 +170,8 @@ type OutboxStore interface {
 	SetPublisherRegistered(context.Context, string, time.Time) error
 	ClearPublisherRegistration(context.Context, string) error
 	PublisherRegistered(context.Context, string) (bool, error)
-	ReplaceSyncTargets(context.Context, []string) error
-	SyncTargets(context.Context) ([]string, error)
+	ReplaceSyncTargets(context.Context, SourceScope, []string) error
+	SyncTargets(context.Context, SourceScope) ([]string, error)
 }
 
 type DurableStore interface {

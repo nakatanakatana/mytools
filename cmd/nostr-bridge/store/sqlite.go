@@ -70,13 +70,13 @@ func rejectPurged(ctx context.Context, queries *storesqlc.Queries, pubkey string
 
 func upsertEventMapping(ctx context.Context, queries *storesqlc.Queries, mapping EventMapping) error {
 	return queries.UpsertEventMapping(ctx, storesqlc.UpsertEventMappingParams{
-		SourceUri: mapping.SourceURI, NostrEventID: mapping.NostrEventID, SourceKind: mapping.SourceKind,
+		Provider: mapping.Source.Scope.Provider, SourceAccount: mapping.Source.Scope.Account, SourceUri: mapping.Source.URI, NostrEventID: mapping.NostrEventID, SourceKind: mapping.SourceKind,
 		AuthorPubkey: mapping.AuthorPubKey, UpdatedAt: mapping.UpdatedAt,
 	})
 }
 
 func eventMapping(row storesqlc.BridgeEvent) EventMapping {
-	return EventMapping{SourceURI: row.SourceUri, NostrEventID: row.NostrEventID, SourceKind: row.SourceKind, AuthorPubKey: row.AuthorPubkey, UpdatedAt: row.UpdatedAt}
+	return EventMapping{Source: SourceRef{Scope: SourceScope{Provider: row.Provider, Account: row.SourceAccount}, URI: row.SourceUri}, NostrEventID: row.NostrEventID, SourceKind: row.SourceKind, AuthorPubKey: row.AuthorPubkey, UpdatedAt: row.UpdatedAt}
 }
 
 func outboxItem(row storesqlc.ClaimOutboxRow) OutboxItem {
@@ -89,6 +89,34 @@ func oauthSession(row storesqlc.OauthSession) OAuthSession {
 
 func oauthToken(row storesqlc.OauthToken) OAuthToken {
 	return OAuthToken{AccountDID: row.AccountDid, EncryptedPayload: row.EncryptedPayload, UpdatedAt: row.UpdatedAt}
+}
+
+func eventIDParams(ref SourceRef) storesqlc.EventIDBySourceURIParams {
+	return storesqlc.EventIDBySourceURIParams{Provider: ref.Scope.Provider, SourceAccount: ref.Scope.Account, SourceUri: ref.URI}
+}
+func authorParams(ref SourceRef) storesqlc.EventAuthorBySourceURIParams {
+	return storesqlc.EventAuthorBySourceURIParams{Provider: ref.Scope.Provider, SourceAccount: ref.Scope.Account, SourceUri: ref.URI}
+}
+func mappingParams(ref SourceRef) storesqlc.EventMappingBySourceURIParams {
+	return storesqlc.EventMappingBySourceURIParams{Provider: ref.Scope.Provider, SourceAccount: ref.Scope.Account, SourceUri: ref.URI}
+}
+func deleteMappingParams(ref SourceRef) storesqlc.DeleteEventMappingParams {
+	return storesqlc.DeleteEventMappingParams{Provider: ref.Scope.Provider, SourceAccount: ref.Scope.Account, SourceUri: ref.URI}
+}
+func operationParams(ref SourceRef) storesqlc.SourceOperationBySourceURIParams {
+	return storesqlc.SourceOperationBySourceURIParams{Provider: ref.Scope.Provider, SourceAccount: ref.Scope.Account, SourceUri: ref.URI}
+}
+func deleteOperationParams(ref SourceRef) storesqlc.DeleteSourceOperationParams {
+	return storesqlc.DeleteSourceOperationParams{Provider: ref.Scope.Provider, SourceAccount: ref.Scope.Account, SourceUri: ref.URI}
+}
+func targetScopeParams(scope SourceScope) storesqlc.ReplaceSyncTargetsDeleteParams {
+	return storesqlc.ReplaceSyncTargetsDeleteParams{Provider: scope.Provider, SourceAccount: scope.Account}
+}
+func saveSourceOperation(ctx context.Context, q *storesqlc.Queries, ref SourceRef, identity string) error {
+	return q.SaveSourceOperation(ctx, storesqlc.SaveSourceOperationParams{Provider: ref.Scope.Provider, SourceAccount: ref.Scope.Account, SourceUri: ref.URI, Identity: identity})
+}
+func saveCursor(ctx context.Context, q *storesqlc.Queries, scope SourceScope, cursor *CursorUpdate) error {
+	return q.SaveCursor(ctx, storesqlc.SaveCursorParams{Provider: scope.Provider, SourceAccount: scope.Account, Name: cursor.Name, Value: cursor.Value})
 }
 
 func validatePublishRequest(request OutboxRequest) error {
@@ -230,12 +258,12 @@ func (s SQLiteStore) EnqueueEvent(ctx context.Context, request EventEnqueueReque
 		return err
 	}
 	if request.Cursor != nil {
-		if err := queries.SaveCursor(ctx, storesqlc.SaveCursorParams{Name: request.Cursor.Name, Value: request.Cursor.Value}); err != nil {
+		if err := saveCursor(ctx, queries, request.Mapping.Source.Scope, request.Cursor); err != nil {
 			return fmt.Errorf("save sync cursor: %w", err)
 		}
 	}
 	if request.SourceOperation != "" {
-		if err := queries.SaveSourceOperation(ctx, storesqlc.SaveSourceOperationParams{SourceUri: request.Mapping.SourceURI, Identity: request.SourceOperation}); err != nil {
+		if err := saveSourceOperation(ctx, queries, request.Mapping.Source, request.SourceOperation); err != nil {
 			return fmt.Errorf("save source operation: %w", err)
 		}
 	}
@@ -260,6 +288,9 @@ func (s SQLiteStore) Reconcile(ctx context.Context, request ReconciliationReques
 	pending := make([]EventEnqueueRequest, 0, len(request.Events))
 	needed := int64(0)
 	for _, event := range request.Events {
+		if event.Mapping.Source.Scope != request.Scope {
+			return ErrSourceScopeMismatch
+		}
 		if event.Event.PubKey != event.Mapping.AuthorPubKey {
 			return ErrAuthorMismatch
 		}
@@ -272,10 +303,10 @@ func (s SQLiteStore) Reconcile(ctx context.Context, request ReconciliationReques
 		if err := rejectPurged(ctx, queries, event.Event.PubKey); err != nil {
 			return err
 		}
-		existing, err := queries.EventIDBySourceURI(ctx, event.Mapping.SourceURI)
+		existing, err := queries.EventIDBySourceURI(ctx, eventIDParams(event.Mapping.Source))
 		if err == nil {
 			if event.SourceOperation != "" {
-				operation, opErr := queries.SourceOperationBySourceURI(ctx, event.Mapping.SourceURI)
+				operation, opErr := queries.SourceOperationBySourceURI(ctx, operationParams(event.Mapping.Source))
 				if opErr == nil && operation == event.SourceOperation {
 					continue
 				}
@@ -305,11 +336,11 @@ func (s SQLiteStore) Reconcile(ctx context.Context, request ReconciliationReques
 	if request.Limit <= 0 || count+needed > request.Limit {
 		return ErrOutboxFull
 	}
-	if err := queries.ReplaceSyncTargetsDelete(ctx); err != nil {
+	if err := queries.ReplaceSyncTargetsDelete(ctx, targetScopeParams(request.Scope)); err != nil {
 		return fmt.Errorf("clear sync targets: %w", err)
 	}
-	for _, did := range request.Targets {
-		if err := queries.InsertSyncTarget(ctx, did); err != nil {
+	for _, target := range request.Targets {
+		if err := queries.InsertSyncTarget(ctx, storesqlc.InsertSyncTargetParams{Provider: request.Scope.Provider, SourceAccount: request.Scope.Account, Target: target}); err != nil {
 			return fmt.Errorf("save sync target: %w", err)
 		}
 	}
@@ -325,7 +356,7 @@ func (s SQLiteStore) Reconcile(ctx context.Context, request ReconciliationReques
 			return fmt.Errorf("save reconciliation mapping: %w", err)
 		}
 		if event.SourceOperation != "" {
-			if err := queries.SaveSourceOperation(ctx, storesqlc.SaveSourceOperationParams{SourceUri: event.Mapping.SourceURI, Identity: event.SourceOperation}); err != nil {
+			if err := saveSourceOperation(ctx, queries, event.Mapping.Source, event.SourceOperation); err != nil {
 				return fmt.Errorf("save reconciliation identity: %w", err)
 			}
 		}
@@ -346,7 +377,7 @@ func (s SQLiteStore) EnqueueDelete(ctx context.Context, request DeleteEnqueueReq
 	}
 	defer func() { _ = tx.Rollback() }()
 	queries := s.queries.WithTx(tx)
-	storedAuthor, err := queries.EventAuthorBySourceURI(ctx, request.SourceURI)
+	storedAuthor, err := queries.EventAuthorBySourceURI(ctx, authorParams(request.Source))
 	if err != nil {
 		return fmt.Errorf("find delete mapping author: %w", err)
 	}
@@ -379,17 +410,17 @@ func (s SQLiteStore) EnqueueDelete(ctx context.Context, request DeleteEnqueueReq
 			return err
 		}
 	}
-	if err := queries.DeleteEventMapping(ctx, request.SourceURI); err != nil {
+	if err := queries.DeleteEventMapping(ctx, deleteMappingParams(request.Source)); err != nil {
 		return fmt.Errorf("delete bridge event: %w", err)
 	}
-	if err := queries.DeleteSourceOperation(ctx, request.SourceURI); err != nil {
+	if err := queries.DeleteSourceOperation(ctx, deleteOperationParams(request.Source)); err != nil {
 		return fmt.Errorf("delete source operation: %w", err)
 	}
 	if err := enqueueOutbox(ctx, queries, request.Event); err != nil {
 		return err
 	}
 	if request.Cursor != nil {
-		if err := queries.SaveCursor(ctx, storesqlc.SaveCursorParams{Name: request.Cursor.Name, Value: request.Cursor.Value}); err != nil {
+		if err := saveCursor(ctx, queries, request.Source.Scope, request.Cursor); err != nil {
 			return err
 		}
 	}
@@ -451,12 +482,12 @@ func (s SQLiteStore) EnqueueUpdate(ctx context.Context, request UpdateEnqueueReq
 		return err
 	}
 	if request.SourceOperation != "" {
-		if err := queries.SaveSourceOperation(ctx, storesqlc.SaveSourceOperationParams{SourceUri: request.Mapping.SourceURI, Identity: request.SourceOperation}); err != nil {
+		if err := saveSourceOperation(ctx, queries, request.Mapping.Source, request.SourceOperation); err != nil {
 			return fmt.Errorf("save source operation: %w", err)
 		}
 	}
 	if request.Cursor != nil {
-		if err := queries.SaveCursor(ctx, storesqlc.SaveCursorParams{Name: request.Cursor.Name, Value: request.Cursor.Value}); err != nil {
+		if err := saveCursor(ctx, queries, request.Mapping.Source.Scope, request.Cursor); err != nil {
 			return fmt.Errorf("save sync cursor: %w", err)
 		}
 	}
@@ -748,18 +779,18 @@ func (s SQLiteStore) PublisherRegistered(ctx context.Context, pubkey string) (bo
 	return exists, nil
 }
 
-func (s SQLiteStore) ReplaceSyncTargets(ctx context.Context, dids []string) error {
+func (s SQLiteStore) ReplaceSyncTargets(ctx context.Context, scope SourceScope, targets []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin replace sync targets transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	queries := s.queries.WithTx(tx)
-	if err := queries.ReplaceSyncTargetsDelete(ctx); err != nil {
+	if err := queries.ReplaceSyncTargetsDelete(ctx, targetScopeParams(scope)); err != nil {
 		return fmt.Errorf("clear sync targets: %w", err)
 	}
-	for _, did := range dids {
-		if err := queries.InsertSyncTarget(ctx, did); err != nil {
+	for _, target := range targets {
+		if err := queries.InsertSyncTarget(ctx, storesqlc.InsertSyncTargetParams{Provider: scope.Provider, SourceAccount: scope.Account, Target: target}); err != nil {
 			return fmt.Errorf("save sync target: %w", err)
 		}
 	}
@@ -769,16 +800,16 @@ func (s SQLiteStore) ReplaceSyncTargets(ctx context.Context, dids []string) erro
 	return nil
 }
 
-func (s SQLiteStore) SyncTargets(ctx context.Context) ([]string, error) {
-	dids, err := s.queries.SyncTargets(ctx)
+func (s SQLiteStore) SyncTargets(ctx context.Context, scope SourceScope) ([]string, error) {
+	dids, err := s.queries.SyncTargets(ctx, storesqlc.SyncTargetsParams{Provider: scope.Provider, SourceAccount: scope.Account})
 	if err != nil {
 		return nil, fmt.Errorf("query sync targets: %w", err)
 	}
 	return dids, nil
 }
 
-func (s SQLiteStore) EventMappingBySourceURI(ctx context.Context, sourceURI string) (EventMapping, error) {
-	row, err := s.queries.EventMappingBySourceURI(ctx, sourceURI)
+func (s SQLiteStore) EventMappingBySourceURI(ctx context.Context, ref SourceRef) (EventMapping, error) {
+	row, err := s.queries.EventMappingBySourceURI(ctx, mappingParams(ref))
 	if err != nil {
 		return EventMapping{}, fmt.Errorf("find bridge event by source URI: %w", err)
 	}
@@ -794,14 +825,14 @@ func (s SQLiteStore) SaveEventMapping(ctx context.Context, mapping EventMapping)
 	return nil
 }
 
-func (s SQLiteStore) DeleteEventBySourceURI(ctx context.Context, sourceURI string) error {
+func (s SQLiteStore) DeleteEventBySourceURI(ctx context.Context, ref SourceRef) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin delete bridge event transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	queries := s.queries.WithTx(tx)
-	if err := queries.DeleteEventMapping(ctx, sourceURI); err != nil {
+	if err := queries.DeleteEventMapping(ctx, deleteMappingParams(ref)); err != nil {
 		return fmt.Errorf("delete bridge event by source URI: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -810,71 +841,71 @@ func (s SQLiteStore) DeleteEventBySourceURI(ctx context.Context, sourceURI strin
 	return nil
 }
 
-func (s SQLiteStore) SaveSourceOperation(ctx context.Context, sourceURI, identity string) error {
-	err := s.queries.SaveSourceOperation(ctx, storesqlc.SaveSourceOperationParams{SourceUri: sourceURI, Identity: identity})
+func (s SQLiteStore) SaveSourceOperation(ctx context.Context, ref SourceRef, identity string) error {
+	err := saveSourceOperation(ctx, s.queries, ref, identity)
 	if err != nil {
 		return fmt.Errorf("save source operation: %w", err)
 	}
 	return nil
 }
 
-func (s SQLiteStore) SourceOperationBySourceURI(ctx context.Context, sourceURI string) (string, error) {
-	identity, err := s.queries.SourceOperationBySourceURI(ctx, sourceURI)
+func (s SQLiteStore) SourceOperationBySourceURI(ctx context.Context, ref SourceRef) (string, error) {
+	identity, err := s.queries.SourceOperationBySourceURI(ctx, operationParams(ref))
 	if err != nil {
 		return "", fmt.Errorf("find source operation by source URI: %w", err)
 	}
 	return identity, nil
 }
 
-func (s SQLiteStore) SaveCursor(ctx context.Context, name string, value int64) error {
-	err := s.queries.SaveCursor(ctx, storesqlc.SaveCursorParams{Name: name, Value: value})
+func (s SQLiteStore) SaveCursor(ctx context.Context, scope SourceScope, name, value string) error {
+	err := saveCursor(ctx, s.queries, scope, &CursorUpdate{Name: name, Value: value})
 	if err != nil {
 		return fmt.Errorf("save sync cursor: %w", err)
 	}
 	return nil
 }
 
-func (s SQLiteStore) Cursor(ctx context.Context, name string) (int64, error) {
-	value, err := s.queries.Cursor(ctx, name)
+func (s SQLiteStore) Cursor(ctx context.Context, scope SourceScope, name string) (string, error) {
+	value, err := s.queries.Cursor(ctx, storesqlc.CursorParams{Provider: scope.Provider, SourceAccount: scope.Account, Name: name})
 	if err != nil {
-		return 0, fmt.Errorf("find sync cursor: %w", err)
+		return "", fmt.Errorf("find sync cursor: %w", err)
 	}
 	return value, nil
 }
 
-func (s SQLiteStore) SaveOAuthSession(ctx context.Context, session OAuthSession) error {
-	err := s.queries.SaveOAuthSession(ctx, storesqlc.SaveOAuthSessionParams{State: session.State, EncryptedPayload: session.EncryptedPayload, ExpiresAt: session.ExpiresAt})
+func (s SQLiteStore) SaveOAuthSession(ctx context.Context, scope SourceScope, session OAuthSession) error {
+	err := s.queries.SaveOAuthSession(ctx, storesqlc.SaveOAuthSessionParams{Provider: scope.Provider, SourceAccount: scope.Account, State: session.State, EncryptedPayload: session.EncryptedPayload, ExpiresAt: session.ExpiresAt})
 	if err != nil {
 		return fmt.Errorf("save OAuth session: %w", err)
 	}
 	return nil
 }
 
-func (s SQLiteStore) OAuthSessionByState(ctx context.Context, state string) (OAuthSession, error) {
-	row, err := s.queries.OAuthSessionByState(ctx, state)
+func (s SQLiteStore) OAuthSessionByState(ctx context.Context, scope SourceScope, state string) (OAuthSession, error) {
+	row, err := s.queries.OAuthSessionByState(ctx, storesqlc.OAuthSessionByStateParams{Provider: scope.Provider, SourceAccount: scope.Account, State: state})
 	if err != nil {
 		return OAuthSession{}, fmt.Errorf("find OAuth session by state: %w", err)
 	}
 	return oauthSession(row), nil
 }
 
-func (s SQLiteStore) DeleteOAuthSession(ctx context.Context, state string) error {
-	if err := s.queries.DeleteOAuthSession(ctx, state); err != nil {
+func (s SQLiteStore) DeleteOAuthSession(ctx context.Context, scope SourceScope, state string) error {
+	if err := s.queries.DeleteOAuthSession(ctx, storesqlc.DeleteOAuthSessionParams{Provider: scope.Provider, SourceAccount: scope.Account, State: state}); err != nil {
 		return fmt.Errorf("delete OAuth session: %w", err)
 	}
 	return nil
 }
 
-func (s SQLiteStore) SaveOAuthToken(ctx context.Context, token OAuthToken) error {
-	err := s.queries.SaveOAuthToken(ctx, storesqlc.SaveOAuthTokenParams{AccountDid: token.AccountDID, EncryptedPayload: token.EncryptedPayload, UpdatedAt: token.UpdatedAt})
+func (s SQLiteStore) SaveOAuthToken(ctx context.Context, scope SourceScope, token OAuthToken) error {
+	err := s.queries.SaveOAuthToken(ctx, storesqlc.SaveOAuthTokenParams{Provider: scope.Provider, SourceAccount: scope.Account, AccountDid: token.AccountDID, EncryptedPayload: token.EncryptedPayload, UpdatedAt: token.UpdatedAt})
 	if err != nil {
 		return fmt.Errorf("save OAuth token: %w", err)
 	}
 	return nil
 }
 
-func (s SQLiteStore) OAuthTokenByAccountDID(ctx context.Context, accountDID string) (OAuthToken, error) {
-	row, err := s.queries.OAuthTokenByAccountDID(ctx, accountDID)
+func (s SQLiteStore) OAuthTokenByAccountDID(ctx context.Context, scope SourceScope, accountDID string) (OAuthToken, error) {
+	row, err := s.queries.OAuthTokenByAccountDID(ctx, storesqlc.OAuthTokenByAccountDIDParams{Provider: scope.Provider, SourceAccount: scope.Account, AccountDid: accountDID})
 	if err != nil {
 		return OAuthToken{}, fmt.Errorf("find OAuth token by account DID: %w", err)
 	}
