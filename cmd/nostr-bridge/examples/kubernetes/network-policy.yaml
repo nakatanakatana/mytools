@@ -37,8 +37,8 @@ spec:
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
-    # NetworkPolicy cannot select public OAuth, Bluesky, or Jetstream hosts by
-    # DNS name. This reference permits their TLS port; restrict stable CIDRs
-    # when your environment supports doing so.
+    # NetworkPolicy cannot select public OAuth/provider hosts by DNS name.
+    # This permits HTTPS plus Bluesky Jetstream and Mastodon streaming over
+    # secure WebSockets (also TCP 443); restrict stable CIDRs when supported.
     - ports:
         - {protocol: TCP, port: 443}

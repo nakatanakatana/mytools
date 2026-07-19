@@ -1,10 +1,111 @@
 package main
 
 import (
+	"fmt"
+	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 )
+
+func validateConfigVariableCatalog(configType reflect.Type, catalog []configVariable) error {
+	tagNames := make(map[string]int)
+	var collect func(reflect.Type)
+	collect = func(current reflect.Type) {
+		for i := 0; i < current.NumField(); i++ {
+			field := current.Field(i)
+			tag := field.Tag.Get("env")
+			if tag != "" {
+				name, _, _ := strings.Cut(tag, ",")
+				tagNames[name]++
+				continue
+			}
+			if field.Type.Kind() == reflect.Struct {
+				collect(field.Type)
+			}
+		}
+	}
+	collect(configType)
+
+	catalogNames := make(map[string]int)
+	for _, variable := range catalog {
+		if !variable.removed {
+			catalogNames[variable.name]++
+		}
+	}
+	var problems []string
+	for name, count := range tagNames {
+		if count > 1 {
+			problems = append(problems, fmt.Sprintf("duplicate env tag %s", name))
+		}
+		if catalogNames[name] == 0 {
+			problems = append(problems, "missing "+name)
+		}
+	}
+	for name, count := range catalogNames {
+		if count > 1 {
+			problems = append(problems, fmt.Sprintf("duplicate catalog variable %s", name))
+		}
+		if tagNames[name] == 0 {
+			problems = append(problems, "extra "+name)
+		}
+	}
+	sort.Strings(problems)
+	if len(problems) > 0 {
+		return fmt.Errorf("config variable catalog mismatch: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+func TestConfigVariableCatalogMatchesEnvTags(t *testing.T) {
+	if err := validateConfigVariableCatalog(reflect.TypeOf(Config{}), configVariables); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfigVariableCatalogDetectsTagMismatch(t *testing.T) {
+	type syntheticConfig struct {
+		Present string `env:"PRESENT,required"`
+		Nested  struct {
+			Missing string `env:"MISSING"`
+		}
+	}
+	catalog := []configVariable{{name: "PRESENT"}, {name: "EXTRA"}}
+	err := validateConfigVariableCatalog(reflect.TypeOf(syntheticConfig{}), catalog)
+	if err == nil || !strings.Contains(err.Error(), "missing MISSING") || !strings.Contains(err.Error(), "extra EXTRA") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDocumentedConfigurationMatchesConfig(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(contents)
+	}
+	readme := read("README.md")
+	deployment := read("examples/kubernetes/deployment.yaml")
+
+	for _, variable := range configVariables {
+		if variable.removed {
+			if strings.Contains(readme, "`"+variable.name+"`") || strings.Contains(deployment, "name: "+variable.name) {
+				t.Errorf("documentation contains removed configuration variable %s", variable.name)
+			}
+			continue
+		}
+		if !strings.Contains(readme, "`"+variable.name+"`") {
+			t.Errorf("README does not contain %s", variable.name)
+		}
+		if variable.documentation == documentInReadmeAndDeployment && !strings.Contains(deployment, "name: "+variable.name) {
+			t.Errorf("deployment does not contain %s", variable.name)
+		}
+	}
+}
 
 func setSharedEnv(t *testing.T) {
 	t.Helper()

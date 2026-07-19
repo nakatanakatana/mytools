@@ -1,75 +1,92 @@
 # nostr-bridge
 
-`nostr-bridge` bridges selected Bluesky records to a separately operated Nostr
-relay. It owns OAuth/health HTTP endpoints, SQLite outbox state, Jetstream, and
-external relay delivery clients; it does not host a relay.
+`nostr-bridge` copies selected public Bluesky and Mastodon activity to a
+separately operated Nostr relay. Enable Bluesky, Mastodon, or both by setting
+the provider's base URL. One process supports at most one account from each
+provider. It does not host a relay.
+
+All enabled providers contribute to one stable bridge-owner Nostr identity,
+configured by `NOSTR_BRIDGE_OWNER_ID`. The owner's kind 3 follow list is the
+union of actual follows and configured-list members from both providers;
+provider lists become kind 30000 follow sets. Changing the master seed changes
+all derived publisher identities.
 
 ## Synchronized data
 
-| Source service | Source data | Sync target | Nostr event | Synchronized fields |
-| --- | --- | --- | --- | --- |
-| Bluesky | Profile | The authorized account, followed accounts, and members of configured lists | kind 0 (profile metadata) | Display name, description, Bluesky avatar URL, and Bluesky profile URL |
-| Bluesky | Post | Followed accounts and members of configured lists | kind 1 (text note) | Text, attached image URLs and NIP-92 metadata, creation time, source post URL, and a reply reference when the parent post has already been mapped |
-| Bluesky | Follows | The authorized account | kind 3 (follow list) | The union of accounts actually followed on Bluesky and members of configured lists |
-| Bluesky | Configured list | Lists named in `NOSTR_BRIDGE_LIST_URIS` | kind 30000 (follow set) | List name, description, and members |
+Profiles become kind 0 events and posts become kind 1 events. Posts and
+profiles retain source links. Attachments and avatars hotlink source-hosted
+media, with attachment metadata emitted as NIP-92; the bridge does not copy
+media. Mastodon spoiler/CW text is emitted as a NIP-36 `content-warning` tag.
+Replies are linked when the parent is already mapped.
 
-Lists not named in `NOSTR_BRIDGE_LIST_URIS` are not synchronized. A member of a
-configured list is synchronized as a follow even when the authorized Bluesky
-account does not actually follow that member. Profile avatar URLs continue to
-refer to Bluesky-hosted media. Post images also continue to refer to
-Bluesky-hosted full-size media; the bridge does not copy image data. Video,
-external-card, quote-post, facet, and other embed metadata are not currently
-synchronized.
+For each provider, synchronization targets are the union of accounts followed
+by the authorized account and members of the configured lists. A list member
+need not be followed by the authorized account. Mastodon synchronization reads
+the home and configured-list timelines, accepts public statuses only, and
+does not bridge boosts/reblogs. Mastodon does not offer a complete API stream
+of every followed account. Viewing users follow the derived Nostr identities
+manually; the bridge never signs or modifies a viewer's own follow list.
 
 ## Configuration
 
-| Variable | Description | Default | Required |
-| --- | --- | --- | --- |
-| `NOSTR_BRIDGE_HOST` | HTTP bind host | `127.0.0.1` | No |
-| `NOSTR_BRIDGE_PORT` | HTTP bind port | `8080` | No |
-| `NOSTR_BRIDGE_DATABASE_PATH` | Path to the bridge database | | Yes |
-| `NOSTR_BRIDGE_RELAY_URL` | External relay WebSocket URL (`ws`/`wss`) | | Yes |
-| `NOSTR_BRIDGE_RELAY_MANAGEMENT_URL` | Cluster-private relay management URL (`http`/`https`) | | Yes |
-| `NOSTR_BRIDGE_RELAY_CANONICAL_URL` | External canonical relay URL signed in NIP-98 management requests; escaped path and query must equal the management URL | | Yes |
-| `NOSTR_BRIDGE_RELAY_ADMIN_PRIVATE_KEY` | Hex Nostr secret used only for signed management requests | | Yes |
-| `NOSTR_BRIDGE_OUTBOX_LIMIT` | Hard durable delivery queue limit | `10000` | No |
-| `NOSTR_BRIDGE_OUTBOX_POLL_INTERVAL` | Dispatcher idle poll interval | `1s` | No |
-| `NOSTR_BRIDGE_OAUTH_CALLBACK_URL` | Public OAuth callback URL | | Yes |
-| `NOSTR_BRIDGE_OAUTH_AUTHORIZATION_SERVER_URL` | AT Protocol OAuth authorization-server URL | | Yes |
-| `NOSTR_BRIDGE_OAUTH_CLIENT_ID` | Public URL of the OAuth client metadata document | | Yes |
-| `NOSTR_BRIDGE_OAUTH_CLIENT_SIGNING_KEY` | Base64-encoded PKCS#8 ECDSA P-256 private key | | Yes |
-| `NOSTR_BRIDGE_OAUTH_ENCRYPTION_KEY` | Base64-encoded 32-byte key for persisted OAuth state and tokens | | Yes |
-| `NOSTR_BRIDGE_ACCOUNT_DID` | DID of the OAuth-authorized Bluesky account | | Yes |
-| `NOSTR_BRIDGE_BLUESKY_BASE_URL` | Bluesky XRPC service base URL | | Yes |
-| `NOSTR_BRIDGE_MASTER_SEED` | Base64 encoding of an exactly 32-byte bridge key-derivation seed | External Secrets | Yes |
-| `NOSTR_BRIDGE_JETSTREAM_URL` | Bluesky Jetstream endpoint URL | | Yes |
-| `NOSTR_BRIDGE_LIST_URIS` | Comma-separated AT Protocol list URIs to bridge | | No |
-| `NOSTR_BRIDGE_BACKFILL_LIMIT` | Maximum records read during initial backfill | `100` | No |
-| `NOSTR_BRIDGE_RECONCILE_INTERVAL` | Interval between reconciliation passes (Go duration) | `1h` | No |
+Shared and owner settings:
 
-## Network exposure
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NOSTR_BRIDGE_HOST` / `NOSTR_BRIDGE_PORT` | HTTP bind address | `127.0.0.1` / `8080` |
+| `NOSTR_BRIDGE_DATABASE_PATH` | SQLite database path (required) | |
+| `NOSTR_BRIDGE_MASTER_SEED` | Base64 encoding of exactly 32 random bytes (required) | |
+| `NOSTR_BRIDGE_RELAY_URL` | External relay `ws`/`wss` URL (required) | |
+| `NOSTR_BRIDGE_RELAY_MANAGEMENT_URL` | Private relay management URL (required) | |
+| `NOSTR_BRIDGE_RELAY_CANONICAL_URL` | Canonical relay URL signed in management requests (required) | |
+| `NOSTR_BRIDGE_RELAY_ADMIN_PRIVATE_KEY` | Hex Nostr management key (required) | |
+| `NOSTR_BRIDGE_OUTBOX_LIMIT` | Durable queue limit | `10000` |
+| `NOSTR_BRIDGE_OUTBOX_POLL_INTERVAL` | Dispatcher poll interval | `1s` |
+| `NOSTR_BRIDGE_OWNER_ID` | Stable local identifier for the common bridge owner (required) | |
+| `NOSTR_BRIDGE_OWNER_NAME` | Owner profile display name | `nostr-bridge` |
+| `NOSTR_BRIDGE_OWNER_ABOUT` | Owner profile description | |
+| `NOSTR_BRIDGE_OWNER_PICTURE` | Owner profile HTTPS image URL | |
 
-Bridge application endpoints are Tailscale-only: run the service on the
-private tailnet and do not expose its authorization, token, callback, or bridge
-API routes through Cloudflare.
+Bluesky is enabled when `NOSTR_BRIDGE_BLUESKY_BASE_URL` is non-empty:
 
-Cloudflare publishes only the public OAuth client metadata endpoint
-`/oauth/client-metadata.json` and the JWKS endpoint `/oauth/jwks`. It does not
-proxy the rest of the bridge service.
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NOSTR_BRIDGE_BLUESKY_ACCOUNT_DID` | Authorized account DID (required when enabled) | |
+| `NOSTR_BRIDGE_BLUESKY_BASE_URL` | XRPC service base URL | disabled |
+| `NOSTR_BRIDGE_BLUESKY_JETSTREAM_URL` | Jetstream WebSocket URL (required when enabled) | |
+| `NOSTR_BRIDGE_BLUESKY_LIST_URIS` | Comma-separated list URIs | |
+| `NOSTR_BRIDGE_BLUESKY_BACKFILL_LIMIT` | Initial backfill limit | `100` |
+| `NOSTR_BRIDGE_BLUESKY_RECONCILE_INTERVAL` | Target reconciliation interval | `1h` |
+| `NOSTR_BRIDGE_BLUESKY_OAUTH_CALLBACK_URL` | Public HTTPS URL ending `/oauth/bluesky/callback` | |
+| `NOSTR_BRIDGE_BLUESKY_OAUTH_AUTHORIZATION_SERVER_URL` | AT Protocol authorization server | |
+| `NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID` | Public HTTPS URL ending `/oauth/bluesky/client-metadata.json` | |
+| `NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_SIGNING_KEY` | Base64 PKCS#8 P-256 signing key | |
+| `NOSTR_BRIDGE_BLUESKY_OAUTH_ENCRYPTION_KEY` | Base64 32-byte token/state encryption key | |
 
-## Operations
+Mastodon is enabled when `NOSTR_BRIDGE_MASTODON_BASE_URL` is non-empty:
 
-The service exposes these Tailscale-only endpoints:
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NOSTR_BRIDGE_MASTODON_BASE_URL` | Account's instance origin | disabled |
+| `NOSTR_BRIDGE_MASTODON_ACCOUNT` | Exactly one `user@instance` account (required when enabled) | |
+| `NOSTR_BRIDGE_MASTODON_LIST_IDS` | Comma-separated list IDs | |
+| `NOSTR_BRIDGE_MASTODON_BACKFILL_LIMIT` | Per-timeline backfill limit | `100` |
+| `NOSTR_BRIDGE_MASTODON_RECONCILE_INTERVAL` | Target reconciliation interval | `1h` |
+| `NOSTR_BRIDGE_MASTODON_OAUTH_CALLBACK_URL` | Public HTTPS URL ending `/oauth/mastodon/callback` | |
+| `NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_ID` | Mastodon application client ID | |
+| `NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_SECRET` | Mastodon application client secret | |
+| `NOSTR_BRIDGE_MASTODON_OAUTH_ENCRYPTION_KEY` | Base64 32-byte token/state encryption key | |
 
-| Endpoint | Purpose |
-| --- | --- |
-| `/healthz` | Process liveness; returns success while the HTTP process is running. |
-| `/readyz` | Readiness; requires a responsive database, an OAuth connection, a connected Jetstream consumer when targets exist, and an outbox count below `NOSTR_BRIDGE_OUTBOX_LIMIT`. Quiet Jetstream connections remain ready; no consumer is required when the target set is empty. |
-| `/metrics` | Prometheus text metrics for sync and Jetstream state, target count, pending work, OAuth expiry, outbox pressure, and the last successful external-relay delivery. |
+## OAuth and network exposure
 
-Do not publish these endpoints through Cloudflare. In particular, a readiness
-failure can reveal that a private dependency is unavailable even though it does
-not reveal tokens, keys, DIDs, or event contents.
+Only public OAuth protocol callbacks/artifacts require external HTTPS access:
+`/oauth/bluesky/callback`, `/oauth/bluesky/client-metadata.json`,
+`/oauth/bluesky/jwks`, and `/oauth/mastodon/callback`. Ordinary UI and auth
+starts (`/oauth/bluesky/start` and `POST /oauth/mastodon/start`) may remain
+Tailscale-only. Do not expose health, metrics, or unrelated routes publicly.
+Allow outbound HTTPS to OAuth and provider APIs, outbound WebSockets to
+Bluesky Jetstream and Mastodon streaming, and relay protocol/management
+connections.
 
 ### OAuth authorization
 
@@ -78,48 +95,29 @@ AppView for permission to call `app.bsky.graph.getFollows`,
 `app.bsky.graph.getList`, `app.bsky.actor.getProfile`, and
 `app.bsky.feed.getTimeline`. When a release adds or changes these permissions,
 existing tokens do not gain them through refresh. After deploying such a
-release, start a new authorization with `/oauth/start` and complete the OAuth
+release, start a new authorization with `/oauth/bluesky/start` and complete the OAuth
 flow before checking synchronization health.
 
-### External secrets
+## Operations and recovery
 
-Provide `NOSTR_BRIDGE_OAUTH_CLIENT_SIGNING_KEY`,
-`NOSTR_BRIDGE_OAUTH_ENCRYPTION_KEY`, `NOSTR_BRIDGE_MASTER_SEED`, and
-`NOSTR_BRIDGE_RELAY_ADMIN_PRIVATE_KEY` through 1Password External Secrets.
-Do not put them in source control, image layers, Cloudflare configuration,
-metrics, or logs. Rotate the signing key only after updating the public JWKS
-artifact, and rotate the encryption key with a planned token reauthorization:
-existing encrypted OAuth sessions and tokens cannot be read with a new key.
+SQLite requires one process/one writer and persistent storage. Do not share
+its PVC with the relay. Back up the database with the exact external-secret
+versions used to encrypt OAuth data. `/healthz` reports process liveness,
+`/readyz` gates on the shared database, outbox, dispatcher, and each enabled
+provider's authentication and bootstrap state. Stream connection and last
+event are reported by health/metrics, but a quiet stream or transient stream
+disconnect does not fail readiness. `/metrics` exposes provider-labelled
+operational metrics.
 
-Generate the master seed from 32 cryptographically random bytes (for example,
-`openssl rand -base64 32`) and keep the same value across restarts. Changing it
-changes every derived bridge publisher identity.
+If one provider loses or rotates its OAuth encryption material, remove that
+provider's unreadable OAuth rows and authorize it again; the other provider's
+credentials are independent. Restore the database and matching secrets
+together. Stream cursors and idempotent mappings allow recovery/replay without
+intentionally duplicating Nostr events.
 
-### Public Cloudflare artifacts
-
-Cloudflare is limited to immutable or explicitly deployed public OAuth
-artifacts: the client metadata and the OAuth client JWKS. Keep
-the callback, `/oauth/start`, `/oauth/callback`, relay, health, readiness, and
-metrics routes off Cloudflare and reachable only over Tailscale.
-
-### Recovery
-
-Give the bridge database its own PVC; do not share the relay database/PVC.
-Back up the SQLite database and retain the external secret versions needed to
-decrypt it. On recovery, restore both together, start the bridge on Tailscale,
-and check `/healthz`, `/readyz`, and `/metrics`. If encryption material is lost
-or rotated without a migration, delete the unreadable OAuth records and have
-the operator complete OAuth authorization again. Jetstream resumes from its
-stored cursor with a small rewind, so replayed source operations are handled
-idempotently.
-
-### Nostr data disclosure
-
-Treat every bridged Nostr event as disclosed to the external relay and its
-authorized clients. Keep the management endpoint cluster-private. Do not
-bridge private messages, access tokens, OAuth callback parameters, or other
-credentials; Nostr event content and metadata can be replicated by authorized
-clients and are not a secrecy boundary.
+Keep the relay admin key, master seed, both provider encryption keys, the
+Bluesky signing key, and Mastodon client secret in an external secret store.
+Never put credentials in manifests, images, logs, or metrics.
 
 ## Running
 

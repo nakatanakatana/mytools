@@ -70,23 +70,86 @@ type Config struct {
 	Mastodon MastodonConfig
 }
 
-var removedConfigVariables = []string{
-	"NOSTR_BRIDGE_ACCOUNT_DID",
-	"NOSTR_BRIDGE_JETSTREAM_URL",
-	"NOSTR_BRIDGE_LIST_URIS",
-	"NOSTR_BRIDGE_BACKFILL_LIMIT",
-	"NOSTR_BRIDGE_RECONCILE_INTERVAL",
-	"NOSTR_BRIDGE_OAUTH_CALLBACK_URL",
-	"NOSTR_BRIDGE_OAUTH_AUTHORIZATION_SERVER_URL",
-	"NOSTR_BRIDGE_OAUTH_CLIENT_ID",
-	"NOSTR_BRIDGE_OAUTH_CLIENT_SIGNING_KEY",
-	"NOSTR_BRIDGE_OAUTH_ENCRYPTION_KEY",
+type configDocumentation uint8
+
+const (
+	documentInReadme configDocumentation = iota
+	documentInReadmeAndDeployment
+)
+
+type configVariable struct {
+	name          string
+	documentation configDocumentation
+	removed       bool
+}
+
+// configVariables is the production-owned inventory used for removed-variable
+// rejection and for keeping operator documentation aligned with LoadConfig.
+var configVariables = []configVariable{
+	{name: "NOSTR_BRIDGE_HOST", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_PORT", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_DATABASE_PATH", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTER_SEED", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_RELAY_URL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_RELAY_MANAGEMENT_URL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_RELAY_CANONICAL_URL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_RELAY_ADMIN_PRIVATE_KEY", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_OUTBOX_LIMIT", documentation: documentInReadme},
+	{name: "NOSTR_BRIDGE_OUTBOX_POLL_INTERVAL", documentation: documentInReadme},
+	{name: "NOSTR_BRIDGE_OWNER_ID", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_OWNER_NAME", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_OWNER_ABOUT", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_OWNER_PICTURE", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_ACCOUNT_DID", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_BASE_URL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_JETSTREAM_URL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_LIST_URIS", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_BACKFILL_LIMIT", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_RECONCILE_INTERVAL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_CALLBACK_URL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_AUTHORIZATION_SERVER_URL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_SIGNING_KEY", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_ENCRYPTION_KEY", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTODON_BASE_URL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTODON_ACCOUNT", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTODON_LIST_IDS", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTODON_BACKFILL_LIMIT", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTODON_RECONCILE_INTERVAL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTODON_OAUTH_CALLBACK_URL", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_ID", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_SECRET", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_MASTODON_OAUTH_ENCRYPTION_KEY", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_ACCOUNT_DID", removed: true},
+	{name: "NOSTR_BRIDGE_JETSTREAM_URL", removed: true},
+	{name: "NOSTR_BRIDGE_LIST_URIS", removed: true},
+	{name: "NOSTR_BRIDGE_BACKFILL_LIMIT", removed: true},
+	{name: "NOSTR_BRIDGE_RECONCILE_INTERVAL", removed: true},
+	{name: "NOSTR_BRIDGE_OAUTH_CALLBACK_URL", removed: true},
+	{name: "NOSTR_BRIDGE_OAUTH_AUTHORIZATION_SERVER_URL", removed: true},
+	{name: "NOSTR_BRIDGE_OAUTH_CLIENT_ID", removed: true},
+	{name: "NOSTR_BRIDGE_OAUTH_CLIENT_SIGNING_KEY", removed: true},
+	{name: "NOSTR_BRIDGE_OAUTH_ENCRYPTION_KEY", removed: true},
+}
+
+var removedConfigVariables = configVariableNames(true)
+
+func configVariableNames(removed bool) []string {
+	var names []string
+	for _, variable := range configVariables {
+		if variable.removed == removed {
+			names = append(names, variable.name)
+		}
+	}
+	return names
 }
 
 func LoadConfig() (Config, error) {
-	for _, name := range removedConfigVariables {
-		if _, exists := os.LookupEnv(name); exists {
-			return Config{}, fmt.Errorf("removed configuration variable %s is set", name)
+	for _, variable := range configVariables {
+		if variable.removed {
+			if _, exists := os.LookupEnv(variable.name); exists {
+				return Config{}, fmt.Errorf("removed configuration variable %s is set", variable.name)
+			}
 		}
 	}
 	var cfg Config

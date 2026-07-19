@@ -36,20 +36,38 @@ spec:
             - {name: NOSTR_BRIDGE_RELAY_URL, value: REPLACE_WITH_RELAY_WS_URL}
             - {name: NOSTR_BRIDGE_RELAY_MANAGEMENT_URL, value: REPLACE_WITH_PRIVATE_RELAY_MANAGEMENT_URL}
             - {name: NOSTR_BRIDGE_RELAY_CANONICAL_URL, value: REPLACE_WITH_CANONICAL_RELAY_HTTPS_URL}
-            - {name: NOSTR_BRIDGE_OAUTH_AUTHORIZATION_SERVER_URL, value: https://bsky.social}
+            - {name: NOSTR_BRIDGE_OWNER_ID, value: REPLACE_WITH_STABLE_OWNER_ID}
+            - {name: NOSTR_BRIDGE_OWNER_NAME, value: nostr-bridge}
+            - {name: NOSTR_BRIDGE_OWNER_ABOUT, value: Posts bridged from social accounts}
+            - {name: NOSTR_BRIDGE_OWNER_PICTURE, value: https://REPLACE_WITH_OWNER_PICTURE_URL}
             - {name: NOSTR_BRIDGE_BLUESKY_BASE_URL, value: https://bsky.social}
-            - {name: NOSTR_BRIDGE_JETSTREAM_URL, value: wss://jetstream2.us-east.bsky.network/subscribe}
-            - {name: NOSTR_BRIDGE_OAUTH_CLIENT_ID, value: REPLACE_WITH_PUBLIC_CLIENT_METADATA_URL}
-            - {name: NOSTR_BRIDGE_OAUTH_CALLBACK_URL, value: REPLACE_WITH_OAUTH_CALLBACK_URL}
-            - {name: NOSTR_BRIDGE_ACCOUNT_DID, value: REPLACE_WITH_ACCOUNT_DID}
+            - {name: NOSTR_BRIDGE_BLUESKY_ACCOUNT_DID, value: REPLACE_WITH_ACCOUNT_DID}
+            - {name: NOSTR_BRIDGE_BLUESKY_JETSTREAM_URL, value: wss://jetstream2.us-east.bsky.network/subscribe}
+            - {name: NOSTR_BRIDGE_BLUESKY_LIST_URIS, value: REPLACE_WITH_COMMA_SEPARATED_LIST_URIS}
+            - {name: NOSTR_BRIDGE_BLUESKY_BACKFILL_LIMIT, value: "100"}
+            - {name: NOSTR_BRIDGE_BLUESKY_RECONCILE_INTERVAL, value: 1h}
+            - {name: NOSTR_BRIDGE_BLUESKY_OAUTH_AUTHORIZATION_SERVER_URL, value: https://bsky.social}
+            - {name: NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID, value: https://REPLACE_WITH_PUBLIC_HOST/oauth/bluesky/client-metadata.json}
+            - {name: NOSTR_BRIDGE_BLUESKY_OAUTH_CALLBACK_URL, value: https://REPLACE_WITH_PUBLIC_HOST/oauth/bluesky/callback}
+            - {name: NOSTR_BRIDGE_MASTODON_BASE_URL, value: https://REPLACE_WITH_MASTODON_INSTANCE}
+            - {name: NOSTR_BRIDGE_MASTODON_ACCOUNT, value: REPLACE_WITH_USER_AT_INSTANCE}
+            - {name: NOSTR_BRIDGE_MASTODON_LIST_IDS, value: REPLACE_WITH_COMMA_SEPARATED_LIST_IDS}
+            - {name: NOSTR_BRIDGE_MASTODON_BACKFILL_LIMIT, value: "100"}
+            - {name: NOSTR_BRIDGE_MASTODON_RECONCILE_INTERVAL, value: 1h}
+            - {name: NOSTR_BRIDGE_MASTODON_OAUTH_CALLBACK_URL, value: https://REPLACE_WITH_PUBLIC_HOST/oauth/mastodon/callback}
+            - {name: NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_ID, value: REPLACE_WITH_MASTODON_CLIENT_ID}
             - name: NOSTR_BRIDGE_RELAY_ADMIN_PRIVATE_KEY
               valueFrom: {secretKeyRef: {name: nostr-bridge-secrets, key: relay-admin-private-key}}
             - name: NOSTR_BRIDGE_MASTER_SEED
               valueFrom: {secretKeyRef: {name: nostr-bridge-secrets, key: master-seed}}
-            - name: NOSTR_BRIDGE_OAUTH_CLIENT_SIGNING_KEY
-              valueFrom: {secretKeyRef: {name: nostr-bridge-secrets, key: oauth-client-signing-key}}
-            - name: NOSTR_BRIDGE_OAUTH_ENCRYPTION_KEY
-              valueFrom: {secretKeyRef: {name: nostr-bridge-secrets, key: oauth-encryption-key}}
+            - name: NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_SIGNING_KEY
+              valueFrom: {secretKeyRef: {name: nostr-bridge-secrets, key: bluesky-oauth-client-signing-key}}
+            - name: NOSTR_BRIDGE_BLUESKY_OAUTH_ENCRYPTION_KEY
+              valueFrom: {secretKeyRef: {name: nostr-bridge-secrets, key: bluesky-oauth-encryption-key}}
+            - name: NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: nostr-bridge-secrets, key: mastodon-oauth-client-secret}}
+            - name: NOSTR_BRIDGE_MASTODON_OAUTH_ENCRYPTION_KEY
+              valueFrom: {secretKeyRef: {name: nostr-bridge-secrets, key: mastodon-oauth-encryption-key}}
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             initialDelaySeconds: 5
