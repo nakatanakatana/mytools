@@ -86,6 +86,31 @@
       "algorithm": "sha256"
     },
     {
+      "id": "http/downloads.sqlc.dev/sqlc_1.31.1_darwin_amd64.tar.gz",
+      "checksum": "C5AF76772E3785D21663A62697056B383F07629979B1BD25B93872E73DBD519B",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "http/downloads.sqlc.dev/sqlc_1.31.1_darwin_arm64.tar.gz",
+      "checksum": "21602158C99EB1F2BAE197A66ABFB1941D1E9E50B23125BB193349C6B1ACC71E",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "http/downloads.sqlc.dev/sqlc_1.31.1_linux_amd64.tar.gz",
+      "checksum": "497AE4FCDFA64C5B0C311FFE4C2BD991E43991E82E5367792ED78BC2DCA27354",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "http/downloads.sqlc.dev/sqlc_1.31.1_linux_arm64.tar.gz",
+      "checksum": "B7CAE247740D0C51A1E657479E5B2D21E6FEF428F596682A01BC55BF4AB8A23D",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "http/downloads.sqlc.dev/sqlc_1.31.1_windows_amd64.tar.gz",
+      "checksum": "40D138EC18B1CC80D2BE7305917FD4DECEDA4E0C32D78BA5D8FAA4BFA3BC0FC0",
+      "algorithm": "sha256"
+    },
+    {
       "id": "http/golang.org/dl/go1.26.5.darwin-amd64.tar.gz",
       "checksum": "6231D8D3B8F5552EC6CBF6D685BDD5482E1E703214B120E89B3BF0D7BF1EF725",
       "algorithm": "sha256"
