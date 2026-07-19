@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/secretbox"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
 
@@ -215,6 +216,18 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 	}
 	if string(token.EncryptedPayload) == "access-secret" || len(token.EncryptedPayload) == 0 {
 		t.Fatalf("token payload was not encrypted: %q", token.EncryptedPayload)
+	}
+	key := sha256.Sum256([]byte("test encryption key"))
+	box, err := secretbox.New(key[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := box.Open(token.EncryptedPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plaintext), "access-secret") {
+		t.Fatalf("shared box did not open OAuth payload: %q", plaintext)
 	}
 	loaded, err := client.TokenByAccountDID(context.Background(), "did:plc:alice")
 	if err != nil {

@@ -4,8 +4,6 @@ package oauth
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -20,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/secretbox"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
 
@@ -54,7 +53,7 @@ type Client struct {
 	clientID         string
 	redirectURL      string
 	clientSigningKey *ecdsa.PrivateKey
-	encryptionKey    []byte
+	box              secretbox.Box
 	now              func() time.Time
 }
 
@@ -108,7 +107,11 @@ func NewClient(options Options) (*Client, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &Client{scope: options.Scope, store: options.Store, httpClient: options.HTTPClient, issuer: strings.TrimRight(options.AuthorizationServerURL, "/"), clientID: options.ClientID, redirectURL: options.RedirectURL, clientSigningKey: options.ClientSigningKey, encryptionKey: append([]byte(nil), options.EncryptionKey...), now: options.Now}, nil
+	box, err := secretbox.New(options.EncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{scope: options.Scope, store: options.Store, httpClient: options.HTTPClient, issuer: strings.TrimRight(options.AuthorizationServerURL, "/"), clientID: options.ClientID, redirectURL: options.RedirectURL, clientSigningKey: options.ClientSigningKey, box: box, now: options.Now}, nil
 }
 
 // StartAuthorization creates a stateful PAR request and returns the user-facing authorization URL.
@@ -351,33 +354,10 @@ func (c *Client) clientAssertion(audience string) (string, error) {
 }
 
 func (c *Client) encrypt(plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(c.encryptionKey)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return c.box.Seal(plaintext)
 }
 func (c *Client) decryptJSON(ciphertext []byte, value any) error {
-	block, err := aes.NewCipher(c.encryptionKey)
-	if err != nil {
-		return err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return err
-	}
-	if len(ciphertext) < gcm.NonceSize() {
-		return errors.New("short encrypted payload")
-	}
-	plaintext, err := gcm.Open(nil, ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():], nil)
+	plaintext, err := c.box.Open(ciphertext)
 	if err != nil {
 		return err
 	}
