@@ -7,7 +7,7 @@ require (
 	github.com/arl/gitstatus v0.7.0
 	github.com/awnumar/memguard v0.23.0
 	github.com/caarlos0/env/v11 v11.4.1
-	github.com/coder/websocket v1.8.13
+	github.com/coder/websocket v1.8.15
 	github.com/fasthttp/websocket v1.5.12
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/sqldef/sqldef/v3 v3.11.15
