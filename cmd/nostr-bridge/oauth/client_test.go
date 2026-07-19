@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +21,68 @@ import (
 
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
+
+func TestStartAuthorizationRetriesDPoPNonceChallenge(t *testing.T) {
+	const challengeNonce = "secret-par-nonce"
+	var proofs []string
+	var assertions []string
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
+		case "/oauth/par":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			proofs = append(proofs, r.Header.Get("DPoP"))
+			assertions = append(assertions, r.Form.Get("client_assertion"))
+			if len(proofs) == 1 {
+				w.Header().Set("DPoP-Nonce", challengeNonce)
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "use_dpop_nonce"})
+				return
+			}
+			w.Header().Set("DPoP-Nonce", "next-par-nonce")
+			_ = json.NewEncoder(w).Encode(map[string]any{"request_uri": "urn:request:retry", "expires_in": 600})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, _ := newTestClient(t, server.URL, server.Client())
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
+
+	redirect, err := client.StartAuthorization(context.Background(), "alice.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proofs) != 2 || len(assertions) != 2 {
+		t.Fatalf("requests = %d, want 2", len(proofs))
+	}
+	firstProof, secondProof := jwtClaims(t, proofs[0]), jwtClaims(t, proofs[1])
+	if _, ok := firstProof["nonce"]; ok {
+		t.Fatalf("first DPoP proof nonce = %#v", firstProof["nonce"])
+	}
+	if secondProof["nonce"] != challengeNonce || firstProof["jti"] == secondProof["jti"] {
+		t.Fatalf("DPoP claims = %#v, %#v", firstProof, secondProof)
+	}
+	if jwtClaims(t, assertions[0])["jti"] == jwtClaims(t, assertions[1])["jti"] {
+		t.Fatal("client assertion jti was reused")
+	}
+	if !strings.Contains(logs.String(), "DPoP-Nonce header present=true") || strings.Contains(logs.String(), challengeNonce) {
+		t.Fatalf("log = %q", logs.String())
+	}
+	parsed, err := url.Parse(redirect)
+	if err != nil || parsed.Query().Get("request_uri") != "urn:request:retry" {
+		t.Fatalf("redirect = %q", redirect)
+	}
+}
 
 func TestStartAuthorizationPushesPKCEAuthenticatedRequestAndStoresEncryptedState(t *testing.T) {
 	var gotPAR url.Values
@@ -86,7 +150,7 @@ func TestStartAuthorizationPushesPKCEAuthenticatedRequestAndStoresEncryptedState
 
 func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 	var tokenForm url.Values
-	var tokenDPoP string
+	var tokenDPoPs []string
 	var state string
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,9 +168,15 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 				t.Fatal(err)
 			}
 			tokenForm = r.Form
-			tokenDPoP = r.Header.Get("DPoP")
-			if tokenDPoP == "" {
+			tokenDPoPs = append(tokenDPoPs, r.Header.Get("DPoP"))
+			if tokenDPoPs[len(tokenDPoPs)-1] == "" {
 				t.Fatal("token request missing DPoP")
+			}
+			if len(tokenDPoPs) == 1 {
+				w.Header().Set("DPoP-Nonce", "code-exchange-challenge")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "use_dpop_nonce"})
+				return
 			}
 			w.Header().Set("DPoP-Nonce", "token-nonce")
 			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-secret", "refresh_token": "refresh-secret", "sub": "did:plc:alice", "scope": "atproto", "expires_in": 3600})
@@ -130,7 +200,10 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 		t.Fatalf("token form = %#v", tokenForm)
 	}
 	assertClientAssertion(t, tokenForm.Get("client_assertion"), &client.clientSigningKey.PublicKey, client.clientID, server.URL)
-	if got := jwtClaims(t, tokenDPoP)["htu"]; got != server.URL+"/oauth/token" {
+	if len(tokenDPoPs) != 2 || jwtClaims(t, tokenDPoPs[1])["nonce"] != "code-exchange-challenge" {
+		t.Fatalf("token DPoP proofs = %#v", tokenDPoPs)
+	}
+	if got := jwtClaims(t, tokenDPoPs[1])["htu"]; got != server.URL+"/oauth/token" {
 		t.Fatalf("DPoP htu = %#v", got)
 	}
 	token, err := stateStore.OAuthTokenByAccountDID(context.Background(), "did:plc:alice")
@@ -157,7 +230,7 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 
 func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T) {
 	var form url.Values
-	var tokenDPoP string
+	var tokenDPoPs []string
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
@@ -172,7 +245,13 @@ func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T)
 			t.Fatal(err)
 		}
 		form = r.Form
-		tokenDPoP = r.Header.Get("DPoP")
+		tokenDPoPs = append(tokenDPoPs, r.Header.Get("DPoP"))
+		if len(tokenDPoPs) == 1 {
+			w.Header().Set("DPoP-Nonce", "refresh-challenge")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "use_dpop_nonce"})
+			return
+		}
 		w.Header().Set("DPoP-Nonce", "refreshed-nonce")
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "atproto", "expires_in": 3600})
 	}))
@@ -208,7 +287,10 @@ func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T)
 		t.Fatalf("refresh form = %#v", form)
 	}
 	assertClientAssertion(t, form.Get("client_assertion"), &client.clientSigningKey.PublicKey, client.clientID, server.URL)
-	if got := jwtClaims(t, tokenDPoP)["htu"]; got != server.URL+"/oauth/token" {
+	if len(tokenDPoPs) != 2 || jwtClaims(t, tokenDPoPs[1])["nonce"] != "refresh-challenge" {
+		t.Fatalf("refresh DPoP proofs = %#v", tokenDPoPs)
+	}
+	if got := jwtClaims(t, tokenDPoPs[1])["htu"]; got != server.URL+"/oauth/token" {
 		t.Fatalf("DPoP htu = %#v", got)
 	}
 }
