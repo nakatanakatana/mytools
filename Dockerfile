@@ -38,6 +38,11 @@ FROM base AS nostr-relay
 COPY --from=builder-from /app/output/nostr-relay /app/
 ENTRYPOINT ["/app/nostr-relay"]
 
+# nostr-bridge image
+FROM base AS nostr-bridge
+COPY --from=builder-from /app/output/nostr-bridge /app/
+ENTRYPOINT ["/app/nostr-bridge"]
+
 # all apps image
 FROM base AS mytools
 COPY --from=builder-from /app/output /app

@@ -1,0 +1,16 @@
+version: "2"
+sql:
+  - engine: sqlite
+    schema: cmd/nostr-bridge/store/sql/schema.sql
+    queries: cmd/nostr-bridge/store/sql/query.sql
+    gen:
+      go:
+        package: storesqlc
+        out: cmd/nostr-bridge/store/sqlc
+  - engine: sqlite
+    schema: cmd/nostr-relay/store/sql/schema.sql
+    queries: cmd/nostr-relay/store/sql/query.sql
+    gen:
+      go:
+        package: storesqlc
+        out: cmd/nostr-relay/store/sqlc
