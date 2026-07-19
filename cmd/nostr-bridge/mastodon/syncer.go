@@ -95,10 +95,10 @@ const recoveryFeedIndex = "mastodon_recovery_feed_index"
 // Backfill catches up home and configured list timelines, deduplicated by canonical URI.
 func (s *Syncer) Backfill(ctx context.Context) error {
 	if s.options.API == nil {
-		return errors.New("Mastodon timeline API is required")
+		return errors.New("mastodon timeline API is required")
 	}
 	if s.options.Store == nil {
-		return errors.New("Mastodon delivery store is required")
+		return errors.New("mastodon delivery store is required")
 	}
 	remaining := s.options.BackfillLimit
 	feeds := append([]string{"home"}, uniqueStrings(s.options.ListIDs)...)
@@ -240,7 +240,7 @@ func statusOperation(status Status) string {
 
 func (s *Syncer) handleStatus(ctx context.Context, status Status) error {
 	if s.options.Store == nil {
-		return errors.New("Mastodon delivery store is required")
+		return errors.New("mastodon delivery store is required")
 	}
 	if !s.isTarget(status) {
 		return nil

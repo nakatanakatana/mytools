@@ -760,9 +760,10 @@ func TestSQLiteStoreSeparatesSourceStateByScope(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = closer.Close() })
 	b := SourceScope{Provider: "bluesky", Account: "owner"}
+	bOther := SourceScope{Provider: "bluesky", Account: "other-owner"}
 	m := SourceScope{Provider: "mastodon", Account: "owner"}
 
-	for scope, value := range map[SourceScope]string{b: "10", m: "20"} {
+	for scope, value := range map[SourceScope]string{b: "10", bOther: "15", m: "20"} {
 		if err := s.SaveCursor(ctx, scope, "stream", value); err != nil {
 			t.Fatal(err)
 		}
@@ -800,5 +801,11 @@ func TestSQLiteStoreSeparatesSourceStateByScope(t *testing.T) {
 	}
 	if got, _ := s.EventMappingBySourceURI(ctx, SourceRef{Scope: b, URI: "same"}); got.NostrEventID != "10" {
 		t.Fatalf("mapping = %#v", got)
+	}
+	if got, _ := s.Cursor(ctx, bOther, "stream"); got != "15" {
+		t.Fatalf("other account cursor = %q", got)
+	}
+	if got, _ := s.EventMappingBySourceURI(ctx, SourceRef{Scope: bOther, URI: "same"}); got.NostrEventID != "15" {
+		t.Fatalf("other account mapping = %#v", got)
 	}
 }

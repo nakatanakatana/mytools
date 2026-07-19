@@ -132,18 +132,6 @@ var configVariables = []configVariable{
 	{name: "NOSTR_BRIDGE_OAUTH_ENCRYPTION_KEY", removed: true},
 }
 
-var removedConfigVariables = configVariableNames(true)
-
-func configVariableNames(removed bool) []string {
-	var names []string
-	for _, variable := range configVariables {
-		if variable.removed == removed {
-			names = append(names, variable.name)
-		}
-	}
-	return names
-}
-
 func LoadConfig() (Config, error) {
 	for _, variable := range configVariables {
 		if variable.removed {

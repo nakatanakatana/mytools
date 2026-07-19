@@ -192,7 +192,7 @@ func NormalizeStatus(status Status) (source.Post, bool, error) {
 		return source.Post{}, false, nil
 	}
 	if !absoluteHTTPURL(status.URI) || !absoluteHTTPURL(status.Account.URI) {
-		return source.Post{}, false, errors.New("Mastodon status requires canonical status and account URIs")
+		return source.Post{}, false, errors.New("mastodon status requires canonical status and account URIs")
 	}
 	warning := strings.TrimSpace(status.SpoilerText)
 	if warning == "" && status.Sensitive && len(status.MediaAttachments) > 0 {

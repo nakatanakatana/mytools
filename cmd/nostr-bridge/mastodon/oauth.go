@@ -57,7 +57,7 @@ type Token struct {
 
 func NewOAuthClient(o OAuthOptions) (*OAuthClient, error) {
 	if o.Store == nil || strings.TrimSpace(o.BaseURL) == "" || strings.TrimSpace(o.Account) == "" || strings.TrimSpace(o.ClientID) == "" || strings.TrimSpace(o.ClientSecret) == "" || strings.TrimSpace(o.RedirectURL) == "" {
-		return nil, errors.New("Mastodon OAuth requires store, base URL, account, client credentials, and redirect URL")
+		return nil, errors.New("mastodon OAuth requires store, base URL, account, client credentials, and redirect URL")
 	}
 	box, err := secretbox.New(o.EncryptionKey)
 	if err != nil {
@@ -71,7 +71,7 @@ func NewOAuthClient(o OAuthOptions) (*OAuthClient, error) {
 	}
 	account := normalizeAccount(o.Account, instanceHost(o.BaseURL))
 	if o.Scope.Provider != "mastodon" || o.Scope.Account != account {
-		return nil, errors.New("Mastodon OAuth scope must exactly match the normalized configured account")
+		return nil, errors.New("mastodon OAuth scope must exactly match the normalized configured account")
 	}
 	return &OAuthClient{scope: o.Scope, store: o.Store, httpClient: o.HTTPClient, baseURL: strings.TrimRight(o.BaseURL, "/"), account: account, clientID: o.ClientID, clientSecret: o.ClientSecret, redirectURL: o.RedirectURL, box: box, now: o.Now}, nil
 }
@@ -161,11 +161,11 @@ func (c *OAuthClient) exchange(ctx context.Context, form url.Values) (mastodonTo
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return mastodonTokenResponse{}, errors.New("Mastodon OAuth request failed")
+		return mastodonTokenResponse{}, errors.New("mastodon OAuth request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return mastodonTokenResponse{}, errors.New("Mastodon OAuth server rejected request")
+		return mastodonTokenResponse{}, errors.New("mastodon OAuth server rejected request")
 	}
 	var token mastodonTokenResponse
 	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&token) != nil || strings.TrimSpace(token.AccessToken) == "" || !exactScopes(token.Scope) {
@@ -178,11 +178,11 @@ func (c *OAuthClient) verifyCredentials(ctx context.Context, access string) (str
 	req.Header.Set("Authorization", "Bearer "+access)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", errors.New("Mastodon account request failed")
+		return "", errors.New("mastodon account request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return "", errors.New("Mastodon account request rejected")
+		return "", errors.New("mastodon account request rejected")
 	}
 	var account struct {
 		Acct string `json:"acct"`
@@ -221,10 +221,10 @@ func (c *OAuthClient) Token(ctx context.Context) (Token, error) {
 		return Token{}, errors.New("invalid Mastodon OAuth token")
 	}
 	if p.Expiry.IsZero() || p.Expiry.After(c.now()) {
-		return Token{p.AccessToken, p.RefreshToken, p.Scope, p.Expiry}, nil
+		return Token(p), nil
 	}
 	if p.RefreshToken == "" {
-		return Token{}, errors.New("Mastodon OAuth token has no refresh token")
+		return Token{}, errors.New("mastodon OAuth token has no refresh token")
 	}
 	fresh, err := c.exchange(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {p.RefreshToken}, "client_id": {c.clientID}, "client_secret": {c.clientSecret}, "scope": {OAuthScopes}})
 	if err != nil {

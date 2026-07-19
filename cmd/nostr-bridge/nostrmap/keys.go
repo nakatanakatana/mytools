@@ -1,4 +1,4 @@
-// Package nostrmap maps Bluesky records to signed Nostr events.
+// Package nostrmap maps provider-neutral source records to signed Nostr events.
 package nostrmap
 
 import (

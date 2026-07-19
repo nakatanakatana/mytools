@@ -62,7 +62,7 @@ func TestRelayBridgeProtocolIntegration(t *testing.T) {
 	if err := bridgeStore.SetPublisherRegistered(ctx, publisher.Hex(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := bridgeStore.SaveEventMapping(ctx, bridgestore.EventMapping{SourceURI: "at://bridge/original", NostrEventID: original.ID.Hex(), AuthorPubKey: publisher.Hex()}); err != nil {
+	if err := bridgeStore.SaveEventMapping(ctx, bridgestore.EventMapping{Source: bridgestore.SourceRef{Scope: bridgestore.SourceScope{Provider: "bluesky", Account: "did:plc:bridge"}, URI: "at://bridge/original"}, NostrEventID: original.ID.Hex(), AuthorPubKey: publisher.Hex()}); err != nil {
 		t.Fatal(err)
 	}
 	deletion := signedBridgeProtocolEvent(t, publisherSK, 5, nostr.Tags{{"e", original.ID.Hex()}}, "bridge purge")
@@ -119,7 +119,7 @@ func TestRelayBridgePurgePublishFailureDoesNotUnallow(t *testing.T) {
 	if err := bridgeStore.SetPublisherRegistered(ctx, publisher.Hex(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := bridgeStore.SaveEventMapping(ctx, bridgestore.EventMapping{SourceURI: "at://bridge/failure", NostrEventID: original.ID.Hex(), AuthorPubKey: publisher.Hex()}); err != nil {
+	if err := bridgeStore.SaveEventMapping(ctx, bridgestore.EventMapping{Source: bridgestore.SourceRef{Scope: bridgestore.SourceScope{Provider: "bluesky", Account: "did:plc:bridge"}, URI: "at://bridge/failure"}, NostrEventID: original.ID.Hex(), AuthorPubKey: publisher.Hex()}); err != nil {
 		t.Fatal(err)
 	}
 	deletion := signedBridgeProtocolEvent(t, publisherSK, 5, nostr.Tags{{"e", original.ID.Hex()}}, "failed purge")

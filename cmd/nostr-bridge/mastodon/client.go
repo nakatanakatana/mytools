@@ -46,14 +46,14 @@ func NewClient(o ClientOptions) (*Client, error) {
 		return nil, errors.New("invalid Mastodon base URL")
 	}
 	if o.Tokens == nil {
-		return nil, errors.New("Mastodon token source is required")
+		return nil, errors.New("mastodon token source is required")
 	}
 	base.Path, base.RawPath, base.RawQuery, base.Fragment = "", "", "", ""
 	if o.HTTPClient == nil {
 		o.HTTPClient = http.DefaultClient
 	}
 	if o.MaxRetries < 0 {
-		return nil, errors.New("Mastodon retry count cannot be negative")
+		return nil, errors.New("mastodon retry count cannot be negative")
 	}
 	if o.MaxRetries == 0 {
 		o.MaxRetries = 2
@@ -157,7 +157,7 @@ func getPage[T any](c *Client, ctx context.Context, path string, result *[]T) er
 	next := c.base.ResolveReference(&url.URL{Path: path})
 	for page := 0; next != nil; page++ {
 		if page >= maxPages {
-			return errors.New("Mastodon pagination exceeded limit")
+			return errors.New("mastodon pagination exceeded limit")
 		}
 		var values []T
 		link, err := c.getJSONPage(ctx, next, &values)
@@ -211,7 +211,7 @@ func (c *Client) getJSONPage(ctx context.Context, u *url.URL, target any) (strin
 				}
 				continue
 			}
-			return "", errors.New("Mastodon request failed")
+			return "", errors.New("mastodon request failed")
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			decodeErr := decodeResponse(resp.Body, target)
@@ -230,7 +230,7 @@ func (c *Client) getJSONPage(ctx context.Context, u *url.URL, target any) (strin
 			}
 			continue
 		}
-		return "", fmt.Errorf("Mastodon request rejected with status %d", resp.StatusCode)
+		return "", fmt.Errorf("mastodon request rejected with status %d", resp.StatusCode)
 	}
 }
 

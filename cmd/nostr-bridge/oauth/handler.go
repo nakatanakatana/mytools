@@ -60,13 +60,6 @@ func (c *Client) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"keys": []jwk{publicJWK(&c.clientSigningKey.PublicKey)}})
 }
 
-func metadataPath(clientID string) string {
-	parsed, err := url.Parse(clientID)
-	if err != nil || parsed.Path == "" {
-		return "/oauth/client-metadata.json"
-	}
-	return parsed.Path
-}
 func jwksURL(clientID string) string {
 	parsed, err := url.Parse(clientID)
 	if err != nil {
