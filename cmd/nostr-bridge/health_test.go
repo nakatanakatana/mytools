@@ -135,7 +135,7 @@ func TestReadinessFailsImmediatelyWhenDispatcherStops(t *testing.T) {
 	}
 }
 
-func TestReadinessRequiresEveryEnabledProviderBootstrapButNotStreamConnection(t *testing.T) {
+func TestReadinessRequiresEveryTargetedEnabledProviderStreamConnection(t *testing.T) {
 	health := NewHealth(HealthOptions{DatabaseCheck: func(context.Context) error { return nil }, EnabledProviders: []string{"bluesky", "mastodon"}})
 	health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.Authenticated = true; m.Bootstrapped = true })
 	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Authenticated = true })
@@ -144,11 +144,23 @@ func TestReadinessRequiresEveryEnabledProviderBootstrapButNotStreamConnection(t 
 	if r.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, body = %s", r.Code, r.Body.String())
 	}
-	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Bootstrapped = true; m.StreamConnected = false })
+	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Bootstrapped = true; m.TargetCount = 2; m.StreamConnected = false })
+	r = httptest.NewRecorder()
+	health.Readiness(r, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if r.Code != http.StatusServiceUnavailable {
+		t.Fatalf("targeted disconnected stream status = %d, body = %s", r.Code, r.Body.String())
+	}
+	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.StreamConnected = true })
 	r = httptest.NewRecorder()
 	health.Readiness(r, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if r.Code != http.StatusOK {
-		t.Fatalf("quiet disconnected stream status = %d, body = %s", r.Code, r.Body.String())
+		t.Fatalf("targeted connected stream status = %d, body = %s", r.Code, r.Body.String())
+	}
+	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.TargetCount = 0; m.StreamConnected = false })
+	r = httptest.NewRecorder()
+	health.Readiness(r, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if r.Code != http.StatusOK {
+		t.Fatalf("zero-target disconnected stream status = %d, body = %s", r.Code, r.Body.String())
 	}
 }
 

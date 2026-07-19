@@ -145,7 +145,7 @@ func (r *runtimeSync) CloseContext(ctx context.Context) error {
 }
 
 func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store runtimeStore, oauthClient *bridgeoauth.Client, mastodonOAuth *mastodon.OAuthClient, health *Health) {
-	coordinator := bridgeowner.New(bridgeowner.Options{MasterSeed: seed, OwnerID: cfg.Owner.ID, OwnerName: cfg.Owner.Name, OwnerAbout: cfg.Owner.About, OwnerPicture: cfg.Owner.Picture, Store: store, OutboxLimit: int64(cfg.Shared.OutboxLimit)})
+	coordinator := bridgeowner.New(bridgeowner.Options{MasterSeed: seed, OwnerID: cfg.Owner.ID, OwnerName: cfg.Owner.Name, OwnerAbout: cfg.Owner.About, OwnerPicture: cfg.Owner.Picture, Store: store, OutboxLimit: int64(cfg.Shared.OutboxLimit), EnabledScopes: enabledProviderScopes(cfg)})
 	var wg sync.WaitGroup
 	if cfg.Bluesky.Enabled() && oauthClient != nil {
 		wg.Add(1)
@@ -156,6 +156,17 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 		go func() { defer wg.Done(); r.runMastodon(ctx, cfg, seed, store, mastodonOAuth, health, coordinator) }()
 	}
 	wg.Wait()
+}
+
+func enabledProviderScopes(cfg Config) []bridgestore.SourceScope {
+	var scopes []bridgestore.SourceScope
+	if cfg.Bluesky.Enabled() {
+		scopes = append(scopes, bridgestore.SourceScope{Provider: "bluesky", Account: cfg.Bluesky.AccountDID})
+	}
+	if cfg.Mastodon.Enabled() {
+		scopes = append(scopes, bridgestore.SourceScope{Provider: "mastodon", Account: normalizedMastodonAccount(cfg.Mastodon.Account, cfg.Mastodon.BaseURL)})
+	}
+	return scopes
 }
 
 func (r *runtimeSync) runBluesky(ctx context.Context, cfg Config, seed []byte, store runtimeStore, oauthClient *bridgeoauth.Client, health *Health, coordinator reconciliationCoordinator) {

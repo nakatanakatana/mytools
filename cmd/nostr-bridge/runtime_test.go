@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -117,6 +118,80 @@ func TestRuntimeBlueskyReconciliationUsesSharedOwnerCoordinator(t *testing.T) {
 	}
 	if third <= second {
 		t.Fatalf("changed reconciliation did not enqueue update: %d -> %d", second, third)
+	}
+}
+
+func TestRuntimeCoordinatorRestartPreservesUnavailableProviderSnapshotAndList(t *testing.T) {
+	ctx := context.Background()
+	s, closer, err := bridgestore.Open(ctx, filepath.Join(t.TempDir(), "restart.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+	b := bridgestore.SourceScope{Provider: "bluesky", Account: "did:plc:owner"}
+	m := bridgestore.SourceScope{Provider: "mastodon", Account: "owner@social.example"}
+	scopes := []bridgestore.SourceScope{b, m}
+	options := bridgeowner.Options{MasterSeed: []byte("01234567890123456789012345678901"), OwnerID: "home", Store: s, OutboxLimit: 100, EnabledScopes: scopes}
+	first := bridgeowner.New(options)
+	blue := source.TargetSnapshot{Union: source.IdentitySet{{Provider: "bluesky", ID: "did:plc:alice"}: {}}, Lists: map[string]source.List{}}
+	bob := source.ActorIdentity{Provider: "mastodon", ID: "https://social.example/users/bob"}
+	masto := source.TargetSnapshot{Union: source.IdentitySet{bob: {}}, Lists: map[string]source.List{"7": {ID: "7", Members: source.IdentitySet{bob: {}}}}}
+	if err := first.Reconcile(ctx, b, blue, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Reconcile(ctx, m, masto, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := bridgeowner.New(options)
+	blue.Union[source.ActorIdentity{Provider: "bluesky", ID: "did:plc:carol"}] = struct{}{}
+	if err := restarted.Reconcile(ctx, b, blue, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EventMappingBySourceURI(ctx, bridgestore.SourceRef{Scope: m, URI: "list/mastodon:7"}); err != nil {
+		t.Fatalf("unavailable provider list removed: %v", err)
+	}
+	var latest nostr.Event
+	for i := 0; i < 30; i++ {
+		items, err := s.ClaimOutbox(ctx, time.Now().Add(time.Hour), time.Minute, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) == 0 {
+			break
+		}
+		for _, item := range items {
+			switch item.Operation {
+			case bridgestore.OutboxAllowPublisher:
+				if err := s.CompletePublisherRegistration(ctx, item.ID, item.ClaimToken, item.PubKey, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			case bridgestore.OutboxPublishEvent:
+				var event nostr.Event
+				if event.UnmarshalJSON([]byte(item.Payload)) == nil && event.Kind == nostr.KindFollowList {
+					latest = event
+				}
+				if err := s.CompleteOutbox(ctx, item.ID, item.ClaimToken, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				t.Fatalf("unexpected operation %s", item.Operation)
+			}
+		}
+	}
+	for _, identity := range []source.ActorIdentity{{Provider: "bluesky", ID: "did:plc:alice"}, {Provider: "bluesky", ID: "did:plc:carol"}, bob} {
+		key, _ := nostrmap.DeriveActorKey(options.MasterSeed, identity)
+		if latest.Tags.FindWithValue("p", key.Public().Hex()) == nil {
+			t.Errorf("latest owner follows missing %#v", identity)
+		}
+	}
+}
+
+func TestEnabledProviderScopesMatchRuntimeProviderIdentities(t *testing.T) {
+	cfg := Config{Bluesky: BlueskyConfig{BaseURL: "https://bsky.example", AccountDID: "did:plc:owner"}, Mastodon: MastodonConfig{BaseURL: "https://social.example", Account: "owner"}}
+	want := []bridgestore.SourceScope{{Provider: "bluesky", Account: "did:plc:owner"}, {Provider: "mastodon", Account: "owner@social.example"}}
+	if got := enabledProviderScopes(cfg); !slices.Equal(got, want) {
+		t.Fatalf("scopes = %#v, want %#v", got, want)
 	}
 }
 

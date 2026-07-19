@@ -104,10 +104,10 @@ SQLite requires one process/one writer and persistent storage. Do not share
 its PVC with the relay. Back up the database with the exact external-secret
 versions used to encrypt OAuth data. `/healthz` reports process liveness,
 `/readyz` gates on the shared database, outbox, dispatcher, and each enabled
-provider's authentication and bootstrap state. Stream connection and last
-event are reported by health/metrics, but a quiet stream or transient stream
-disconnect does not fail readiness. `/metrics` exposes provider-labelled
-operational metrics.
+provider's authentication and bootstrap state. An enabled provider with
+targets must also have a connected live stream; an enabled provider with no
+targets needs no stream connection. A quiet but connected stream remains
+ready. `/metrics` exposes provider-labelled operational metrics.
 
 If one provider loses or rotates its OAuth encryption material, remove that
 provider's unreadable OAuth rows and authorize it again; the other provider's

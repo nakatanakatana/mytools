@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,6 +263,47 @@ func TestBackfillWindowDrainsMoreThanLimitAcrossRestartExactlyOnce(t *testing.T)
 			t.Fatal("duplicate publication")
 		}
 		seen[key] = true
+	}
+}
+
+func TestBackfillFrozenCeilingDefersNewArrivalUntilNextWindow(t *testing.T) {
+	actor := "https://social.example/users/alice"
+	api := &fakeTimelineAPI{pageSize: 2, lists: map[string][]Status{}}
+	for i := 8; i >= 1; i-- {
+		api.home = append(api.home, testStatus(fmt.Sprint(i), fmt.Sprintf("%s/statuses/%d", actor, i), actor))
+	}
+	store := newMemoryDelivery()
+	targets := source.IdentitySet{{Provider: "mastodon", ID: actor}: {}}
+	run := func() {
+		s := NewSyncer(SyncOptions{Scope: bridgestore.SourceScope{Provider: "mastodon", Account: "owner"}, API: api, Store: store, MasterSeed: []byte(testSeed), Targets: func() source.IdentitySet { return targets }, BackfillLimit: 2})
+		if err := s.Backfill(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run()
+	newer := testStatus("9", actor+"/statuses/9", actor)
+	api.home = append([]Status{newer}, api.home...)
+	for i := 0; i < 10 && store.cursors[feedCommitted("home")] != "8"; i++ {
+		run()
+	}
+	if got := store.cursors[feedCommitted("home")]; got != "8" {
+		t.Fatalf("committed ceiling = %q, cursors=%#v calls=%#v", got, store.cursors, api.calls)
+	}
+	if len(store.payloads) != 8 {
+		t.Fatalf("frozen window published %d events, want 8", len(store.payloads))
+	}
+	run()
+	if len(store.payloads) != 9 {
+		t.Fatalf("next window published %d events, want 9", len(store.payloads))
+	}
+	var newerCount int
+	for key := range store.mappings {
+		if strings.HasSuffix(key, newer.URI) {
+			newerCount++
+		}
+	}
+	if newerCount != 1 {
+		t.Fatalf("new arrival mappings = %d, want 1", newerCount)
 	}
 }
 

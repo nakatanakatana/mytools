@@ -21,12 +21,14 @@ type Options struct {
 	OwnerID, OwnerName, OwnerAbout, OwnerPicture string
 	Store                                        store.ReconciliationStore
 	OutboxLimit                                  int64
+	EnabledScopes                                []store.SourceScope
 }
 
 type Coordinator struct {
 	mu        sync.Mutex
 	options   Options
 	snapshots map[store.SourceScope]source.TargetSnapshot
+	hydrated  bool
 }
 
 func New(options Options) *Coordinator {
@@ -36,6 +38,9 @@ func New(options Options) *Coordinator {
 func (c *Coordinator) Reconcile(ctx context.Context, scope store.SourceScope, snapshot source.TargetSnapshot, profiles []source.Profile) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.hydrate(ctx); err != nil {
+		return err
+	}
 	candidate := make(map[store.SourceScope]source.TargetSnapshot, len(c.snapshots)+1)
 	for key, value := range c.snapshots {
 		candidate[key] = value
@@ -60,6 +65,27 @@ func (c *Coordinator) Reconcile(ctx context.Context, scope store.SourceScope, sn
 		return err
 	}
 	c.snapshots = candidate
+	return nil
+}
+
+func (c *Coordinator) hydrate(ctx context.Context) error {
+	if c.hydrated {
+		return nil
+	}
+	hydrated := make(map[store.SourceScope]source.TargetSnapshot, len(c.options.EnabledScopes))
+	for _, scope := range c.options.EnabledScopes {
+		targets, err := c.options.Store.SyncTargets(ctx, scope)
+		if err != nil {
+			return fmt.Errorf("hydrate %s target snapshot: %w", scope.Provider, err)
+		}
+		union := make(source.IdentitySet, len(targets))
+		for _, target := range targets {
+			union[source.ActorIdentity{Provider: scope.Provider, ID: target}] = struct{}{}
+		}
+		hydrated[scope] = source.TargetSnapshot{Union: union}
+	}
+	c.snapshots = hydrated
+	c.hydrated = true
 	return nil
 }
 

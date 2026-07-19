@@ -141,7 +141,7 @@ func (h *Health) Readiness(w http.ResponseWriter, r *http.Request) {
 		for _, provider := range h.enabledProviders {
 			m := h.providers[provider]
 			auth := m.Authenticated && (m.OAuthExpiry.IsZero() || m.OAuthExpiry.After(now))
-			ok := auth && m.Bootstrapped
+			ok := auth && m.Bootstrapped && (m.TargetCount == 0 || m.StreamConnected)
 			providersReady = providersReady && ok
 			providerStatus[provider] = map[string]any{"authenticated": auth, "bootstrapped": m.Bootstrapped, "stream_connected": m.StreamConnected, "target_count": m.TargetCount}
 		}

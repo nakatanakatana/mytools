@@ -48,6 +48,35 @@ func TestCoordinatorPreservesLastGoodSnapshotAfterFailedPass(t *testing.T) {
 	assertFollows(t, e, []source.ActorIdentity{alice, identity("mastodon", "bob")})
 }
 
+func TestCoordinatorHydratesEveryEnabledProviderBeforePublishingAggregate(t *testing.T) {
+	b := store.SourceScope{Provider: "bluesky", Account: "did:plc:owner"}
+	m := store.SourceScope{Provider: "mastodon", Account: "owner@example.com"}
+	s := &recordingStore{targets: map[store.SourceScope][]string{b: {"did:plc:old"}, m: {"https://social.example/users/bob"}}}
+	c := New(Options{MasterSeed: []byte("01234567890123456789012345678901"), OwnerID: "home", Store: s, OutboxLimit: 100, EnabledScopes: []store.SourceScope{b, m}})
+
+	if err := c.Reconcile(context.Background(), b, snapshot(identity("bluesky", "did:plc:new")), nil); err != nil {
+		t.Fatal(err)
+	}
+	assertFollows(t, s.latestKind(t, nostr.KindFollowList), []source.ActorIdentity{
+		identity("bluesky", "did:plc:new"),
+		identity("mastodon", "https://social.example/users/bob"),
+	})
+}
+
+func TestCoordinatorHydrationFailureDoesNotPublishPartialAggregate(t *testing.T) {
+	b := store.SourceScope{Provider: "bluesky", Account: "did:plc:owner"}
+	m := store.SourceScope{Provider: "mastodon", Account: "owner@example.com"}
+	s := &recordingStore{loadErr: errors.New("read persisted targets")}
+	c := New(Options{MasterSeed: []byte("01234567890123456789012345678901"), OwnerID: "home", Store: s, OutboxLimit: 100, EnabledScopes: []store.SourceScope{b, m}})
+
+	if err := c.Reconcile(context.Background(), b, snapshot(identity("bluesky", "did:plc:new")), nil); err == nil {
+		t.Fatal("expected hydration error")
+	}
+	if len(s.requests) != 0 {
+		t.Fatalf("published %d destructive partial batches", len(s.requests))
+	}
+}
+
 func TestCoordinatorUsesStableOwnerAndProviderScopes(t *testing.T) {
 	s := &recordingStore{}
 	c := New(Options{MasterSeed: []byte("01234567890123456789012345678901"), OwnerID: "home", Store: s, OutboxLimit: 100})
@@ -92,10 +121,15 @@ type recordingStore struct {
 	requests []store.ReconciliationRequest
 	failAt   int
 	calls    int
+	targets  map[store.SourceScope][]string
+	loadErr  error
 }
 
-func (s *recordingStore) SyncTargets(context.Context, store.SourceScope) ([]string, error) {
-	return nil, nil
+func (s *recordingStore) SyncTargets(_ context.Context, scope store.SourceScope) ([]string, error) {
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
+	return append([]string(nil), s.targets[scope]...), nil
 }
 func (s *recordingStore) Reconcile(_ context.Context, r store.ReconciliationRequest) error {
 	s.mu.Lock()
