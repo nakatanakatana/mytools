@@ -5,15 +5,19 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -61,6 +65,54 @@ type Token struct {
 type oauthRemoteError struct {
 	operation, code, description string
 	statusCode                   int
+}
+
+type oauthTransportError struct {
+	class, detail string
+}
+
+func (e oauthTransportError) Error() string {
+	return fmt.Sprintf("mastodon OAuth transport failed: class=%s detail=%q", e.class, e.detail)
+}
+
+func newOAuthTransportError(err error) error {
+	class, detail := "other_transport_error", "request failed before receiving an HTTP response"
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		if urlError, ok := current.(*url.Error); ok && strings.Contains(strings.ToLower(urlError.Op), "proxy") {
+			return oauthTransportError{class: "proxy_error", detail: "proxy connection failed"}
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return oauthTransportError{class: "context_canceled", detail: "request context was canceled"}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return oauthTransportError{class: "deadline_exceeded", detail: "request deadline was exceeded"}
+	}
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) {
+		return oauthTransportError{class: "dns_error", detail: "DNS lookup failed"}
+	}
+	if errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
+		return oauthTransportError{class: "network_unreachable", detail: "network or host is unreachable"}
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return oauthTransportError{class: "connection_refused", detail: "connection was refused"}
+	}
+	if errors.Is(err, syscall.ECONNRESET) {
+		return oauthTransportError{class: "connection_reset", detail: "connection was reset"}
+	}
+	var unknownAuthority x509.UnknownAuthorityError
+	var certificateInvalid x509.CertificateInvalidError
+	var hostnameInvalid x509.HostnameError
+	var recordHeader tls.RecordHeaderError
+	if errors.As(err, &unknownAuthority) || errors.As(err, &certificateInvalid) || errors.As(err, &hostnameInvalid) || errors.As(err, &recordHeader) {
+		return oauthTransportError{class: "tls_error", detail: "TLS certificate or protocol validation failed"}
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return oauthTransportError{class: "deadline_exceeded", detail: "network operation timed out"}
+	}
+	return oauthTransportError{class: class, detail: detail}
 }
 
 func (e oauthRemoteError) Error() string {
@@ -248,7 +300,7 @@ func (c *OAuthClient) exchange(ctx context.Context, form url.Values) (mastodonTo
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return mastodonTokenResponse{}, errors.New("mastodon OAuth request failed")
+		return mastodonTokenResponse{}, newOAuthTransportError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -271,7 +323,7 @@ func (c *OAuthClient) verifyCredentials(ctx context.Context, access string) (str
 	req.Header.Set("Authorization", "Bearer "+access)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", errors.New("mastodon account request failed")
+		return "", newOAuthTransportError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
