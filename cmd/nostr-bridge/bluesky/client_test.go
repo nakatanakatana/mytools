@@ -31,12 +31,23 @@ func TestClientFetchesAuthenticatedPagedSources(t *testing.T) {
 		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
 		switch r.URL.Path {
 		case "/xrpc/app.bsky.feed.getTimeline":
-			_ = json.NewEncoder(w).Encode(map[string]any{"cursor": "next", "feed": []any{map[string]any{"post": map[string]any{
-				"uri": "at://did:plc:one/app.bsky.feed.post/1", "cid": "cid", "author": map[string]any{"did": "did:plc:one"},
-				"embed": map[string]any{"$type": "app.bsky.embed.images#view", "images": []any{map[string]any{
-					"fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:one/image@jpeg", "alt": "A description", "aspectRatio": map[string]any{"width": 1200, "height": 800},
-				}}},
-			}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"cursor": "next", "feed": []any{
+				map[string]any{"post": map[string]any{
+					"uri": "at://did:plc:one/app.bsky.feed.post/1", "cid": "cid", "author": map[string]any{"did": "did:plc:one"},
+					"embed": map[string]any{"$type": "app.bsky.embed.images#view", "images": []any{map[string]any{
+						"fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:one/image@jpeg", "alt": "A description", "aspectRatio": map[string]any{"width": 1200, "height": 800},
+					}}},
+				}},
+				map[string]any{"post": map[string]any{
+					"uri": "at://did:plc:one/app.bsky.feed.post/2", "cid": "cid-2", "author": map[string]any{"did": "did:plc:one"},
+					"record": map[string]any{
+						"facets": []any{map[string]any{
+							"features": []any{map[string]any{"$type": "app.bsky.richtext.facet#link", "uri": "https://facet.example/path"}},
+						}},
+					},
+					"embed": map[string]any{"$type": "app.bsky.embed.external#view", "external": map[string]any{"uri": "https://embed.example/path"}},
+				}},
+			}})
 		case "/xrpc/app.bsky.graph.getFollows":
 			if r.URL.Query().Get("actor") != "did:plc:owner" {
 				t.Fatalf("actor = %q", r.URL.Query().Get("actor"))
@@ -64,11 +75,14 @@ func TestClientFetchesAuthenticatedPagedSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, err := client.Timeline(context.Background(), "", 25)
-	if err != nil || page.Cursor != "next" || len(page.Posts) != 1 || page.Posts[0].AuthorDID != "did:plc:one" {
+	if err != nil || page.Cursor != "next" || len(page.Posts) != 2 || page.Posts[0].AuthorDID != "did:plc:one" {
 		t.Fatalf("Timeline = %#v, %v", page, err)
 	}
 	if images := page.Posts[0].Images; len(images) != 1 || images[0].URL != "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:one/image@jpeg" || images[0].MIMEType != "image/jpeg" || images[0].Alt != "A description" || images[0].Width != 1200 || images[0].Height != 800 {
 		t.Fatalf("Timeline images = %#v", images)
+	}
+	if links := page.Posts[1].Links; len(links) != 2 || links[0].URI != "https://facet.example/path" || links[1].URI != "https://embed.example/path" {
+		t.Fatalf("Timeline links = %#v", links)
 	}
 	follows, err := client.Follows(context.Background())
 	if err != nil || len(follows) != 2 || follows[0].DID != "did:plc:one" || follows[1].DID != "did:plc:two" {

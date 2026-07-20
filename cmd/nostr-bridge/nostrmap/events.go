@@ -19,6 +19,7 @@ type Post struct {
 	CreatedAt  time.Time
 	ReplyToURI string
 	Images     []bluesky.Image
+	Links      []bluesky.Link
 }
 
 // ProfileEvent creates a signed kind 0 event for a Bluesky profile.
@@ -83,6 +84,32 @@ func PostEvent(masterSeed []byte, post Post, parents map[string]nostr.Event) (no
 		tags = append(tags, nostr.Tag{"e", parent.ID.Hex(), "", "reply"}, nostr.Tag{"p", parent.PubKey.Hex()})
 	}
 	content := post.Text
+	seenLinks := make(map[string]struct{}, len(post.Links))
+	seenRTags := map[string]struct{}{url: {}}
+	appendedLinks := 0
+	for _, link := range post.Links {
+		if link.URI == "" {
+			continue
+		}
+		if _, ok := seenLinks[link.URI]; ok {
+			continue
+		}
+		seenLinks[link.URI] = struct{}{}
+		if _, ok := seenRTags[link.URI]; !ok {
+			tags = append(tags, nostr.Tag{"r", link.URI})
+			seenRTags[link.URI] = struct{}{}
+		}
+		if strings.Contains(content, link.URI) {
+			continue
+		}
+		if appendedLinks > 0 {
+			content += "\n"
+		} else if content != "" {
+			content += "\n\n"
+		}
+		content += link.URI
+		appendedLinks++
+	}
 	seen := make(map[string]struct{}, len(post.Images))
 	imageCount := 0
 	for _, image := range post.Images {
