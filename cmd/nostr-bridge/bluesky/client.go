@@ -78,6 +78,20 @@ type Post struct {
 	CreatedAt  time.Time `json:"-"`
 	ReplyToURI string    `json:"-"`
 	Images     []Image   `json:"-"`
+	Links      []Link    `json:"-"`
+}
+
+// Link is a web resource referenced by a Bluesky post.
+type Link struct {
+	URI string
+}
+
+// Facet is the link-related portion of a Bluesky rich-text facet.
+type Facet struct {
+	Features []struct {
+		Type string `json:"$type"`
+		URI  string `json:"uri"`
+	} `json:"features"`
 }
 
 // Image is the media metadata needed to attach a Bluesky image to a Nostr note.
@@ -90,9 +104,12 @@ type Image struct {
 }
 
 type imageEmbedView struct {
-	Type   string          `json:"$type"`
-	Images []imageView     `json:"images"`
-	Media  *imageEmbedView `json:"media"`
+	Type     string          `json:"$type"`
+	Images   []imageView     `json:"images"`
+	Media    *imageEmbedView `json:"media"`
+	External struct {
+		URI string `json:"uri"`
+	} `json:"external"`
 }
 
 type imageView struct {
@@ -141,6 +158,7 @@ func (c *Client) Timeline(ctx context.Context, cursor string, limit int) (Page, 
 				Record struct {
 					Text      string    `json:"text"`
 					CreatedAt time.Time `json:"createdAt"`
+					Facets    []Facet   `json:"facets"`
 					Reply     *struct {
 						Parent struct {
 							URI string `json:"uri"`
@@ -155,13 +173,39 @@ func (c *Client) Timeline(ctx context.Context, cursor string, limit int) (Page, 
 	}
 	page := Page{Cursor: response.Cursor, Posts: make([]Post, 0, len(response.Feed))}
 	for _, item := range response.Feed {
-		post := Post{URI: item.Post.URI, CID: item.Post.CID, AuthorDID: item.Post.Author.DID, Text: item.Post.Record.Text, CreatedAt: item.Post.Record.CreatedAt, Images: imagesFromView(item.Post.Embed)}
+		post := Post{URI: item.Post.URI, CID: item.Post.CID, AuthorDID: item.Post.Author.DID, Text: item.Post.Record.Text, CreatedAt: item.Post.Record.CreatedAt, Images: imagesFromView(item.Post.Embed), Links: LinksFromFacetsAndExternal(item.Post.Record.Facets, externalURIFromView(item.Post.Embed))}
 		if item.Post.Record.Reply != nil {
 			post.ReplyToURI = item.Post.Record.Reply.Parent.URI
 		}
 		page.Posts = append(page.Posts, post)
 	}
 	return page, nil
+}
+
+// LinksFromFacetsAndExternal returns link facet targets followed by an external embed target.
+func LinksFromFacetsAndExternal(facets []Facet, externalURI string) []Link {
+	links := make([]Link, 0, len(facets)+1)
+	for _, facet := range facets {
+		for _, feature := range facet.Features {
+			if feature.Type == "app.bsky.richtext.facet#link" && feature.URI != "" {
+				links = append(links, Link{URI: feature.URI})
+			}
+		}
+	}
+	if externalURI != "" {
+		links = append(links, Link{URI: externalURI})
+	}
+	return links
+}
+
+func externalURIFromView(embed imageEmbedView) string {
+	if embed.External.URI != "" {
+		return embed.External.URI
+	}
+	if embed.Media != nil {
+		return externalURIFromView(*embed.Media)
+	}
+	return ""
 }
 
 func imagesFromView(embed imageEmbedView) []Image {

@@ -118,6 +118,59 @@ func TestPostEventAddsBlueskyImagesToContentAndIMetaTags(t *testing.T) {
 	}
 }
 
+func TestPostEventPreservesAndAppendsBlueskyLinks(t *testing.T) {
+	post := Post{
+		AuthorDID: "did:plc:alice",
+		URI:       "at://did:plc:alice/app.bsky.feed.post/3k",
+		Text:      "Already https://same.example here",
+		CreatedAt: time.Unix(1, 0),
+		Links: []bluesky.Link{
+			{URI: "https://same.example"},
+			{URI: "https://missing.example"},
+			{URI: "https://missing.example"},
+			{URI: "https://bsky.app/profile/did:plc:alice/post/3k"},
+		},
+	}
+	event, err := PostEvent(testSeed, post, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContent := "Already https://same.example here\n\nhttps://missing.example\nhttps://bsky.app/profile/did:plc:alice/post/3k"
+	if event.Content != wantContent {
+		t.Fatalf("content = %q, want %q", event.Content, wantContent)
+	}
+	wantRTags := []string{
+		"https://bsky.app/profile/did:plc:alice/post/3k",
+		"https://same.example",
+		"https://missing.example",
+	}
+	var gotRTags []string
+	for _, tag := range event.Tags {
+		if len(tag) == 2 && tag[0] == "r" {
+			gotRTags = append(gotRTags, tag[1])
+		}
+	}
+	if strings.Join(gotRTags, "\n") != strings.Join(wantRTags, "\n") {
+		t.Fatalf("r tags = %#v, want %#v", gotRTags, wantRTags)
+	}
+}
+
+func TestPostEventAppendsLinksWithoutLeadingBlankLineForEmptyText(t *testing.T) {
+	post := Post{
+		AuthorDID: "did:plc:alice",
+		URI:       "at://did:plc:alice/app.bsky.feed.post/3k",
+		CreatedAt: time.Unix(1, 0),
+		Links:     []bluesky.Link{{URI: "https://one.example"}, {URI: "https://two.example"}},
+	}
+	event, err := PostEvent(testSeed, post, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://one.example\nhttps://two.example"; event.Content != want {
+		t.Fatalf("content = %q, want %q", event.Content, want)
+	}
+}
+
 func TestPostEventOmitsReplyTagsWhenParentIsUnknown(t *testing.T) {
 	event, err := PostEvent(testSeed, Post{AuthorDID: "did:plc:alice", URI: "at://did:plc:alice/app.bsky.feed.post/3k", CreatedAt: time.Unix(1, 0), ReplyToURI: "at://did:plc:missing/app.bsky.feed.post/1"}, nil)
 	if err != nil {

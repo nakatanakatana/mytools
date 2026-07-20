@@ -121,6 +121,25 @@ func TestBackfillPublishesTimelineImages(t *testing.T) {
 	}
 }
 
+func TestBackfillPublishesTimelineLinks(t *testing.T) {
+	ctx := context.Background()
+	durable, closer, err := bridgestore.Open(ctx, filepath.Join(t.TempDir(), "backfill-links.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+	post := bluesky.Post{
+		URI: "at://did:plc:alice/app.bsky.feed.post/link", AuthorDID: "did:plc:alice", Text: "Online event", CreatedAt: time.Unix(10, 0),
+		Links: []bluesky.Link{{URI: "https://facet.example"}, {URI: "https://embed.example"}},
+	}
+	s := New(Options{Source: fakeSource{pages: []bluesky.Page{{Posts: []bluesky.Post{post}}}}, OutboxStore: durable, MasterSeed: []byte("seed"), OutboxLimit: 10})
+	if err := s.Backfill(ctx); err != nil {
+		t.Fatal(err)
+	}
+	event := claimPublishedEvent(t, ctx, durable)
+	assertEventLinks(t, event, "https://facet.example", "https://embed.example")
+}
+
 func TestJetstreamPublishesImageBlobAsBlueskyCDNURL(t *testing.T) {
 	ctx := context.Background()
 	durable, closer, err := bridgestore.Open(ctx, filepath.Join(t.TempDir(), "jetstream-images.db"))
@@ -137,6 +156,74 @@ func TestJetstreamPublishesImageBlobAsBlueskyCDNURL(t *testing.T) {
 	want := "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:alice/bafkreihash@jpeg"
 	if !strings.Contains(event.Content, want) || event.Tags.Find("imeta") == nil {
 		t.Fatalf("image event = content %q, tags %#v", event.Content, event.Tags)
+	}
+}
+
+func TestJetstreamPublishesFacetAndExternalLinks(t *testing.T) {
+	ctx := context.Background()
+	durable, closer, err := bridgestore.Open(ctx, filepath.Join(t.TempDir(), "jetstream-links.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+	s := New(Options{OutboxStore: durable, MasterSeed: []byte("seed"), OutboxLimit: 10})
+	record := json.RawMessage(`{"text":"Online event","createdAt":"1970-01-01T00:00:10Z","facets":[{"features":[{"$type":"app.bsky.richtext.facet#link","uri":"https://facet.example"}]}],"embed":{"$type":"app.bsky.embed.external","external":{"uri":"https://embed.example"}}}`)
+	if err := s.Handle(ctx, Event{DID: "did:plc:alice", Collection: postCollection, RKey: "link", Operation: Create, Record: record}); err != nil {
+		t.Fatal(err)
+	}
+	event := claimPublishedEvent(t, ctx, durable)
+	assertEventLinks(t, event, "https://facet.example", "https://embed.example")
+}
+
+func TestJetstreamUpdatePublishesFacetAndExternalLinks(t *testing.T) {
+	ctx := context.Background()
+	durable, closer, err := bridgestore.Open(ctx, filepath.Join(t.TempDir(), "jetstream-update-links.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+	s := New(Options{OutboxStore: durable, MasterSeed: []byte("seed"), OutboxLimit: 10})
+	created := Event{DID: "did:plc:alice", Collection: postCollection, RKey: "link", Operation: Create, CID: "old", Record: json.RawMessage(`{"text":"Old","createdAt":"1970-01-01T00:00:10Z"}`)}
+	if err := s.Handle(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := durable.ClaimOutbox(ctx, time.Now().Add(time.Second), time.Minute, 10)
+	if err := durable.CompletePublisherRegistration(ctx, items[0].ID, items[0].ClaimToken, items[0].PubKey, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	items, _ = durable.ClaimOutbox(ctx, time.Now().Add(time.Second), time.Minute, 10)
+	if err := durable.CompleteOutbox(ctx, items[0].ID, items[0].ClaimToken, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	record := json.RawMessage(`{"text":"Updated","createdAt":"1970-01-01T00:00:20Z","facets":[{"features":[{"$type":"app.bsky.richtext.facet#link","uri":"https://facet.example"}]}],"embed":{"$type":"app.bsky.embed.external","external":{"uri":"https://embed.example"}}}`)
+	if err := s.Handle(ctx, Event{DID: created.DID, Collection: created.Collection, RKey: created.RKey, Operation: Update, CID: "new", Record: record}); err != nil {
+		t.Fatal(err)
+	}
+	items, _ = durable.ClaimOutbox(ctx, time.Now().Add(time.Second), time.Minute, 10)
+	if len(items) != 1 {
+		t.Fatalf("update outbox items = %#v", items)
+	}
+	if err := durable.CompleteOutbox(ctx, items[0].ID, items[0].ClaimToken, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	items, _ = durable.ClaimOutbox(ctx, time.Now().Add(time.Second), time.Minute, 10)
+	if len(items) != 1 {
+		t.Fatalf("replacement outbox items = %#v", items)
+	}
+	var replacement nostr.Event
+	if err := json.Unmarshal([]byte(items[0].Payload), &replacement); err != nil {
+		t.Fatal(err)
+	}
+	assertEventLinks(t, replacement, "https://facet.example", "https://embed.example")
+}
+
+func assertEventLinks(t *testing.T, event nostr.Event, links ...string) {
+	t.Helper()
+	for _, link := range links {
+		if !strings.Contains(event.Content, link) || event.Tags.FindWithValue("r", link) == nil {
+			t.Errorf("link %q missing from content %q or tags %#v", link, event.Content, event.Tags)
+		}
 	}
 }
 
