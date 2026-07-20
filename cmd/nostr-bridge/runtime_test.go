@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +15,54 @@ import (
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/nostrmap"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
+
+func TestRuntimeLogsReconciliationFailure(t *testing.T) {
+	logs := captureRuntimeLogs(t)
+	reportReconciliationFailure("initial reconciliation", errors.New("reconcile unavailable"))
+
+	assertRuntimeLogContains(t, logs.String(), "initial reconciliation", "reconcile unavailable")
+}
+
+func TestRuntimeLogsPublicationFailure(t *testing.T) {
+	logs := captureRuntimeLogs(t)
+	reportReconciliationFailure("periodic publication", errors.New("outbox unavailable"))
+
+	assertRuntimeLogContains(t, logs.String(), "periodic publication", "outbox unavailable")
+}
+
+func TestRuntimeLogsSyncFailure(t *testing.T) {
+	logs := captureRuntimeLogs(t)
+	reportSyncFailure(errors.New("jetstream unavailable"))
+
+	assertRuntimeLogContains(t, logs.String(), "sync", "jetstream unavailable")
+}
+
+func TestRuntimeLogsSyncFailureSuppressesContextCanceled(t *testing.T) {
+	logs := captureRuntimeLogs(t)
+	reportSyncFailure(context.Canceled)
+
+	if logs.Len() != 0 {
+		t.Fatalf("log = %q, want empty", logs.String())
+	}
+}
+
+func captureRuntimeLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
+	return &logs
+}
+
+func assertRuntimeLogContains(t *testing.T, output string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if !strings.Contains(output, value) {
+			t.Fatalf("log %q does not contain %q", output, value)
+		}
+	}
+}
 
 func TestPublishReconciliationIsIdempotentAndEnqueuesChangedState(t *testing.T) {
 	ctx := context.Background()

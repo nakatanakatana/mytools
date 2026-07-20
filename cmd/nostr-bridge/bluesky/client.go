@@ -10,10 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
 )
@@ -115,7 +118,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if options.HTTPClient == nil {
 		options.HTTPClient = http.DefaultClient
 	}
-	return &Client{httpClient: options.HTTPClient, baseURL: strings.TrimRight(options.BaseURL, "/"), accessToken: options.Token.AccessToken, dpopKey: options.Token.DPoPKey, dpopNonce: options.Token.DPoPNonce, accountDID: options.AccountDID}, nil
+	return &Client{httpClient: options.HTTPClient, baseURL: strings.TrimRight(options.BaseURL, "/"), accessToken: options.Token.AccessToken, dpopKey: options.Token.DPoPKey, accountDID: options.AccountDID}, nil
 }
 
 // Timeline returns one authenticated timeline page.
@@ -289,7 +292,7 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, des
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("request Bluesky %s: unexpected status %s", endpoint, response.Status)
+		return pdsResponseError(endpoint, response)
 	}
 	if nonce := response.Header.Get("DPoP-Nonce"); nonce != "" {
 		c.dpopNonce = nonce
@@ -300,12 +303,38 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, des
 	return nil
 }
 
+func pdsResponseError(endpoint string, response *http.Response) error {
+	var details struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&details)
+	details.Error = safePDSDetail(details.Error)
+	details.Message = safePDSDetail(details.Message)
+	return fmt.Errorf("request Bluesky %s: unexpected status %s: AT Protocol error=%q message=%q; DPoP-Nonce header present=%t", endpoint, response.Status, details.Error, details.Message, response.Header.Get("DPoP-Nonce") != "")
+}
+
+func safePDSDetail(value string) string {
+	var safe strings.Builder
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			continue
+		}
+		size := utf8.RuneLen(character)
+		if safe.Len()+size > 256 {
+			break
+		}
+		safe.WriteRune(character)
+	}
+	return safe.String()
+}
+
 func (c *Client) doGet(ctx context.Context, endpoint string, query url.Values) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/xrpc/"+endpoint+"?"+query.Encode(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create Bluesky %s request: %w", endpoint, err)
 	}
-	proof, err := dpopProof(c.dpopKey, request.Method, request.URL, c.dpopNonce)
+	proof, err := dpopProof(c.dpopKey, request.Method, request.URL, c.dpopNonce, c.accessToken)
 	if err != nil {
 		return nil, fmt.Errorf("create Bluesky DPoP proof: %w", err)
 	}
@@ -318,11 +347,12 @@ func (c *Client) doGet(ctx context.Context, endpoint string, query url.Values) (
 	return response, nil
 }
 
-func dpopProof(key *ecdsa.PrivateKey, method string, requestURL *url.URL, nonce string) (string, error) {
+func dpopProof(key *ecdsa.PrivateKey, method string, requestURL *url.URL, nonce, accessToken string) (string, error) {
 	htu := *requestURL
 	htu.RawQuery = ""
 	htu.Fragment = ""
-	claims := map[string]any{"jti": randomString(16), "htm": method, "htu": htu.String(), "iat": time.Now().Unix()}
+	athDigest := sha256.Sum256([]byte(accessToken))
+	claims := map[string]any{"jti": randomString(16), "htm": method, "htu": htu.String(), "iat": time.Now().Unix(), "ath": base64.RawURLEncoding.EncodeToString(athDigest[:])}
 	if nonce != "" {
 		claims["nonce"] = nonce
 	}

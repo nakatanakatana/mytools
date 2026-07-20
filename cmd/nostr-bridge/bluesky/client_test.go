@@ -25,9 +25,9 @@ func TestClientFetchesAuthenticatedPagedSources(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "DPoP access-token" {
-			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+			t.Fatal("unexpected Authorization header")
 		}
-		assertDPoPProof(t, r, key, "persisted-nonce")
+		assertDPoPProof(t, r, key, "", "access-token")
 		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
 		switch r.URL.Path {
 		case "/xrpc/app.bsky.feed.getTimeline":
@@ -100,7 +100,7 @@ func TestClientRetriesDPoPNonceChallenge(t *testing.T) {
 			http.Error(w, "use DPoP nonce", http.StatusUnauthorized)
 			return
 		}
-		assertDPoPProof(t, r, key, "challenge-nonce")
+		assertDPoPProof(t, r, key, "challenge-nonce", "access-token")
 		_ = json.NewEncoder(w).Encode(map[string]any{"feed": []any{}})
 	}))
 	defer server.Close()
@@ -116,11 +116,86 @@ func TestClientRetriesDPoPNonceChallenge(t *testing.T) {
 	}
 }
 
-func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.PrivateKey, wantNonce string) {
+func TestClientUsesDPoPNonceFromSuccessfulResponseOnNextRequest(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		switch attempts {
+		case 1:
+			assertDPoPProof(t, r, key, "", "access-token")
+			w.Header().Set("DPoP-Nonce", "success-response-nonce")
+			_ = json.NewEncoder(w).Encode(map[string]any{"feed": []any{}})
+		case 2:
+			assertDPoPProof(t, r, key, "success-response-nonce", "access-token")
+			_ = json.NewEncoder(w).Encode(map[string]any{"did": "did:plc:one", "handle": "one.test"})
+		default:
+			t.Fatal("unexpected additional PDS request")
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{HTTPClient: server.Client(), BaseURL: server.URL, Token: bridgeoauth.Token{AccessToken: "access-token", DPoPKey: key}, AccountDID: "did:plc:owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Timeline(context.Background(), "", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Profile(context.Background(), "did:plc:one"); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestClientReportsSafePDSFailure(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proof string
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		proof = r.Header.Get("DPoP")
+		w.Header().Set("DPoP-Nonce", "secret-nonce")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "UseDpopNonce", "message": "proof rejected"})
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{HTTPClient: server.Client(), BaseURL: server.URL, Token: bridgeoauth.Token{AccessToken: "access-token", DPoPKey: key}, AccountDID: "did:plc:owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Timeline(context.Background(), "", 1)
+	if err == nil {
+		t.Fatal("Timeline error = nil, want PDS failure")
+	}
+	errorText := err.Error()
+	for _, want := range []string{"app.bsky.feed.getTimeline", "401 Unauthorized", "UseDpopNonce", "proof rejected", "DPoP-Nonce header present=true"} {
+		if !strings.Contains(errorText, want) {
+			t.Errorf("Timeline error missing %q", want)
+		}
+	}
+	for _, secret := range []string{"secret-nonce", "access-token", proof} {
+		if secret != "" && strings.Contains(errorText, secret) {
+			t.Errorf("Timeline error contains secret data")
+		}
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.PrivateKey, wantNonce, accessToken string) {
 	t.Helper()
 	parts := strings.Split(request.Header.Get("DPoP"), ".")
 	if len(parts) != 3 {
-		t.Fatalf("invalid DPoP proof %q", request.Header.Get("DPoP"))
+		t.Fatal("invalid DPoP proof structure")
 	}
 	var header struct {
 		Typ string `json:"typ"`
@@ -137,6 +212,7 @@ func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.Private
 		HTU   string `json:"htu"`
 		Nonce string `json:"nonce"`
 		JTI   string `json:"jti"`
+		ATH   string `json:"ath"`
 	}
 	decodeJWTPart(t, parts[0], &header)
 	decodeJWTPart(t, parts[1], &claims)
@@ -147,7 +223,11 @@ func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.Private
 		t.Fatalf("DPoP JWK does not match persisted key: %#v", header.JWK)
 	}
 	if claims.HTM != request.Method || claims.HTU != "http://"+request.Host+request.URL.Path || claims.Nonce != wantNonce || claims.JTI == "" {
-		t.Fatalf("DPoP claims = %#v for request %s", claims, request.URL)
+		t.Fatalf("unexpected DPoP claims for request %s", request.URL)
+	}
+	ath := sha256.Sum256([]byte(accessToken))
+	if claims.ATH != base64.RawURLEncoding.EncodeToString(ath[:]) {
+		t.Fatal("unexpected DPoP ath claim")
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil || len(signature) != 64 {

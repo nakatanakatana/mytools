@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -141,6 +142,9 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 			if source, sourceErr := bluesky.NewClient(bluesky.ClientOptions{BaseURL: cfg.BlueskyBaseURL, Token: token, AccountDID: cfg.AccountDID}); sourceErr == nil {
 				health.Update(func(metrics *HealthMetrics) { metrics.PendingWork++ })
 				targets, reconcileErr := bluesky.NewReconciler(source, cfg.ListURIs).Reconcile(ctx)
+				if reconcileErr != nil {
+					reportReconciliationFailure("initial reconciliation", reconcileErr)
+				}
 				targets = resolveInitialTargets(ctx, store, targets, reconcileErr, health)
 				health.Update(func(metrics *HealthMetrics) {
 					if metrics.PendingWork > 0 {
@@ -149,6 +153,7 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 				})
 				if reconcileErr == nil {
 					if err := publishReconciliation(ctx, source, seed, cfg.AccountDID, targets, store, cfg.OutboxLimit); err != nil {
+						reportReconciliationFailure("initial publication", err)
 						continue
 					}
 				}
@@ -157,9 +162,11 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 					syncContext, stopSync := context.WithCancel(ctx)
 					go reconcilePeriodically(syncContext, cfg.ReconcileInterval, source, seed, cfg.AccountDID, cfg.ListURIs, store, cfg.OutboxLimit, live, health)
 					s := syncer.New(syncer.Options{Source: source, OutboxStore: store, OutboxLimit: int64(cfg.OutboxLimit), MasterSeed: seed, TargetProvider: live.Get, TargetUpdates: live.Updates(), BackfillLimit: cfg.BackfillLimit, JetstreamURL: cfg.JetstreamURL, Observer: healthSyncObserver{health}})
-					_ = s.Run(syncContext)
+					reportSyncFailure(s.Run(syncContext))
 					stopSync()
 				}
+			} else {
+				reportRuntimeFailure("source construction", sourceErr)
 			}
 		} else {
 			health.Update(func(metrics *HealthMetrics) { metrics.OAuthConnected = false; metrics.JetstreamConnected = false })
@@ -217,13 +224,30 @@ func reconcilePeriodically(ctx context.Context, interval time.Duration, source b
 		case <-ticker.C:
 			targets, err := bluesky.NewReconciler(source, listURIs).Reconcile(ctx)
 			if err != nil {
+				reportReconciliationFailure("periodic reconciliation", err)
 				continue
 			}
 			if err := applyPeriodicTargets(ctx, source, seed, accountDID, targets, store, outboxLimit, live, health); err != nil {
+				reportReconciliationFailure("periodic publication", err)
 				continue
 			}
 		}
 	}
+}
+
+func reportReconciliationFailure(operation string, err error) {
+	reportRuntimeFailure(operation, err)
+}
+
+func reportSyncFailure(err error) {
+	reportRuntimeFailure("sync", err)
+}
+
+func reportRuntimeFailure(operation string, err error) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	log.Printf("nostr-bridge runtime: %s failed: %v", operation, err)
 }
 
 func applyPeriodicTargets(ctx context.Context, source bluesky.SourceClient, seed []byte, accountDID string, targets bluesky.TargetSet, store runtimeStore, outboxLimit int, live *liveTargets, health *Health) error {
