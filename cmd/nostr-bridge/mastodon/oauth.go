@@ -10,10 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/secretbox"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
@@ -55,6 +58,66 @@ type Token struct {
 	Expiry                           time.Time
 }
 
+type oauthRemoteError struct {
+	operation, code, description string
+	statusCode                   int
+}
+
+func (e oauthRemoteError) Error() string {
+	message := fmt.Sprintf("Mastodon OAuth %s failed: status=%d", e.operation, e.statusCode)
+	if e.code != "" {
+		message += fmt.Sprintf(" error=%q", e.code)
+	}
+	if e.description != "" {
+		message += fmt.Sprintf(" description=%q", e.description)
+	}
+	return message
+}
+
+func newOAuthRemoteError(operation string, response *http.Response, secrets ...string) error {
+	var details struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&details)
+	return oauthRemoteError{
+		operation: operation, statusCode: response.StatusCode,
+		code: safeOAuthDetail(details.Error, secrets...), description: safeOAuthDetail(details.ErrorDescription, secrets...),
+	}
+}
+
+func safeOAuthDetail(value string, secrets ...string) string {
+	for _, secret := range secrets {
+		if secret != "" {
+			value = strings.ReplaceAll(value, secret, "[REDACTED]")
+		}
+	}
+	var safe strings.Builder
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			continue
+		}
+		size := utf8.RuneLen(character)
+		if safe.Len()+size > 256 {
+			break
+		}
+		safe.WriteRune(character)
+	}
+	return safe.String()
+}
+
+func logOAuthResult(stage, result string) {
+	log.Printf("nostr-bridge OAuth: provider=mastodon stage=%s result=%s", stage, result)
+}
+
+func logOAuthFailure(stage string, err error, secrets ...string) {
+	detail := ""
+	if err != nil {
+		detail = safeOAuthDetail(err.Error(), secrets...)
+	}
+	log.Printf("nostr-bridge OAuth: provider=mastodon stage=%s result=failed error=%q", stage, detail)
+}
+
 func NewOAuthClient(o OAuthOptions) (*OAuthClient, error) {
 	if o.Store == nil || strings.TrimSpace(o.BaseURL) == "" || strings.TrimSpace(o.Account) == "" || strings.TrimSpace(o.ClientID) == "" || strings.TrimSpace(o.ClientSecret) == "" || strings.TrimSpace(o.RedirectURL) == "" {
 		return nil, errors.New("mastodon OAuth requires store, base URL, account, client credentials, and redirect URL")
@@ -77,24 +140,30 @@ func NewOAuthClient(o OAuthOptions) (*OAuthClient, error) {
 }
 
 func (c *OAuthClient) StartAuthorization(ctx context.Context) (string, error) {
+	logOAuthResult("authorization_start", "started")
 	state, err := randomOAuthString(32)
 	if err != nil {
+		logOAuthFailure("state_generation", err)
 		return "", fmt.Errorf("generate OAuth state: %w", err)
 	}
 	verifier, err := randomOAuthString(48)
 	if err != nil {
+		logOAuthFailure("verifier_generation", err, state)
 		return "", fmt.Errorf("generate PKCE verifier: %w", err)
 	}
 	encoded, _ := json.Marshal(oauthSession{CodeVerifier: verifier})
 	encrypted, err := c.box.Seal(encoded)
 	if err != nil {
+		logOAuthFailure("session_encryption", err, state, verifier)
 		return "", errors.New("encrypt OAuth session")
 	}
 	if err := c.store.SaveOAuthSession(ctx, c.scope, bridgestore.OAuthSession{State: state, EncryptedPayload: encrypted, ExpiresAt: c.now().Add(10 * time.Minute).Unix()}); err != nil {
+		logOAuthFailure("session_persistence", err, state, verifier)
 		return "", fmt.Errorf("save OAuth session: %w", err)
 	}
 	h := sha256.Sum256([]byte(verifier))
 	q := url.Values{"client_id": {c.clientID}, "redirect_uri": {c.redirectURL}, "response_type": {"code"}, "scope": {OAuthScopes}, "state": {state}, "code_challenge": {base64.RawURLEncoding.EncodeToString(h[:])}, "code_challenge_method": {"S256"}}
+	logOAuthResult("authorization_start", "succeeded")
 	return c.baseURL + "/oauth/authorize?" + q.Encode(), nil
 }
 func (c *OAuthClient) openSession(encrypted []byte) (oauthSession, error) {
@@ -109,48 +178,66 @@ func (c *OAuthClient) openSession(encrypted []byte) (oauthSession, error) {
 
 func (c *OAuthClient) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	state, code := r.URL.Query().Get("state"), r.URL.Query().Get("code")
+	logOAuthResult("callback", "started")
 	if state == "" || code == "" {
+		logOAuthFailure("callback_validation", errors.New("required callback parameters are missing"), state, code)
 		http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
 		return
 	}
 	session, err := c.store.OAuthSessionByState(r.Context(), c.scope, state)
 	if err != nil {
+		logOAuthFailure("state_lookup", err, state, code)
 		http.Error(w, "invalid OAuth state", http.StatusBadRequest)
 		return
 	}
 	if session.ExpiresAt <= c.now().Unix() {
-		_ = c.store.DeleteOAuthSession(r.Context(), c.scope, state)
+		if deleteErr := c.store.DeleteOAuthSession(r.Context(), c.scope, state); deleteErr != nil {
+			logOAuthFailure("expired_state_cleanup", deleteErr, state, code)
+		}
+		logOAuthFailure("state_validation", errors.New("OAuth state expired"), state, code)
 		http.Error(w, "invalid OAuth state", http.StatusBadRequest)
 		return
 	}
 	payload, err := c.openSession(session.EncryptedPayload)
 	if err != nil || payload.CodeVerifier == "" {
+		if err == nil {
+			err = errors.New("OAuth state has no PKCE verifier")
+		}
+		logOAuthFailure("state_decryption", err, state, code)
 		http.Error(w, "invalid OAuth state", http.StatusBadRequest)
 		return
 	}
 	tokens, err := c.exchange(r.Context(), url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {c.redirectURL}, "client_id": {c.clientID}, "client_secret": {c.clientSecret}, "code_verifier": {payload.CodeVerifier}, "scope": {OAuthScopes}})
 	if err != nil {
+		logOAuthFailure("token_exchange", err, state, code, c.clientSecret, payload.CodeVerifier)
 		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
 		return
 	}
 	acct, err := c.verifyCredentials(r.Context(), tokens.AccessToken)
 	if err != nil {
+		logOAuthFailure("credential_verification", err, state, code, tokens.AccessToken, tokens.RefreshToken)
 		http.Error(w, "OAuth account verification failed", http.StatusBadGateway)
 		return
 	}
 	if normalizeAccount(acct, instanceHost(c.baseURL)) != c.account {
-		_ = c.store.DeleteOAuthSession(r.Context(), c.scope, state)
+		if deleteErr := c.store.DeleteOAuthSession(r.Context(), c.scope, state); deleteErr != nil {
+			logOAuthFailure("mismatched_state_cleanup", deleteErr, state, code, tokens.AccessToken, tokens.RefreshToken)
+		}
+		logOAuthFailure("account_verification", errors.New("authorized account does not match configured account"), state, code, tokens.AccessToken, tokens.RefreshToken)
 		http.Error(w, "OAuth account does not match configured account", http.StatusForbidden)
 		return
 	}
 	if err := c.saveToken(r.Context(), tokens, c.account); err != nil {
+		logOAuthFailure("token_persistence", err, state, code, tokens.AccessToken, tokens.RefreshToken)
 		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
 		return
 	}
 	if err := c.store.DeleteOAuthSession(r.Context(), c.scope, state); err != nil {
+		logOAuthFailure("session_cleanup", err, state, code, tokens.AccessToken, tokens.RefreshToken)
 		http.Error(w, "OAuth session cleanup failed", http.StatusInternalServerError)
 		return
 	}
+	logOAuthResult("complete", "succeeded")
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 func (c *OAuthClient) exchange(ctx context.Context, form url.Values) (mastodonTokenResponse, error) {
@@ -165,11 +252,17 @@ func (c *OAuthClient) exchange(ctx context.Context, form url.Values) (mastodonTo
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return mastodonTokenResponse{}, errors.New("mastodon OAuth server rejected request")
+		return mastodonTokenResponse{}, newOAuthRemoteError("token exchange", resp, form.Get("code"), form.Get("client_secret"), form.Get("refresh_token"), form.Get("code_verifier"))
 	}
 	var token mastodonTokenResponse
-	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&token) != nil || strings.TrimSpace(token.AccessToken) == "" || !exactScopes(token.Scope) {
-		return token, errors.New("invalid Mastodon OAuth token response")
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&token); err != nil {
+		return token, errors.New("decode Mastodon OAuth token response")
+	}
+	if strings.TrimSpace(token.AccessToken) == "" {
+		return token, errors.New("mastodon OAuth token response is missing access token")
+	}
+	if !exactScopes(token.Scope) {
+		return token, errors.New("mastodon OAuth token response scope mismatch")
 	}
 	return token, nil
 }
@@ -182,13 +275,16 @@ func (c *OAuthClient) verifyCredentials(ctx context.Context, access string) (str
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return "", errors.New("mastodon account request rejected")
+		return "", newOAuthRemoteError("credential verification", resp, access)
 	}
 	var account struct {
 		Acct string `json:"acct"`
 	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&account) != nil || account.Acct == "" {
-		return "", errors.New("invalid Mastodon account response")
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&account); err != nil {
+		return "", errors.New("decode Mastodon account response")
+	}
+	if account.Acct == "" {
+		return "", errors.New("mastodon account response is missing account")
 	}
 	return account.Acct, nil
 }
@@ -226,20 +322,24 @@ func (c *OAuthClient) Token(ctx context.Context) (Token, error) {
 	if p.RefreshToken == "" {
 		return Token{}, errors.New("mastodon OAuth token has no refresh token")
 	}
+	logOAuthResult("token_refresh", "started")
 	fresh, err := c.exchange(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {p.RefreshToken}, "client_id": {c.clientID}, "client_secret": {c.clientSecret}, "scope": {OAuthScopes}})
 	if err != nil {
+		logOAuthFailure("token_refresh", err, p.AccessToken, p.RefreshToken, c.clientSecret)
 		return Token{}, err
 	}
 	if fresh.RefreshToken == "" {
 		fresh.RefreshToken = p.RefreshToken
 	}
 	if err := c.saveToken(ctx, fresh, c.account); err != nil {
+		logOAuthFailure("token_refresh_persistence", err, p.AccessToken, p.RefreshToken, fresh.AccessToken, fresh.RefreshToken, c.clientSecret)
 		return Token{}, errors.New("save refreshed Mastodon OAuth token")
 	}
 	expiry := time.Time{}
 	if fresh.ExpiresIn > 0 {
 		expiry = c.now().Add(time.Duration(fresh.ExpiresIn) * time.Second)
 	}
+	logOAuthResult("token_refresh", "succeeded")
 	return Token{fresh.AccessToken, fresh.RefreshToken, fresh.Scope, expiry}, nil
 }
 func exactScopes(raw string) bool {
