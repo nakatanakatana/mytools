@@ -116,13 +116,51 @@ func TestClientRetriesDPoPNonceChallenge(t *testing.T) {
 	}
 }
 
+func TestClientUsesDPoPNonceFromSuccessfulResponseOnNextRequest(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		switch attempts {
+		case 1:
+			assertDPoPProof(t, r, key, "", "access-token")
+			w.Header().Set("DPoP-Nonce", "success-response-nonce")
+			_ = json.NewEncoder(w).Encode(map[string]any{"feed": []any{}})
+		case 2:
+			assertDPoPProof(t, r, key, "success-response-nonce", "access-token")
+			_ = json.NewEncoder(w).Encode(map[string]any{"did": "did:plc:one", "handle": "one.test"})
+		default:
+			t.Fatal("unexpected additional PDS request")
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{HTTPClient: server.Client(), BaseURL: server.URL, Token: bridgeoauth.Token{AccessToken: "access-token", DPoPKey: key}, AccountDID: "did:plc:owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Timeline(context.Background(), "", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Profile(context.Background(), "did:plc:one"); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestClientReportsSafePDSFailure(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var proof string
+	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
 		proof = r.Header.Get("DPoP")
 		w.Header().Set("DPoP-Nonce", "secret-nonce")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -147,6 +185,9 @@ func TestClientReportsSafePDSFailure(t *testing.T) {
 		if secret != "" && strings.Contains(errorText, secret) {
 			t.Errorf("Timeline error contains secret data")
 		}
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
 	}
 }
 
