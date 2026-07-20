@@ -5,20 +5,26 @@
 package storesqlc
 
 type BridgeEvent struct {
-	SourceUri    string
-	NostrEventID string
-	SourceKind   string
-	AuthorPubkey string
-	UpdatedAt    int64
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+	NostrEventID  string
+	SourceKind    string
+	AuthorPubkey  string
+	UpdatedAt     int64
 }
 
 type OauthSession struct {
+	Provider         string
+	SourceAccount    string
 	State            string
 	EncryptedPayload []byte
 	ExpiresAt        int64
 }
 
 type OauthToken struct {
+	Provider         string
+	SourceAccount    string
 	AccountDid       string
 	EncryptedPayload []byte
 	UpdatedAt        int64
@@ -55,15 +61,21 @@ type PublisherRegistration struct {
 }
 
 type SourceOperation struct {
-	SourceUri string
-	Identity  string
+	Provider      string
+	SourceAccount string
+	SourceUri     string
+	Identity      string
 }
 
 type SyncCursor struct {
-	Name  string
-	Value int64
+	Provider      string
+	SourceAccount string
+	Name          string
+	Value         string
 }
 
 type SyncTarget struct {
-	Did string
+	Provider      string
+	SourceAccount string
+	Target        string
 }

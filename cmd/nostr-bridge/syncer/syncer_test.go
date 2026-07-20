@@ -17,6 +17,12 @@ import (
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
 
+var syncerTestScope = bridgestore.SourceScope{}
+
+func syncerTestRef(uri string) bridgestore.SourceRef {
+	return bridgestore.SourceRef{Scope: syncerTestScope, URI: uri}
+}
+
 func TestBackfillAndReplayEnqueueOneEventForOneSourceURI(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
@@ -28,7 +34,7 @@ func TestBackfillAndReplayEnqueueOneEventForOneSourceURI(t *testing.T) {
 	if err := s.Handle(ctx, Event{DID: "did:plc:alice", Collection: postCollection, RKey: "one", Operation: Create, TimeUS: 20_000_000, Record: json.RawMessage(`{"text":"hello","createdAt":"1970-01-01T00:00:10Z"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.EventMappingBySourceURI(ctx, "at://did:plc:alice/app.bsky.feed.post/one"); err != nil {
+	if _, err := store.EventMappingBySourceURI(ctx, syncerTestRef("at://did:plc:alice/app.bsky.feed.post/one")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -280,8 +286,8 @@ func TestOutboxOnlyCreateAndDeletePersistCursorAndKindFive(t *testing.T) {
 	if err := s.Handle(ctx, created); err != nil {
 		t.Fatal(err)
 	}
-	if cursor, err := durable.Cursor(ctx, jetstreamCursor); err != nil || cursor != 10 {
-		t.Fatalf("cursor = %d, %v", cursor, err)
+	if cursor, err := durable.Cursor(ctx, syncerTestScope, jetstreamCursor); err != nil || cursor != "10" {
+		t.Fatalf("cursor = %s, %v", cursor, err)
 	}
 	items, _ := durable.ClaimOutbox(ctx, time.Now().Add(time.Second), time.Minute, 1)
 	_ = durable.CompletePublisherRegistration(ctx, items[0].ID, items[0].ClaimToken, items[0].PubKey, time.Now())
@@ -298,8 +304,8 @@ func TestOutboxOnlyCreateAndDeletePersistCursorAndKindFive(t *testing.T) {
 	if err := json.Unmarshal([]byte(items[0].Payload), &deletion); err != nil || deletion.Kind != 5 {
 		t.Fatalf("deletion = %#v, %v", deletion, err)
 	}
-	if cursor, err := durable.Cursor(ctx, jetstreamCursor); err != nil || cursor != 20 {
-		t.Fatalf("delete cursor = %d, %v", cursor, err)
+	if cursor, err := durable.Cursor(ctx, syncerTestScope, jetstreamCursor); err != nil || cursor != "20" {
+		t.Fatalf("delete cursor = %s, %v", cursor, err)
 	}
 }
 
@@ -315,7 +321,7 @@ func TestReplyUsesPersistedParentMappingForEAndPTags(t *testing.T) {
 	if err := parent.Sign(parentKey); err != nil {
 		t.Fatal(err)
 	}
-	if err := durable.SaveEventMapping(ctx, bridgestore.EventMapping{SourceURI: "at://did:plc:parent/app.bsky.feed.post/one", NostrEventID: parent.ID.Hex(), AuthorPubKey: parent.PubKey.Hex()}); err != nil {
+	if err := durable.SaveEventMapping(ctx, bridgestore.EventMapping{Source: syncerTestRef("at://did:plc:parent/app.bsky.feed.post/one"), NostrEventID: parent.ID.Hex(), AuthorPubKey: parent.PubKey.Hex()}); err != nil {
 		t.Fatal(err)
 	}
 	s := New(Options{OutboxStore: durable, MasterSeed: []byte("seed"), OutboxLimit: 10})
@@ -350,7 +356,7 @@ func TestReplyUsesPersistedParentMappingForEAndPTags(t *testing.T) {
 
 func TestReconnectCursorRewindsAndSubscriptionFiltersTargetsAndCollections(t *testing.T) {
 	store := newMemoryStore()
-	if err := store.SaveCursor(context.Background(), jetstreamCursor, 12_000_000); err != nil {
+	if err := store.SaveCursor(context.Background(), syncerTestScope, jetstreamCursor, "12000000"); err != nil {
 		t.Fatal(err)
 	}
 	s := New(Options{OutboxStore: store, Targets: bluesky.DIDSet{"did:plc:alice": {}}, Rewind: 3 * time.Second})
@@ -375,7 +381,7 @@ func TestSubscriptionUsesOutboxStoreWithoutLegacyStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = closer.Close() }()
-	_ = durable.SaveCursor(context.Background(), jetstreamCursor, 12_000_000)
+	_ = durable.SaveCursor(context.Background(), syncerTestScope, jetstreamCursor, "12000000")
 	s := New(Options{OutboxStore: durable, Targets: bluesky.DIDSet{"did:plc:alice": {}}, Rewind: 3 * time.Second})
 	u, err := s.Subscription(context.Background(), "wss://jetstream.example/subscribe")
 	if err != nil {
@@ -510,37 +516,37 @@ func (fakeSource) Profile(context.Context, string) (bluesky.Profile, error) {
 type memoryStore struct {
 	events     map[string]bridgestore.EventMapping
 	operations map[string]string
-	cursors    map[string]int64
+	cursors    map[string]string
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{events: map[string]bridgestore.EventMapping{}, operations: map[string]string{}, cursors: map[string]int64{}}
+	return &memoryStore{events: map[string]bridgestore.EventMapping{}, operations: map[string]string{}, cursors: map[string]string{}}
 }
-func (m *memoryStore) EventMappingBySourceURI(_ context.Context, uri string) (bridgestore.EventMapping, error) {
-	e, ok := m.events[uri]
+func (m *memoryStore) EventMappingBySourceURI(_ context.Context, ref bridgestore.SourceRef) (bridgestore.EventMapping, error) {
+	e, ok := m.events[ref.URI]
 	if !ok {
 		return bridgestore.EventMapping{}, sql.ErrNoRows
 	}
 	return e, nil
 }
-func (m *memoryStore) SourceOperationBySourceURI(_ context.Context, uri string) (string, error) {
-	identity, ok := m.operations[uri]
+func (m *memoryStore) SourceOperationBySourceURI(_ context.Context, ref bridgestore.SourceRef) (string, error) {
+	identity, ok := m.operations[ref.URI]
 	if !ok {
 		return "", sql.ErrNoRows
 	}
 	return identity, nil
 }
-func (m *memoryStore) SaveCursor(_ context.Context, name string, value int64) error {
+func (m *memoryStore) SaveCursor(_ context.Context, _ bridgestore.SourceScope, name string, value string) error {
 	m.cursors[name] = value
 	return nil
 }
-func (m *memoryStore) Cursor(_ context.Context, name string) (int64, error) {
+func (m *memoryStore) Cursor(_ context.Context, _ bridgestore.SourceScope, name string) (string, error) {
 	return m.cursors[name], nil
 }
 func (m *memoryStore) EnqueueEvent(_ context.Context, request bridgestore.EventEnqueueRequest) error {
-	m.events[request.Mapping.SourceURI] = request.Mapping
+	m.events[request.Mapping.Source.URI] = request.Mapping
 	if request.SourceOperation != "" {
-		m.operations[request.Mapping.SourceURI] = request.SourceOperation
+		m.operations[request.Mapping.Source.URI] = request.SourceOperation
 	}
 	if request.Cursor != nil {
 		m.cursors[request.Cursor.Name] = request.Cursor.Value
@@ -548,15 +554,15 @@ func (m *memoryStore) EnqueueEvent(_ context.Context, request bridgestore.EventE
 	return nil
 }
 func (m *memoryStore) EnqueueDelete(_ context.Context, request bridgestore.DeleteEnqueueRequest) error {
-	delete(m.events, request.SourceURI)
+	delete(m.events, request.Source.URI)
 	if request.Cursor != nil {
 		m.cursors[request.Cursor.Name] = request.Cursor.Value
 	}
 	return nil
 }
 func (m *memoryStore) EnqueueUpdate(_ context.Context, request bridgestore.UpdateEnqueueRequest) error {
-	m.events[request.Mapping.SourceURI] = request.Mapping
-	m.operations[request.Mapping.SourceURI] = request.SourceOperation
+	m.events[request.Mapping.Source.URI] = request.Mapping
+	m.operations[request.Mapping.Source.URI] = request.SourceOperation
 	if request.Cursor != nil {
 		m.cursors[request.Cursor.Name] = request.Cursor.Value
 	}

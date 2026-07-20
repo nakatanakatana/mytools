@@ -66,6 +66,11 @@ func TestReconcileTargetUnionFollowListAndSharedLifecycle(t *testing.T) {
 	assertDIDs(t, targets.Follows, "did:follow", "did:both")
 	assertDIDs(t, targets.Lists[listURI], "did:list", "did:both")
 	assertDIDs(t, targets.Union, "did:follow", "did:list", "did:both")
+	for identity := range targets.Snapshot().Union {
+		if identity.Provider != "bluesky" {
+			t.Fatalf("identity = %#v", identity)
+		}
+	}
 }
 
 type targetSource struct {

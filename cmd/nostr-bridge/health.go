@@ -26,6 +26,13 @@ type HealthMetrics struct {
 	DispatcherRunning  bool
 }
 
+type ProviderHealthMetrics struct {
+	Authenticated, Bootstrapped, StreamConnected bool
+	OAuthExpiry                                  time.Time
+	TargetCount, PendingWork                     int
+	LastEvent, LastReconciliation                time.Time
+}
+
 // HealthOptions configures process health checks.
 type HealthOptions struct {
 	DatabaseCheck     func(context.Context) error
@@ -34,6 +41,7 @@ type HealthOptions struct {
 	OutboxCount       func(context.Context) (int64, error)
 	OutboxLimit       int64
 	RequireDispatcher bool
+	EnabledProviders  []string
 }
 
 // Health serves liveness, readiness, and Prometheus-compatible metrics.
@@ -45,8 +53,10 @@ type Health struct {
 	outboxLimit       int64
 	requireDispatcher bool
 
-	mu      sync.RWMutex
-	metrics HealthMetrics
+	mu               sync.RWMutex
+	metrics          HealthMetrics
+	providers        map[string]ProviderHealthMetrics
+	enabledProviders []string
 }
 
 // NewHealth creates a health reporter. Metrics are initially zero-valued until
@@ -58,7 +68,24 @@ func NewHealth(options HealthOptions) *Health {
 	if options.MaxEventAge <= 0 {
 		options.MaxEventAge = defaultJetstreamMaxEventAge
 	}
-	return &Health{databaseCheck: options.DatabaseCheck, now: options.Now, maxEventAge: options.MaxEventAge, outboxCount: options.OutboxCount, outboxLimit: options.OutboxLimit, requireDispatcher: options.RequireDispatcher}
+	return &Health{databaseCheck: options.DatabaseCheck, now: options.Now, maxEventAge: options.MaxEventAge, outboxCount: options.OutboxCount, outboxLimit: options.OutboxLimit, requireDispatcher: options.RequireDispatcher, providers: map[string]ProviderHealthMetrics{}, enabledProviders: append([]string(nil), options.EnabledProviders...)}
+}
+
+func (h *Health) UpdateProvider(provider string, update func(*ProviderHealthMetrics)) {
+	if provider != "bluesky" && provider != "mastodon" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	m := h.providers[provider]
+	update(&m)
+	h.providers[provider] = m
+}
+
+func (h *Health) providerSnapshot(provider string) ProviderHealthMetrics {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.providers[provider]
 }
 
 // SetMetrics replaces the current public operational state.
@@ -107,7 +134,21 @@ func (h *Health) Readiness(w http.ResponseWriter, r *http.Request) {
 	oauthConnected := metrics.OAuthConnected && (metrics.OAuthExpiry.IsZero() || metrics.OAuthExpiry.After(now))
 	jetstreamReady := metrics.TargetDIDCount == 0 || metrics.JetstreamConnected
 	dispatcherReady := !h.requireDispatcher || metrics.DispatcherRunning
-	ready := databaseReady && oauthConnected && jetstreamReady && outboxReady && dispatcherReady
+	providersReady := true
+	providerStatus := map[string]any{}
+	if len(h.enabledProviders) > 0 {
+		h.mu.RLock()
+		for _, provider := range h.enabledProviders {
+			m := h.providers[provider]
+			auth := m.Authenticated && (m.OAuthExpiry.IsZero() || m.OAuthExpiry.After(now))
+			ok := auth && m.Bootstrapped && (m.TargetCount == 0 || m.StreamConnected)
+			providersReady = providersReady && ok
+			providerStatus[provider] = map[string]any{"authenticated": auth, "bootstrapped": m.Bootstrapped, "stream_connected": m.StreamConnected, "target_count": m.TargetCount}
+		}
+		h.mu.RUnlock()
+		oauthConnected, jetstreamReady = providersReady, true
+	}
+	ready := databaseReady && oauthConnected && jetstreamReady && providersReady && outboxReady && dispatcherReady
 	status := http.StatusOK
 	if !ready {
 		status = http.StatusServiceUnavailable
@@ -121,6 +162,7 @@ func (h *Health) Readiness(w http.ResponseWriter, r *http.Request) {
 		"last_event_age_ms":   jetstreamAgeMilliseconds(now, metrics.LastJetstreamEvent),
 		"outbox_count":        metrics.OutboxCount, "outbox_ready": outboxReady,
 		"dispatcher_running": dispatcherReady,
+		"providers":          providerStatus,
 	})
 }
 
@@ -151,6 +193,19 @@ func (h *Health) Metrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "nostr_bridge_outbox_at_limit %d\n", boolMetric(metrics.OutboxAtLimit))
 	_, _ = fmt.Fprintf(w, "nostr_bridge_last_relay_delivery_timestamp_seconds %.3f\n", unixSeconds(metrics.LastRelayDelivery))
 	_, _ = fmt.Fprintf(w, "nostr_bridge_dispatcher_running %d\n", boolMetric(metrics.DispatcherRunning))
+	h.mu.RLock()
+	for _, provider := range h.enabledProviders {
+		m := h.providers[provider]
+		label := fmt.Sprintf("{provider=%q}", provider)
+		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_authenticated%s %d\n", label, boolMetric(m.Authenticated))
+		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_bootstrapped%s %d\n", label, boolMetric(m.Bootstrapped))
+		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_stream_connected%s %d\n", label, boolMetric(m.StreamConnected))
+		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_targets%s %d\n", label, m.TargetCount)
+		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_pending_work%s %d\n", label, m.PendingWork)
+		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_last_event_timestamp_seconds%s %.3f\n", label, unixSeconds(m.LastEvent))
+		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_last_reconciliation_timestamp_seconds%s %.3f\n", label, unixSeconds(m.LastReconciliation))
+	}
+	h.mu.RUnlock()
 }
 
 func unixSeconds(value time.Time) float64 {

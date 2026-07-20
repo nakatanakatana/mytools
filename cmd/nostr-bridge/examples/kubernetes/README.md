@@ -1,47 +1,58 @@
-# Kubernetes reference example for nostr-bridge
+# Kubernetes application examples
 
-These files are reference-only resources for `nostr-bridge`, not a complete
-cluster installation. Review every `REPLACE_*` value, choose a namespace, pin
-the container image, and adapt storage and NetworkPolicy selectors before use.
-They deliberately do not create a Namespace or install/manage Tailscale,
-Cloudflare, External Secrets Operator, or a cluster-wide `ClusterSecretStore`.
+These are reference-only, application-owned resources for `nostr-bridge`.
+They intentionally do not create a Namespace, ingress, Tailscale or Cloudflare
+proxy, controller, External Secrets Operator, or secret store. Customize every
+`REPLACE_*` value, pin the image, and adapt selectors and network policy.
 
-The bridge uses SQLite and must run as a single Pod/single writer with the
-`ReadWriteOnce` PVC mounted at `/var/lib/nostr-bridge`; its database path is
-`/var/lib/nostr-bridge/bridge.db`. Do not share this PVC with a relay. Back up
-the database together with the secret versions required to decrypt its OAuth
-state.
+The Deployment runs one process and can host one Bluesky account plus one
+Mastodon account. Remove every environment variable for a provider to disable
+it (in particular its base URL); at least one provider must remain enabled.
+Both providers publish a combined kind 3 follow list from the common owner
+configured by `NOSTR_BRIDGE_OWNER_ID`.
 
-`deployment.yaml` needs the relay WebSocket, private management, and canonical
-URLs; the OAuth client metadata and callback URLs; the Bluesky account DID;
-and the authorization server, Bluesky XRPC, and Jetstream endpoints. The
-canonical relay URL and management transport URL must have identical escaped
-paths and raw queries. Optional settings such as list URIs may be added from
-the configuration table in the app README.
+SQLite is a single-writer database, so the Deployment uses one replica,
+`Recreate`, and a `ReadWriteOnce` PVC at `/var/lib/nostr-bridge`. Never share
+this PVC with the relay. Back it up with the matching secret versions.
 
-Create `nostr-bridge-secrets` with these keys, or adapt the optional
-`external-secret.yaml` to an existing secret provider:
+## Secrets
 
-- `relay-admin-private-key`: 64-character hexadecimal Nostr secret key
-- `master-seed`: base64 encoding of exactly 32 random bytes
-- `oauth-client-signing-key`: base64-encoded PKCS#8 ECDSA P-256 private key
-- `oauth-encryption-key`: base64 encoding of exactly 32 bytes
+`external-secret.yaml` illustrates references to fields in a 1Password item
+through an already-installed External Secrets Operator and existing
+`ClusterSecretStore`/`SecretStore`. It creates `nostr-bridge-secrets` with:
 
-Never commit those values. `external-secret.yaml` assumes External Secrets
-Operator and the referenced SecretStore already exist.
+- `relay-admin-private-key`
+- `master-seed`
+- `bluesky-oauth-client-signing-key`
+- `bluesky-oauth-encryption-key`
+- `mastodon-oauth-client-secret`
+- `mastodon-oauth-encryption-key`
 
-The ClusterIP Service exposes port 8080 for OAuth callbacks and health routes.
-Add environment-specific Tailscale Service/proxy configuration for private
-access. If Cloudflare publishes the OAuth metadata and JWKS artifacts, expose
-only `/oauth/client-metadata.json` and `/oauth/jwks`; do not publish callback,
-authorization, health, readiness, metrics, or bridge API routes. The egress
-policy must permit DNS, the relay ports, and TLS to the configured OAuth,
-Bluesky, and Jetstream endpoints; adapt it for your CNI and DNS setup.
+Never commit their values. The master seed is base64 for exactly 32 random
+bytes. Each OAuth encryption key is independently rotatable, but rotation
+requires reauthorizing that provider if stored credentials cannot be migrated.
 
-Apply the files only after customization, for example:
+## Exposure and networking
+
+The ClusterIP Service is private by default. Expose only these callback or
+public Bluesky protocol artifacts through environment-owned HTTPS routing:
+
+- `/oauth/bluesky/callback`
+- `/oauth/bluesky/client-metadata.json`
+- `/oauth/bluesky/jwks`
+- `/oauth/mastodon/callback`
+
+Authorization starts and ordinary UI can remain Tailscale-only. Keep
+`/healthz`, `/readyz`, and `/metrics` private. The app needs outbound relay
+protocol/management access, HTTPS to both provider APIs and OAuth servers, and
+WebSocket streams to Bluesky Jetstream and Mastodon streaming. NetworkPolicy
+cannot usually constrain public hosts by DNS name, so tighten the example for
+your CNI and environment.
+
+Apply after customization:
 
 ```console
 kubectl apply -f pvc.yaml -f deployment.yaml -f service.yaml -f network-policy.yaml
-# Optional when External Secrets Operator is already installed:
+# Only when External Secrets Operator and the referenced store already exist:
 kubectl apply -f external-secret.yaml
 ```

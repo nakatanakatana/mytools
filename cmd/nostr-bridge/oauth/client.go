@@ -4,8 +4,6 @@ package oauth
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -20,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/secretbox"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
 
@@ -34,6 +33,7 @@ const (
 
 // Options configures a confidential AT Protocol OAuth client.
 type Options struct {
+	Scope                  bridgestore.SourceScope
 	Store                  bridgestore.OAuthStore
 	HTTPClient             *http.Client
 	AuthorizationServerURL string
@@ -46,13 +46,14 @@ type Options struct {
 
 // Client starts and completes OAuth authorization flows.
 type Client struct {
+	scope            bridgestore.SourceScope
 	store            bridgestore.OAuthStore
 	httpClient       *http.Client
 	issuer           string
 	clientID         string
 	redirectURL      string
 	clientSigningKey *ecdsa.PrivateKey
-	encryptionKey    []byte
+	box              secretbox.Box
 	now              func() time.Time
 }
 
@@ -106,7 +107,11 @@ func NewClient(options Options) (*Client, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &Client{store: options.Store, httpClient: options.HTTPClient, issuer: strings.TrimRight(options.AuthorizationServerURL, "/"), clientID: options.ClientID, redirectURL: options.RedirectURL, clientSigningKey: options.ClientSigningKey, encryptionKey: append([]byte(nil), options.EncryptionKey...), now: options.Now}, nil
+	box, err := secretbox.New(options.EncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{scope: options.Scope, store: options.Store, httpClient: options.HTTPClient, issuer: strings.TrimRight(options.AuthorizationServerURL, "/"), clientID: options.ClientID, redirectURL: options.RedirectURL, clientSigningKey: options.ClientSigningKey, box: box, now: options.Now}, nil
 }
 
 // StartAuthorization creates a stateful PAR request and returns the user-facing authorization URL.
@@ -173,7 +178,7 @@ func (c *Client) StartAuthorization(ctx context.Context, handle string) (string,
 	if err != nil {
 		return "", err
 	}
-	if err := c.store.SaveOAuthSession(ctx, bridgestore.OAuthSession{State: state, EncryptedPayload: encrypted, ExpiresAt: c.now().Add(time.Duration(expiresIn) * time.Second).Unix()}); err != nil {
+	if err := c.store.SaveOAuthSession(ctx, c.scope, bridgestore.OAuthSession{State: state, EncryptedPayload: encrypted, ExpiresAt: c.now().Add(time.Duration(expiresIn) * time.Second).Unix()}); err != nil {
 		return "", err
 	}
 	authorize, _ := url.Parse(metadata.AuthorizationEndpoint)
@@ -189,7 +194,7 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
 		return
 	}
-	session, err := c.store.OAuthSessionByState(r.Context(), state)
+	session, err := c.store.OAuthSessionByState(r.Context(), c.scope, state)
 	if err != nil || session.ExpiresAt <= c.now().Unix() {
 		http.Error(w, "invalid OAuth state", http.StatusBadRequest)
 		return
@@ -252,11 +257,11 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
 		return
 	}
-	if err := c.store.SaveOAuthToken(r.Context(), bridgestore.OAuthToken{AccountDID: tokens.Sub, EncryptedPayload: encrypted, UpdatedAt: c.now().Unix()}); err != nil {
+	if err := c.store.SaveOAuthToken(r.Context(), c.scope, bridgestore.OAuthToken{AccountDID: tokens.Sub, EncryptedPayload: encrypted, UpdatedAt: c.now().Unix()}); err != nil {
 		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
 		return
 	}
-	if err := c.store.DeleteOAuthSession(r.Context(), state); err != nil {
+	if err := c.store.DeleteOAuthSession(r.Context(), c.scope, state); err != nil {
 		http.Error(w, "OAuth session cleanup failed", http.StatusInternalServerError)
 		return
 	}
@@ -265,7 +270,7 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 // TokenByAccountDID returns the persisted access token and its DPoP credential.
 func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (Token, error) {
-	stored, err := c.store.OAuthTokenByAccountDID(ctx, accountDID)
+	stored, err := c.store.OAuthTokenByAccountDID(ctx, c.scope, accountDID)
 	if err != nil {
 		return Token{}, fmt.Errorf("load OAuth token: %w", err)
 	}
@@ -337,7 +342,7 @@ func (c *Client) refreshToken(ctx context.Context, accountDID string, current to
 	if err != nil {
 		return Token{}, err
 	}
-	if err := c.store.SaveOAuthToken(ctx, bridgestore.OAuthToken{AccountDID: accountDID, EncryptedPayload: encrypted, UpdatedAt: c.now().Unix()}); err != nil {
+	if err := c.store.SaveOAuthToken(ctx, c.scope, bridgestore.OAuthToken{AccountDID: accountDID, EncryptedPayload: encrypted, UpdatedAt: c.now().Unix()}); err != nil {
 		return Token{}, fmt.Errorf("save refreshed OAuth token: %w", err)
 	}
 	return Token{AccessToken: refreshed.AccessToken, RefreshToken: refreshed.RefreshToken, Scope: refreshed.Scope, DPoPKey: key, DPoPNonce: nonce, Expiry: expiry}, nil
@@ -349,33 +354,10 @@ func (c *Client) clientAssertion(audience string) (string, error) {
 }
 
 func (c *Client) encrypt(plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(c.encryptionKey)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return c.box.Seal(plaintext)
 }
 func (c *Client) decryptJSON(ciphertext []byte, value any) error {
-	block, err := aes.NewCipher(c.encryptionKey)
-	if err != nil {
-		return err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return err
-	}
-	if len(ciphertext) < gcm.NonceSize() {
-		return errors.New("short encrypted payload")
-	}
-	plaintext, err := gcm.Open(nil, ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():], nil)
+	plaintext, err := c.box.Open(ciphertext)
 	if err != nil {
 		return err
 	}

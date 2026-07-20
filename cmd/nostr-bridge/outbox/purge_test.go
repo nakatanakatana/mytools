@@ -12,6 +12,12 @@ import (
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
 
+var purgeTestScope = store.SourceScope{Provider: "bluesky", Account: "owner"}
+
+func purgeTestRef(uri string) store.SourceRef {
+	return store.SourceRef{Scope: purgeTestScope, URI: uri}
+}
+
 func TestPurgeOrdersKindFiveBeforeUnallowAndCleansAuthorOnly(t *testing.T) {
 	ctx := context.Background()
 	s, closer, err := store.Open(ctx, filepath.Join(t.TempDir(), "purge.db"))
@@ -26,10 +32,10 @@ func TestPurgeOrdersKindFiveBeforeUnallowAndCleansAuthorOnly(t *testing.T) {
 	if err := s.SetPublisherRegistered(ctx, pubkey, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveEventMapping(ctx, store.EventMapping{SourceURI: "owned", NostrEventID: signedEvent(t).ID.Hex(), AuthorPubKey: pubkey}); err != nil {
+	if err := s.SaveEventMapping(ctx, store.EventMapping{Source: purgeTestRef("owned"), NostrEventID: signedEvent(t).ID.Hex(), AuthorPubKey: pubkey}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveEventMapping(ctx, store.EventMapping{SourceURI: "other", NostrEventID: signedEvent(t).ID.Hex(), AuthorPubKey: other}); err != nil {
+	if err := s.SaveEventMapping(ctx, store.EventMapping{Source: purgeTestRef("other"), NostrEventID: signedEvent(t).ID.Hex(), AuthorPubKey: other}); err != nil {
 		t.Fatal(err)
 	}
 	ids, err := s.EventIDsByAuthor(ctx, pubkey)
@@ -61,10 +67,10 @@ func TestPurgeOrdersKindFiveBeforeUnallowAndCleansAuthorOnly(t *testing.T) {
 	if registered, _ := s.PublisherRegistered(ctx, pubkey); registered {
 		t.Fatal("registration retained")
 	}
-	if _, err := s.EventMappingBySourceURI(ctx, "owned"); err == nil {
+	if _, err := s.EventMappingBySourceURI(ctx, purgeTestRef("owned")); err == nil {
 		t.Fatal("owned mapping retained")
 	}
-	if _, err := s.EventMappingBySourceURI(ctx, "other"); err != nil {
+	if _, err := s.EventMappingBySourceURI(ctx, purgeTestRef("other")); err != nil {
 		t.Fatal("unrelated mapping removed")
 	}
 	future := nostr.Event{CreatedAt: nostr.Now(), Kind: 1}
@@ -174,7 +180,7 @@ func TestPurgeMarkerRejectsFutureDeliveryAndDifferentPurge(t *testing.T) {
 		t.Fatalf("future allow = %v", err)
 	}
 	otherKey := nostr.Generate().Public().Hex()
-	if err := s.EnqueueEvent(ctx, store.EventEnqueueRequest{Mapping: store.EventMapping{SourceURI: "smuggle", AuthorPubKey: pubkey}, Event: store.OutboxRequest{AggregateKey: otherKey, Operation: store.OutboxPublishEvent, PubKey: otherKey, Payload: `{}`, AvailableAt: time.Now()}, Limit: 10}); !errors.Is(err, store.ErrAuthorMismatch) {
+	if err := s.EnqueueEvent(ctx, store.EventEnqueueRequest{Mapping: store.EventMapping{Source: purgeTestRef("smuggle"), AuthorPubKey: pubkey}, Event: store.OutboxRequest{AggregateKey: otherKey, Operation: store.OutboxPublishEvent, PubKey: otherKey, Payload: `{}`, AvailableAt: time.Now()}, Limit: 10}); !errors.Is(err, store.ErrAuthorMismatch) {
 		t.Fatalf("cross-author enqueue = %v", err)
 	}
 	if count, _ := s.OutboxCount(ctx); count != 2 {
@@ -194,7 +200,7 @@ func TestPurgeDeduplicatesKnownIDsAndRejectsGenericUnallowConflict(t *testing.T)
 	_ = s.SetPublisherRegistered(ctx, pubkey, time.Now())
 	eventID := signedEvent(t).ID.Hex()
 	for _, uri := range []string{"one", "two"} {
-		if err := s.SaveEventMapping(ctx, store.EventMapping{SourceURI: uri, NostrEventID: eventID, AuthorPubKey: pubkey}); err != nil {
+		if err := s.SaveEventMapping(ctx, store.EventMapping{Source: purgeTestRef(uri), NostrEventID: eventID, AuthorPubKey: pubkey}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -214,7 +220,7 @@ func TestPurgeDeduplicatesKnownIDsAndRejectsGenericUnallowConflict(t *testing.T)
 	if registered, _ := s.PublisherRegistered(ctx, pubkey); !registered {
 		t.Fatal("registration changed")
 	}
-	if _, err := s.EventMappingBySourceURI(ctx, "one"); err != nil {
+	if _, err := s.EventMappingBySourceURI(ctx, purgeTestRef("one")); err != nil {
 		t.Fatal("mapping changed")
 	}
 }
@@ -231,7 +237,7 @@ func TestPurgeAcceptsOneTagForDuplicateKnownEventID(t *testing.T) {
 	_ = s.SetPublisherRegistered(ctx, pubkey, time.Now())
 	eventID := signedEvent(t).ID.Hex()
 	for _, uri := range []string{"one", "two"} {
-		if err := s.SaveEventMapping(ctx, store.EventMapping{SourceURI: uri, NostrEventID: eventID, AuthorPubKey: pubkey}); err != nil {
+		if err := s.SaveEventMapping(ctx, store.EventMapping{Source: purgeTestRef(uri), NostrEventID: eventID, AuthorPubKey: pubkey}); err != nil {
 			t.Fatal(err)
 		}
 	}

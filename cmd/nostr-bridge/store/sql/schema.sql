@@ -1,9 +1,12 @@
 CREATE TABLE bridge_events (
-    source_uri TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    source_account TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
     nostr_event_id TEXT NOT NULL,
     source_kind TEXT NOT NULL,
     author_pubkey TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(provider, source_account, source_uri)
 );
 CREATE INDEX bridge_events_author_pubkey_idx ON bridge_events(author_pubkey);
 
@@ -18,7 +21,12 @@ CREATE TABLE publisher_purges (
     created_at INTEGER NOT NULL
 );
 
-CREATE TABLE sync_targets (did TEXT PRIMARY KEY);
+CREATE TABLE sync_targets (
+    provider TEXT NOT NULL,
+    source_account TEXT NOT NULL,
+    target TEXT NOT NULL,
+    PRIMARY KEY(provider, source_account, target)
+);
 
 CREATE TABLE outbox_sequences (
     aggregate_key TEXT PRIMARY KEY,
@@ -43,23 +51,35 @@ CREATE INDEX outbox_claim_idx ON outbox(available_at, claim_token, claimed_until
 CREATE INDEX outbox_aggregate_sequence_idx ON outbox(aggregate_key, `sequence`);
 
 CREATE TABLE sync_cursors (
-    name TEXT PRIMARY KEY,
-    `value` INTEGER NOT NULL
+    provider TEXT NOT NULL,
+    source_account TEXT NOT NULL,
+    name TEXT NOT NULL,
+    `value` TEXT NOT NULL,
+    PRIMARY KEY(provider, source_account, name)
 );
 
 CREATE TABLE oauth_sessions (
-    state TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    source_account TEXT NOT NULL,
+    state TEXT NOT NULL,
     encrypted_payload BLOB NOT NULL,
-    expires_at INTEGER NOT NULL
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY(provider, source_account, state)
 );
 
 CREATE TABLE oauth_tokens (
-    account_did TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    source_account TEXT NOT NULL,
+    account_did TEXT NOT NULL,
     encrypted_payload BLOB NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(provider, source_account, account_did)
 );
 
 CREATE TABLE source_operations (
-    source_uri TEXT PRIMARY KEY,
-    `identity` TEXT NOT NULL
+    provider TEXT NOT NULL,
+    source_account TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
+    `identity` TEXT NOT NULL,
+    PRIMARY KEY(provider, source_account, source_uri)
 );

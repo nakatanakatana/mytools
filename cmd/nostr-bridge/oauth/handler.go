@@ -11,11 +11,17 @@ import (
 
 // Handler serves the OAuth start/callback routes and the public client metadata.
 func (c *Client) Handler() http.Handler {
+	return c.HandlerAt("/oauth")
+}
+
+// HandlerAt serves the Bluesky OAuth endpoints below an exact provider prefix.
+func (c *Client) HandlerAt(prefix string) http.Handler {
+	prefix = "/" + strings.Trim(strings.TrimSpace(prefix), "/")
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /oauth/start", c.handleStart)
-	mux.HandleFunc("GET /oauth/callback", c.HandleCallback)
-	mux.HandleFunc("GET "+metadataPath(c.clientID), c.handleMetadata)
-	mux.HandleFunc("GET /oauth/jwks", c.handleJWKS)
+	mux.HandleFunc("POST "+prefix+"/start", c.handleStart)
+	mux.HandleFunc("GET "+prefix+"/callback", c.HandleCallback)
+	mux.HandleFunc("GET "+prefix+"/client-metadata.json", c.handleMetadata)
+	mux.HandleFunc("GET "+prefix+"/jwks", c.handleJWKS)
 	return mux
 }
 
@@ -54,13 +60,6 @@ func (c *Client) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"keys": []jwk{publicJWK(&c.clientSigningKey.PublicKey)}})
 }
 
-func metadataPath(clientID string) string {
-	parsed, err := url.Parse(clientID)
-	if err != nil || parsed.Path == "" {
-		return "/oauth/client-metadata.json"
-	}
-	return parsed.Path
-}
 func jwksURL(clientID string) string {
 	parsed, err := url.Parse(clientID)
 	if err != nil {

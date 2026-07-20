@@ -19,8 +19,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/secretbox"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
+
+var oauthTestScope = bridgestore.SourceScope{}
 
 func TestStartAuthorizationRetriesDPoPNonceChallenge(t *testing.T) {
 	const challengeNonce = "secret-par-nonce"
@@ -131,7 +134,7 @@ func TestStartAuthorizationPushesPKCEAuthenticatedRequestAndStoresEncryptedState
 		t.Fatalf("DPoP htu = %#v", got)
 	}
 
-	session, err := stateStore.OAuthSessionByState(context.Background(), gotPAR.Get("state"))
+	session, err := stateStore.OAuthSessionByState(context.Background(), oauthTestScope, gotPAR.Get("state"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,12 +210,24 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 	if got := jwtClaims(t, tokenDPoPs[1])["htu"]; got != server.URL+"/oauth/token" {
 		t.Fatalf("DPoP htu = %#v", got)
 	}
-	token, err := stateStore.OAuthTokenByAccountDID(context.Background(), "did:plc:alice")
+	token, err := stateStore.OAuthTokenByAccountDID(context.Background(), oauthTestScope, "did:plc:alice")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(token.EncryptedPayload) == "access-secret" || len(token.EncryptedPayload) == 0 {
 		t.Fatalf("token payload was not encrypted: %q", token.EncryptedPayload)
+	}
+	key := sha256.Sum256([]byte("test encryption key"))
+	box, err := secretbox.New(key[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := box.Open(token.EncryptedPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plaintext), "access-secret") {
+		t.Fatalf("shared box did not open OAuth payload: %q", plaintext)
 	}
 	loaded, err := client.TokenByAccountDID(context.Background(), "did:plc:alice")
 	if err != nil {
@@ -224,7 +239,7 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokens(t *testing.T) {
 	if loaded.Expiry.IsZero() {
 		t.Fatal("loaded OAuth token has no expiry")
 	}
-	if _, err := stateStore.OAuthSessionByState(context.Background(), state); err == nil {
+	if _, err := stateStore.OAuthSessionByState(context.Background(), oauthTestScope, state); err == nil {
 		t.Fatal("OAuth session remains after callback")
 	}
 }
@@ -270,10 +285,11 @@ func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveOAuthToken(context.Background(), bridgestore.OAuthToken{AccountDID: "did:plc:alice", EncryptedPayload: encrypted}); err != nil {
+	if err := store.SaveOAuthToken(context.Background(), oauthTestScope, bridgestore.OAuthToken{AccountDID: "did:plc:alice", EncryptedPayload: encrypted}); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := NewClient(Options{Store: store, HTTPClient: server.Client(), AuthorizationServerURL: server.URL, ClientID: client.clientID, RedirectURL: client.redirectURL, ClientSigningKey: client.clientSigningKey, EncryptionKey: client.encryptionKey})
+	encryptionKey := sha256.Sum256([]byte("test encryption key"))
+	restarted, err := NewClient(Options{Store: store, HTTPClient: server.Client(), AuthorizationServerURL: server.URL, ClientID: client.clientID, RedirectURL: client.redirectURL, ClientSigningKey: client.clientSigningKey, EncryptionKey: encryptionKey[:]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +367,7 @@ func TestHandleCallbackRejectsUnknownOrExpiredState(t *testing.T) {
 	for _, test := range []struct{ name, state string }{{"unknown", "missing"}, {"expired", "expired"}} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.state == "expired" {
-				if err := stateStore.SaveOAuthSession(context.Background(), bridgestore.OAuthSession{State: test.state, EncryptedPayload: []byte("not-a-valid-payload"), ExpiresAt: time.Now().Add(-time.Minute).Unix()}); err != nil {
+				if err := stateStore.SaveOAuthSession(context.Background(), oauthTestScope, bridgestore.OAuthSession{State: test.state, EncryptedPayload: []byte("not-a-valid-payload"), ExpiresAt: time.Now().Add(-time.Minute).Unix()}); err != nil {
 					t.Fatal(err)
 				}
 			}

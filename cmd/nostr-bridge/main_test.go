@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -34,7 +35,7 @@ func (reconciliationSource) Profile(_ context.Context, did string) (bluesky.Prof
 }
 
 func TestServerAddress(t *testing.T) {
-	if got := ServerAddress(Config{Host: "127.0.0.1", Port: "4321"}); got != "127.0.0.1:4321" {
+	if got := ServerAddress(Config{Shared: SharedConfig{Host: "127.0.0.1", Port: "4321"}}); got != "127.0.0.1:4321" {
 		t.Fatalf("ServerAddress() = %q", got)
 	}
 }
@@ -54,48 +55,31 @@ func TestRunStopsResourcesWhenContextEnds(t *testing.T) {
 }
 
 func TestRuntimeResourcesServeConfiguredOAuthRoutes(t *testing.T) {
-	resources, err := newRuntimeResources(Config{
-		Host:         "127.0.0.1",
-		Port:         "0",
-		DatabasePath: t.TempDir() + "/bridge.db",
-		RelayURL:     "wss://relay.example", RelayManagementURL: "https://relay.example/manage", RelayCanonicalURL: "https://relay.example/manage", RelayAdminPrivateKey: "1111111111111111111111111111111111111111111111111111111111111111", OutboxLimit: 100, OutboxPollInterval: time.Millisecond,
-		OAuthCallbackURL:            "https://bridge.example/oauth/callback",
-		OAuthAuthorizationServerURL: "https://issuer.example",
-		OAuthClientID:               "https://bridge.example/oauth/client-metadata.json",
-		OAuthClientSigningKey:       testOAuthSigningKey(t),
-		OAuthEncryptionKey:          base64.StdEncoding.EncodeToString(make([]byte, 32)),
-		AccountDID:                  "did:plc:owner",
-		BlueskyBaseURL:              "https://bsky.example",
-		MasterSeed:                  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-	})
+	cfg := testRuntimeConfig(t)
+	resources, err := newRuntimeResources(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = closeRuntimeResources(resources) }()
 
-	request := httptest.NewRequest(http.MethodGet, "/oauth/client-metadata.json", nil)
+	request := httptest.NewRequest(http.MethodGet, "/oauth/bluesky/client-metadata.json", nil)
 	recorder := httptest.NewRecorder()
 	resources.httpServer.Handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("metadata status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
+	var metadata map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if got := metadata["jwks_uri"]; got != "https://bridge.example/oauth/bluesky/jwks" {
+		t.Fatalf("jwks_uri = %v", got)
+	}
 }
 
 func TestRuntimeResourcesServeHealthRoute(t *testing.T) {
-	resources, err := newRuntimeResources(Config{
-		Host:         "127.0.0.1",
-		Port:         "0",
-		DatabasePath: t.TempDir() + "/bridge.db",
-		RelayURL:     "wss://relay.example", RelayManagementURL: "https://relay.example/manage", RelayCanonicalURL: "https://relay.example/manage", RelayAdminPrivateKey: "1111111111111111111111111111111111111111111111111111111111111111", OutboxLimit: 100, OutboxPollInterval: time.Millisecond,
-		OAuthCallbackURL:            "https://bridge.example/oauth/callback",
-		OAuthAuthorizationServerURL: "https://issuer.example",
-		OAuthClientID:               "https://bridge.example/oauth/client-metadata.json",
-		OAuthClientSigningKey:       testOAuthSigningKey(t),
-		OAuthEncryptionKey:          base64.StdEncoding.EncodeToString(make([]byte, 32)),
-		AccountDID:                  "did:plc:owner",
-		BlueskyBaseURL:              "https://bsky.example",
-		MasterSeed:                  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-	})
+	cfg := testRuntimeConfig(t)
+	resources, err := newRuntimeResources(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,13 +93,9 @@ func TestRuntimeResourcesServeHealthRoute(t *testing.T) {
 }
 
 func TestRuntimeResourcesRejectsInvalidRuntimeSeed(t *testing.T) {
-	_, err := newRuntimeResources(Config{
-		Host: "127.0.0.1", Port: "0", DatabasePath: t.TempDir() + "/bridge.db",
-		OAuthCallbackURL: "https://bridge.example/oauth/callback", OAuthAuthorizationServerURL: "https://issuer.example",
-		OAuthClientID: "https://bridge.example/oauth/client-metadata.json", OAuthClientSigningKey: testOAuthSigningKey(t),
-		OAuthEncryptionKey: base64.StdEncoding.EncodeToString(make([]byte, 32)), AccountDID: "did:plc:owner",
-		BlueskyBaseURL: "https://bsky.example", MasterSeed: "not-base64",
-	})
+	cfg := testRuntimeConfig(t)
+	cfg.Shared.MasterSeed = "not-base64"
+	_, err := newRuntimeResources(cfg)
 	if err == nil {
 		t.Fatal("newRuntimeResources() succeeded with an invalid runtime seed")
 	}
@@ -135,21 +115,12 @@ func TestRunServesConfiguredOAuthRoutes(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	cfg := testRuntimeConfig(t)
+	cfg.Shared.Port = port
+	cfg.Shared.DatabasePath = databasePath
+	cfg.Bluesky.OAuthClientSigningKey = signingKey
 	go func() {
-		done <- Run(ctx, Config{
-			Host:         "127.0.0.1",
-			Port:         port,
-			DatabasePath: databasePath,
-			RelayURL:     "wss://relay.example", RelayManagementURL: "https://relay.example/manage", RelayCanonicalURL: "https://relay.example/manage", RelayAdminPrivateKey: "1111111111111111111111111111111111111111111111111111111111111111", OutboxLimit: 100, OutboxPollInterval: time.Millisecond,
-			OAuthCallbackURL:            "https://bridge.example/oauth/callback",
-			OAuthAuthorizationServerURL: "https://issuer.example",
-			OAuthClientID:               "https://bridge.example/oauth/client-metadata.json",
-			OAuthClientSigningKey:       signingKey,
-			OAuthEncryptionKey:          base64.StdEncoding.EncodeToString(make([]byte, 32)),
-			AccountDID:                  "did:plc:owner",
-			BlueskyBaseURL:              "https://bsky.example",
-			MasterSeed:                  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		})
+		done <- Run(ctx, cfg)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -165,7 +136,7 @@ func TestRunServesConfiguredOAuthRoutes(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		response, err := http.Get("http://127.0.0.1:" + port + "/oauth/client-metadata.json")
+		response, err := http.Get("http://127.0.0.1:" + port + "/oauth/bluesky/client-metadata.json")
 		if err == nil {
 			_ = response.Body.Close()
 			if response.StatusCode != http.StatusOK {
@@ -189,6 +160,40 @@ func testOAuthSigningKey(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return base64.StdEncoding.EncodeToString(der)
+}
+
+func testRuntimeConfig(t *testing.T) Config {
+	t.Helper()
+	return Config{
+		Shared: SharedConfig{
+			Host: "127.0.0.1", Port: "0", DatabasePath: t.TempDir() + "/bridge.db",
+			MasterSeed: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", RelayURL: "wss://relay.example",
+			RelayManagementURL: "https://relay.example/manage", RelayCanonicalURL: "https://relay.example/manage",
+			RelayAdminPrivateKey: strings.Repeat("1", 64), OutboxLimit: 100, OutboxPollInterval: time.Millisecond,
+		},
+		Bluesky: BlueskyConfig{
+			AccountDID: "did:plc:owner", BaseURL: "https://bsky.example",
+			OAuthCallbackURL: "https://bridge.example/oauth/bluesky/callback", OAuthAuthorizationServerURL: "https://issuer.example",
+			OAuthClientID: "https://bridge.example/oauth/bluesky/client-metadata.json", OAuthClientSigningKey: testOAuthSigningKey(t),
+			OAuthEncryptionKey: base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		},
+	}
+}
+
+func TestOAuthRoutesOnlyExistForEnabledProviders(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	resources, err := newRuntimeResources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources) }()
+	for path, want := range map[string]int{"/oauth/bluesky/client-metadata.json": http.StatusOK, "/oauth/mastodon/callback": http.StatusNotFound, "/oauth/client-metadata.json": http.StatusNotFound} {
+		r := httptest.NewRecorder()
+		resources.httpServer.Handler.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
+		if r.Code != want {
+			t.Fatalf("%s status = %d, want %d", path, r.Code, want)
+		}
+	}
 }
 
 func TestRunPropagatesDispatcherFailureAndClosesResourcesOnce(t *testing.T) {

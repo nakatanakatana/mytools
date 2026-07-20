@@ -20,6 +20,10 @@ import (
 	"fiatjaf.com/nostr"
 )
 
+var testScope = SourceScope{Provider: "bluesky", Account: "did:plc:test"}
+
+func testRef(uri string) SourceRef { return SourceRef{Scope: testScope, URI: uri} }
+
 func TestSQLiteStoreUsesGeneratedQueries(t *testing.T) {
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
@@ -57,7 +61,7 @@ func TestSQLiteStoreUsesGeneratedQueries(t *testing.T) {
 }
 
 func saveTestMapping(ctx context.Context, s SQLiteStore, mapping EventMapping) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO bridge_events(source_uri, nostr_event_id, source_kind, author_pubkey, updated_at) VALUES(?, ?, ?, ?, ?)`, mapping.SourceURI, mapping.NostrEventID, mapping.SourceKind, mapping.AuthorPubKey, mapping.UpdatedAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO bridge_events(provider, source_account, source_uri, nostr_event_id, source_kind, author_pubkey, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)`, mapping.Source.Scope.Provider, mapping.Source.Scope.Account, mapping.Source.URI, mapping.NostrEventID, mapping.SourceKind, mapping.AuthorPubKey, mapping.UpdatedAt)
 	return err
 }
 
@@ -67,7 +71,7 @@ func reconciliationTestEvent(t *testing.T, uri string) EventEnqueueRequest {
 	if err := event.Sign(nostr.Generate()); err != nil {
 		t.Fatal(err)
 	}
-	return EventEnqueueRequest{Mapping: EventMapping{SourceURI: uri, NostrEventID: event.ID.Hex(), AuthorPubKey: event.PubKey.Hex()}, Event: OutboxRequest{AggregateKey: event.PubKey.Hex(), Operation: OutboxPublishEvent, PubKey: event.PubKey.Hex(), Payload: event.String(), AvailableAt: time.Now()}}
+	return EventEnqueueRequest{Mapping: EventMapping{Source: testRef(uri), NostrEventID: event.ID.Hex(), AuthorPubKey: event.PubKey.Hex()}, Event: OutboxRequest{AggregateKey: event.PubKey.Hex(), Operation: OutboxPublishEvent, PubKey: event.PubKey.Hex(), Payload: event.String(), AvailableAt: time.Now()}}
 }
 
 func signedStoreEvent(t *testing.T, sk nostr.SecretKey, kind nostr.Kind, content string) nostr.Event {
@@ -86,22 +90,22 @@ func TestReconcileAtomicallyReplacesTargetsAndQueuesWholeIdempotentBatch(t *test
 		t.Fatal(err)
 	}
 	defer func() { _ = closer.Close() }()
-	if err := s.ReplaceSyncTargets(ctx, []string{"old"}); err != nil {
+	if err := s.ReplaceSyncTargets(ctx, testScope, []string{"old"}); err != nil {
 		t.Fatal(err)
 	}
 	a, b := reconciliationTestEvent(t, "a"), reconciliationTestEvent(t, "b")
 	bad := b
 	bad.Event.PubKey = a.Event.PubKey
-	if err := s.Reconcile(ctx, ReconciliationRequest{Targets: []string{"new"}, Events: []EventEnqueueRequest{a, bad}, Limit: 4}); !errors.Is(err, ErrAuthorMismatch) {
+	if err := s.Reconcile(ctx, ReconciliationRequest{Scope: testScope, Targets: []string{"new"}, Events: []EventEnqueueRequest{a, bad}, Limit: 4}); !errors.Is(err, ErrAuthorMismatch) {
 		t.Fatalf("failure = %v", err)
 	}
-	if targets, _ := s.SyncTargets(ctx); !slices.Equal(targets, []string{"old"}) {
+	if targets, _ := s.SyncTargets(ctx, testScope); !slices.Equal(targets, []string{"old"}) {
 		t.Fatalf("targets after failure = %#v", targets)
 	}
 	if count, _ := s.OutboxCount(ctx); count != 0 {
 		t.Fatalf("count after failure = %d", count)
 	}
-	request := ReconciliationRequest{Targets: []string{"new"}, Events: []EventEnqueueRequest{a, b}, Limit: 4}
+	request := ReconciliationRequest{Scope: testScope, Targets: []string{"new"}, Events: []EventEnqueueRequest{a, b}, Limit: 4}
 	if err := s.Reconcile(ctx, request); err != nil {
 		t.Fatal(err)
 	}
@@ -116,6 +120,48 @@ func TestReconcileAtomicallyReplacesTargetsAndQueuesWholeIdempotentBatch(t *test
 	}
 }
 
+func TestReconcileBatchRollsBackProviderTargetsWhenOwnerMappingFails(t *testing.T) {
+	ctx := context.Background()
+	s, closer, err := Open(ctx, filepath.Join(t.TempDir(), "batch-rollback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+	provider := SourceScope{Provider: "bluesky", Account: "owner"}
+	owner := SourceScope{Provider: "bridge-owner", Account: "home"}
+	if err := s.ReplaceSyncTargets(ctx, provider, []string{"old"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TEMP TRIGGER fail_owner_mapping BEFORE INSERT ON bridge_events WHEN NEW.provider = 'bridge-owner' BEGIN SELECT RAISE(ABORT, 'owner mapping failed'); END`); err != nil {
+		t.Fatal(err)
+	}
+	providerEvent := reconciliationTestEventForScope(t, provider, "provider-profile")
+	ownerEvent := reconciliationTestEventForScope(t, owner, "owner-profile")
+	before, _ := s.OutboxCount(ctx)
+	err = s.ReconcileBatch(ctx, ReconciliationBatchRequest{TargetScope: provider, Targets: []string{"new"}, EventScopes: []SourceScope{provider, owner}, Events: []EventEnqueueRequest{providerEvent, ownerEvent}, Limit: 100})
+	if err == nil {
+		t.Fatal("expected injected owner mapping failure")
+	}
+	if targets, _ := s.SyncTargets(ctx, provider); !slices.Equal(targets, []string{"old"}) {
+		t.Fatalf("targets = %#v", targets)
+	}
+	for _, request := range []EventEnqueueRequest{providerEvent, ownerEvent} {
+		if _, err := s.EventMappingBySourceURI(ctx, request.Mapping.Source); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("partial mapping %v: %v", request.Mapping.Source, err)
+		}
+	}
+	if after, _ := s.OutboxCount(ctx); after != before {
+		t.Fatalf("outbox count = %d, want %d", after, before)
+	}
+}
+
+func reconciliationTestEventForScope(t *testing.T, scope SourceScope, uri string) EventEnqueueRequest {
+	t.Helper()
+	request := reconciliationTestEvent(t, uri)
+	request.Mapping.Source = SourceRef{Scope: scope, URI: uri}
+	return request
+}
+
 func TestEnqueueEventEnforcesHardLimitAtomically(t *testing.T) {
 	ctx := context.Background()
 	s, closer, err := Open(ctx, filepath.Join(t.TempDir(), "limit.db"))
@@ -126,7 +172,7 @@ func TestEnqueueEventEnforcesHardLimitAtomically(t *testing.T) {
 	sk := nostr.Generate()
 	e := signedStoreEvent(t, sk, 1, "hard limit")
 	req := func(uri, pubkey string) EventEnqueueRequest {
-		return EventEnqueueRequest{Mapping: EventMapping{SourceURI: uri, NostrEventID: e.ID.Hex(), SourceKind: "post", AuthorPubKey: pubkey}, Event: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: e.String(), AvailableAt: time.Now()}, Limit: 2}
+		return EventEnqueueRequest{Mapping: EventMapping{Source: testRef(uri), NostrEventID: e.ID.Hex(), SourceKind: "post", AuthorPubKey: pubkey}, Event: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: e.String(), AvailableAt: time.Now()}, Limit: 2}
 	}
 	pubkey := e.PubKey.Hex()
 	start := make(chan struct{})
@@ -152,17 +198,17 @@ func TestEnqueueEventRollsBackEveryMutationOnFailure(t *testing.T) {
 	}
 	defer func() { _ = closer.Close() }()
 	pubkey := strings.Repeat("2", 64)
-	err = s.EnqueueEvent(ctx, EventEnqueueRequest{Mapping: EventMapping{SourceURI: "source", NostrEventID: strings.Repeat("a", 64), SourceKind: "post", AuthorPubKey: pubkey}, Event: OutboxRequest{AggregateKey: pubkey, Operation: "invalid", PubKey: pubkey, Payload: `{}`, AvailableAt: time.Now()}, Limit: 10, Cursor: &CursorUpdate{Name: "cursor", Value: 9}})
+	err = s.EnqueueEvent(ctx, EventEnqueueRequest{Mapping: EventMapping{Source: testRef("source"), NostrEventID: strings.Repeat("a", 64), SourceKind: "post", AuthorPubKey: pubkey}, Event: OutboxRequest{AggregateKey: pubkey, Operation: "invalid", PubKey: pubkey, Payload: `{}`, AvailableAt: time.Now()}, Limit: 10, Cursor: &CursorUpdate{Name: "cursor", Value: "9"}})
 	if err == nil {
 		t.Fatal("expected injected constraint failure")
 	}
 	if count, _ := s.OutboxCount(ctx); count != 0 {
 		t.Fatalf("outbox count = %d", count)
 	}
-	if _, err := s.EventMappingBySourceURI(ctx, "source"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.EventMappingBySourceURI(ctx, testRef("source")); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("mapping error = %v", err)
 	}
-	if _, err := s.Cursor(ctx, "cursor"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.Cursor(ctx, testScope, "cursor"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("cursor error = %v", err)
 	}
 }
@@ -180,14 +226,14 @@ func TestEnqueueUpdateChecksCapacityBeforeReplacingMapping(t *testing.T) {
 	pubkey := replacement.PubKey.Hex()
 	oldID := strings.Repeat("a", 64)
 	newID := replacement.ID.Hex()
-	_ = saveTestMapping(ctx, s, EventMapping{SourceURI: "source", NostrEventID: oldID, SourceKind: "post", AuthorPubKey: pubkey})
+	_ = saveTestMapping(ctx, s, EventMapping{Source: testRef("source"), NostrEventID: oldID, SourceKind: "post", AuthorPubKey: pubkey})
 	_ = s.SetPublisherRegistered(ctx, pubkey, time.Now())
 	_ = enqueueTestOutbox(ctx, s, OutboxRequest{AggregateKey: "other", Operation: OutboxPublishEvent, PubKey: pubkey, Payload: `{}`, AvailableAt: time.Now()})
-	err = s.EnqueueUpdate(ctx, UpdateEnqueueRequest{Mapping: EventMapping{SourceURI: "source", NostrEventID: newID, SourceKind: "post", AuthorPubKey: pubkey}, Deletion: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: deletion.String(), AvailableAt: time.Now()}, Replacement: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: replacement.String(), AvailableAt: time.Now()}, Limit: 2})
+	err = s.EnqueueUpdate(ctx, UpdateEnqueueRequest{Mapping: EventMapping{Source: testRef("source"), NostrEventID: newID, SourceKind: "post", AuthorPubKey: pubkey}, Deletion: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: deletion.String(), AvailableAt: time.Now()}, Replacement: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: replacement.String(), AvailableAt: time.Now()}, Limit: 2})
 	if !errors.Is(err, ErrOutboxFull) {
 		t.Fatalf("EnqueueUpdate() = %v", err)
 	}
-	mapping, _ := s.EventMappingBySourceURI(ctx, "source")
+	mapping, _ := s.EventMappingBySourceURI(ctx, testRef("source"))
 	if mapping.NostrEventID != oldID {
 		t.Fatalf("mapping = %s", mapping.NostrEventID)
 	}
@@ -208,7 +254,7 @@ func TestEnqueueUpdateOrdersDeletionThenReplacementAndCommitsMetadata(t *testing
 	replacement := signedStoreEvent(t, sk, 1, "replace")
 	pubkey := replacement.PubKey.Hex()
 	_ = s.SetPublisherRegistered(ctx, pubkey, time.Now())
-	req := UpdateEnqueueRequest{Mapping: EventMapping{SourceURI: "source", NostrEventID: replacement.ID.Hex(), SourceKind: "post", AuthorPubKey: pubkey}, Deletion: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: deletion.String(), AvailableAt: time.Now()}, Replacement: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: replacement.String(), AvailableAt: time.Now()}, SourceOperation: "cid:new", Limit: 2, Cursor: &CursorUpdate{Name: "cursor", Value: 8}}
+	req := UpdateEnqueueRequest{Mapping: EventMapping{Source: testRef("source"), NostrEventID: replacement.ID.Hex(), SourceKind: "post", AuthorPubKey: pubkey}, Deletion: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: deletion.String(), AvailableAt: time.Now()}, Replacement: OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: replacement.String(), AvailableAt: time.Now()}, SourceOperation: "cid:new", Limit: 2, Cursor: &CursorUpdate{Name: "cursor", Value: "8"}}
 	if err := s.EnqueueUpdate(ctx, req); err != nil {
 		t.Fatal(err)
 	}
@@ -221,11 +267,11 @@ func TestEnqueueUpdateOrdersDeletionThenReplacementAndCommitsMetadata(t *testing
 	if len(items) != 1 || items[0].Payload != replacement.String() {
 		t.Fatalf("second = %#v", items)
 	}
-	if op, _ := s.SourceOperationBySourceURI(ctx, "source"); op != "cid:new" {
+	if op, _ := s.SourceOperationBySourceURI(ctx, testRef("source")); op != "cid:new" {
 		t.Fatalf("operation = %q", op)
 	}
-	if cursor, _ := s.Cursor(ctx, "cursor"); cursor != 8 {
-		t.Fatalf("cursor = %d", cursor)
+	if cursor, _ := s.Cursor(ctx, testScope, "cursor"); cursor != "8" {
+		t.Fatalf("cursor = %s", cursor)
 	}
 }
 
@@ -238,22 +284,22 @@ func TestAuthorMismatchRejectsDomainMutations(t *testing.T) {
 	defer func() { _ = closer.Close() }()
 	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	now := time.Now()
-	_ = saveTestMapping(ctx, s, EventMapping{SourceURI: "old", NostrEventID: strings.Repeat("c", 64), AuthorPubKey: a})
+	_ = saveTestMapping(ctx, s, EventMapping{Source: testRef("old"), NostrEventID: strings.Repeat("c", 64), AuthorPubKey: a})
 	tests := []struct {
 		name string
 		run  func() error
 	}{
 		{"legacy", func() error {
-			return s.SaveEventAndEnqueue(ctx, EventMapping{SourceURI: "new", AuthorPubKey: a}, OutboxRequest{AggregateKey: b, Operation: OutboxPublishEvent, PubKey: b, Payload: `{}`, AvailableAt: now})
+			return s.SaveEventAndEnqueue(ctx, EventMapping{Source: testRef("new"), AuthorPubKey: a}, OutboxRequest{AggregateKey: b, Operation: OutboxPublishEvent, PubKey: b, Payload: `{}`, AvailableAt: now})
 		}},
 		{"event", func() error {
-			return s.EnqueueEvent(ctx, EventEnqueueRequest{Mapping: EventMapping{SourceURI: "new", AuthorPubKey: a}, Event: OutboxRequest{AggregateKey: b, Operation: OutboxPublishEvent, PubKey: b, Payload: `{}`, AvailableAt: now}, Limit: 10})
+			return s.EnqueueEvent(ctx, EventEnqueueRequest{Mapping: EventMapping{Source: testRef("new"), AuthorPubKey: a}, Event: OutboxRequest{AggregateKey: b, Operation: OutboxPublishEvent, PubKey: b, Payload: `{}`, AvailableAt: now}, Limit: 10})
 		}},
 		{"update", func() error {
-			return s.EnqueueUpdate(ctx, UpdateEnqueueRequest{Mapping: EventMapping{SourceURI: "old", AuthorPubKey: a}, Deletion: OutboxRequest{AggregateKey: a, PubKey: a, Payload: `{}`}, Replacement: OutboxRequest{AggregateKey: b, PubKey: b, Payload: `{}`}, Limit: 10})
+			return s.EnqueueUpdate(ctx, UpdateEnqueueRequest{Mapping: EventMapping{Source: testRef("old"), AuthorPubKey: a}, Deletion: OutboxRequest{AggregateKey: a, PubKey: a, Payload: `{}`}, Replacement: OutboxRequest{AggregateKey: b, PubKey: b, Payload: `{}`}, Limit: 10})
 		}},
 		{"delete", func() error {
-			return s.EnqueueDelete(ctx, DeleteEnqueueRequest{SourceURI: "old", Event: OutboxRequest{AggregateKey: b, PubKey: b, Payload: `{}`}, Limit: 10})
+			return s.EnqueueDelete(ctx, DeleteEnqueueRequest{Source: testRef("old"), Event: OutboxRequest{AggregateKey: b, PubKey: b, Payload: `{}`}, Limit: 10})
 		}},
 	}
 	for _, test := range tests {
@@ -266,7 +312,7 @@ func TestAuthorMismatchRejectsDomainMutations(t *testing.T) {
 	if count, _ := s.OutboxCount(ctx); count != 0 {
 		t.Fatalf("outbox count = %d", count)
 	}
-	mapping, _ := s.EventMappingBySourceURI(ctx, "old")
+	mapping, _ := s.EventMappingBySourceURI(ctx, testRef("old"))
 	if mapping.AuthorPubKey != a {
 		t.Fatal("mapping mutated")
 	}
@@ -282,7 +328,7 @@ func TestMappingEventIDMustMatchPublishedEvent(t *testing.T) {
 	sk := nostr.Generate()
 	event := signedStoreEvent(t, sk, 1, "payload")
 	pubkey := event.PubKey.Hex()
-	badMapping := EventMapping{SourceURI: "source", NostrEventID: strings.Repeat("f", 64), AuthorPubKey: pubkey}
+	badMapping := EventMapping{Source: testRef("source"), NostrEventID: strings.Repeat("f", 64), AuthorPubKey: pubkey}
 	request := OutboxRequest{AggregateKey: pubkey, Operation: OutboxPublishEvent, PubKey: pubkey, Payload: event.String(), AvailableAt: time.Now()}
 	checks := []struct {
 		name string
@@ -293,7 +339,7 @@ func TestMappingEventIDMustMatchPublishedEvent(t *testing.T) {
 			return s.EnqueueEvent(ctx, EventEnqueueRequest{Mapping: badMapping, Event: request, Limit: 10})
 		}},
 		{"reconcile", func() error {
-			return s.Reconcile(ctx, ReconciliationRequest{Events: []EventEnqueueRequest{{Mapping: badMapping, Event: request}}, Limit: 10})
+			return s.Reconcile(ctx, ReconciliationRequest{Scope: testScope, Events: []EventEnqueueRequest{{Mapping: badMapping, Event: request}}, Limit: 10})
 		}},
 	}
 	for _, check := range checks {
@@ -321,11 +367,11 @@ func TestSQLiteStoreSavesMappingAndEnqueuesAtomically(t *testing.T) {
 	t.Cleanup(func() { _ = closer.Close() })
 
 	signed := signedStoreEvent(t, nostr.Generate(), 1, "event-1")
-	event := EventMapping{SourceURI: "at://did:plc:alice/app.bsky.feed.post/1", NostrEventID: signed.ID.Hex(), SourceKind: "app.bsky.feed.post", AuthorPubKey: signed.PubKey.Hex(), UpdatedAt: 10}
+	event := EventMapping{Source: testRef("at://did:plc:alice/app.bsky.feed.post/1"), NostrEventID: signed.ID.Hex(), SourceKind: "app.bsky.feed.post", AuthorPubKey: signed.PubKey.Hex(), UpdatedAt: 10}
 	if err := s.SaveEventAndEnqueue(ctx, event, OutboxRequest{AggregateKey: signed.PubKey.Hex(), Operation: OutboxPublishEvent, PubKey: signed.PubKey.Hex(), Payload: signed.String(), AvailableAt: time.Unix(20, 0)}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.EventMappingBySourceURI(ctx, event.SourceURI)
+	got, err := s.EventMappingBySourceURI(ctx, testRef(event.Source.URI))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,12 +394,12 @@ func TestSQLiteStoreRollsBackMappingWhenEnqueueFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = closer.Close() })
-	event := EventMapping{SourceURI: "at://did:plc:alice/app.bsky.feed.post/bad", NostrEventID: "bad", SourceKind: "post", AuthorPubKey: "alice"}
-	err = s.SaveEventAndEnqueue(ctx, event, OutboxRequest{AggregateKey: event.SourceURI, Operation: OutboxOperation("invalid"), AvailableAt: time.Unix(1, 0)})
+	event := EventMapping{Source: testRef("at://did:plc:alice/app.bsky.feed.post/bad"), NostrEventID: "bad", SourceKind: "post", AuthorPubKey: "alice"}
+	err = s.SaveEventAndEnqueue(ctx, event, OutboxRequest{AggregateKey: event.Source.URI, Operation: OutboxOperation("invalid"), AvailableAt: time.Unix(1, 0)})
 	if err == nil {
 		t.Fatal("SaveEventAndEnqueue() succeeded with invalid operation")
 	}
-	if _, err := s.EventMappingBySourceURI(ctx, event.SourceURI); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.EventMappingBySourceURI(ctx, testRef(event.Source.URI)); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("EventBySourceURI() error = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -570,20 +616,20 @@ func TestSQLiteStorePublisherRegistrationAndSyncTargets(t *testing.T) {
 	if err != nil || registered {
 		t.Fatalf("PublisherRegistered() after clear = %v, %v", registered, err)
 	}
-	if err := s.ReplaceSyncTargets(ctx, []string{"did:plc:b", "did:plc:a", "did:plc:a"}); err != nil {
+	if err := s.ReplaceSyncTargets(ctx, testScope, []string{"did:plc:b", "did:plc:a", "did:plc:a"}); err != nil {
 		t.Fatal(err)
 	}
-	targets, err := s.SyncTargets(ctx)
+	targets, err := s.SyncTargets(ctx, testScope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(targets, []string{"did:plc:a", "did:plc:b"}) {
 		t.Fatalf("SyncTargets() = %#v", targets)
 	}
-	if err := s.ReplaceSyncTargets(ctx, []string{"did:plc:c"}); err != nil {
+	if err := s.ReplaceSyncTargets(ctx, testScope, []string{"did:plc:c"}); err != nil {
 		t.Fatal(err)
 	}
-	targets, err = s.SyncTargets(ctx)
+	targets, err = s.SyncTargets(ctx, testScope)
 	if err != nil || !slices.Equal(targets, []string{"did:plc:c"}) {
 		t.Fatalf("replaced SyncTargets() = %#v, %v", targets, err)
 	}
@@ -598,10 +644,10 @@ func TestSQLiteStoreSavesSourceOperationIdentity(t *testing.T) {
 	}
 
 	uri := "at://did:plc:alice/app.bsky.feed.post/123"
-	if err := store.SaveSourceOperation(ctx, uri, "cid:bafy-update"); err != nil {
+	if err := store.SaveSourceOperation(ctx, testRef(uri), "cid:bafy-update"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteEventBySourceURI(ctx, uri); err != nil {
+	if err := store.DeleteEventBySourceURI(ctx, testRef(uri)); err != nil {
 		t.Fatal(err)
 	}
 	if err := closer.Close(); err != nil {
@@ -612,7 +658,7 @@ func TestSQLiteStoreSavesSourceOperationIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = closer.Close() })
-	got, err := store.SourceOperationBySourceURI(ctx, uri)
+	got, err := store.SourceOperationBySourceURI(ctx, testRef(uri))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,19 +675,19 @@ func TestSQLiteStoreUpdatesCursor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = closer.Close() })
 
-	if err := store.SaveCursor(ctx, "jetstream", 10); err != nil {
+	if err := store.SaveCursor(ctx, testScope, "jetstream", "10"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveCursor(ctx, "jetstream", 20); err != nil {
+	if err := store.SaveCursor(ctx, testScope, "jetstream", "20"); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := store.Cursor(ctx, "jetstream")
+	got, err := store.Cursor(ctx, testScope, "jetstream")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 20 {
-		t.Fatalf("Cursor() = %d, want 20", got)
+	if got != "20" {
+		t.Fatalf("Cursor() = %s, want 20", got)
 	}
 }
 
@@ -658,11 +704,11 @@ func TestSQLiteStoreSavesFindsAndDeletesOAuthSession(t *testing.T) {
 		EncryptedPayload: []byte("encrypted-session"),
 		ExpiresAt:        1_700_000_600,
 	}
-	if err := store.SaveOAuthSession(ctx, want); err != nil {
+	if err := store.SaveOAuthSession(ctx, testScope, want); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := store.OAuthSessionByState(ctx, want.State)
+	got, err := store.OAuthSessionByState(ctx, testScope, want.State)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -670,10 +716,10 @@ func TestSQLiteStoreSavesFindsAndDeletesOAuthSession(t *testing.T) {
 		t.Fatalf("OAuthSessionByState() = %#v, want %#v", got, want)
 	}
 
-	if err := store.DeleteOAuthSession(ctx, want.State); err != nil {
+	if err := store.DeleteOAuthSession(ctx, testScope, want.State); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.OAuthSessionByState(ctx, want.State); err == nil {
+	if _, err := store.OAuthSessionByState(ctx, testScope, want.State); err == nil {
 		t.Fatal("OAuthSessionByState() succeeded after deletion")
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("OAuthSessionByState() error = %v, want sql.ErrNoRows", err)
@@ -690,18 +736,76 @@ func TestSQLiteStoreUpdatesOAuthToken(t *testing.T) {
 
 	first := OAuthToken{AccountDID: "did:plc:alice", EncryptedPayload: []byte("first"), UpdatedAt: 1}
 	second := OAuthToken{AccountDID: first.AccountDID, EncryptedPayload: []byte("second"), UpdatedAt: 2}
-	if err := store.SaveOAuthToken(ctx, first); err != nil {
+	if err := store.SaveOAuthToken(ctx, testScope, first); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveOAuthToken(ctx, second); err != nil {
+	if err := store.SaveOAuthToken(ctx, testScope, second); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := store.OAuthTokenByAccountDID(ctx, first.AccountDID)
+	got, err := store.OAuthTokenByAccountDID(ctx, testScope, first.AccountDID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.AccountDID != second.AccountDID || string(got.EncryptedPayload) != string(second.EncryptedPayload) || got.UpdatedAt != second.UpdatedAt {
 		t.Fatalf("OAuthTokenByAccountDID() = %#v, want %#v", got, second)
+	}
+}
+
+func TestSQLiteStoreSeparatesSourceStateByScope(t *testing.T) {
+	ctx := context.Background()
+	s, closer, err := Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+	b := SourceScope{Provider: "bluesky", Account: "owner"}
+	bOther := SourceScope{Provider: "bluesky", Account: "other-owner"}
+	m := SourceScope{Provider: "mastodon", Account: "owner"}
+
+	for scope, value := range map[SourceScope]string{b: "10", bOther: "15", m: "20"} {
+		if err := s.SaveCursor(ctx, scope, "stream", value); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveOAuthSession(ctx, scope, OAuthSession{State: "same", EncryptedPayload: []byte(value)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveOAuthToken(ctx, scope, OAuthToken{AccountDID: "owner", EncryptedPayload: []byte(value)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ReplaceSyncTargets(ctx, scope, []string{value}); err != nil {
+			t.Fatal(err)
+		}
+		ref := SourceRef{Scope: scope, URI: "same"}
+		if err := s.SaveSourceOperation(ctx, ref, value); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveEventMapping(ctx, EventMapping{Source: ref, NostrEventID: value, SourceKind: "post", AuthorPubKey: value}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := s.Cursor(ctx, b, "stream"); got != "10" {
+		t.Fatalf("cursor = %q", got)
+	}
+	if got, _ := s.OAuthSessionByState(ctx, b, "same"); string(got.EncryptedPayload) != "10" {
+		t.Fatalf("session = %q", got.EncryptedPayload)
+	}
+	if got, _ := s.OAuthTokenByAccountDID(ctx, b, "owner"); string(got.EncryptedPayload) != "10" {
+		t.Fatalf("token = %q", got.EncryptedPayload)
+	}
+	if got, _ := s.SyncTargets(ctx, b); !slices.Equal(got, []string{"10"}) {
+		t.Fatalf("targets = %v", got)
+	}
+	if got, _ := s.SourceOperationBySourceURI(ctx, SourceRef{Scope: b, URI: "same"}); got != "10" {
+		t.Fatalf("operation = %q", got)
+	}
+	if got, _ := s.EventMappingBySourceURI(ctx, SourceRef{Scope: b, URI: "same"}); got.NostrEventID != "10" {
+		t.Fatalf("mapping = %#v", got)
+	}
+	if got, _ := s.Cursor(ctx, bOther, "stream"); got != "15" {
+		t.Fatalf("other account cursor = %q", got)
+	}
+	if got, _ := s.EventMappingBySourceURI(ctx, SourceRef{Scope: bOther, URI: "same"}); got.NostrEventID != "15" {
+		t.Fatalf("other account mapping = %#v", got)
 	}
 }

@@ -42,6 +42,13 @@ func TestMigrateCreatesBridgeSchema(t *testing.T) {
 			t.Errorf("table %q count = %d, want 1", table, count)
 		}
 	}
+	var cursorType string
+	if err := db.QueryRow(`SELECT type FROM pragma_table_info('sync_cursors') WHERE name='value'`).Scan(&cursorType); err != nil {
+		t.Fatalf("query cursor value type: %v", err)
+	}
+	if cursorType != "TEXT" {
+		t.Errorf("sync cursor value type = %q, want TEXT", cursorType)
+	}
 }
 
 func TestMigrateIsIdempotent(t *testing.T) {
