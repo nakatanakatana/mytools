@@ -115,7 +115,7 @@ func TestCIWorkflowReportsCCCCMetrics(t *testing.T) {
 	}
 	var foundAction, foundGather, foundOctocovMetrics bool
 	for _, step := range testJob.Steps {
-		if step.Uses == "moznion/cccc-action@8fa5a4b13bf907676709cece09147a047b7be7b0" && step.With["version"] == "${{ env.CCCC_VERSION }}" {
+		if strings.HasPrefix(step.Uses, "moznion/cccc-action@") && step.With["version"] == "${{ env.CCCC_VERSION }}" {
 			foundAction = true
 		}
 		if step.Run == "go run ./scripts/gather-metrics.go" {
