@@ -1,12 +1,15 @@
 package mastodon
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -52,6 +55,19 @@ func TestStartAuthorizationUsesUniqueStatePKCEAndExactScopes(t *testing.T) {
 	if u1.Query().Get("code_challenge") != base64.RawURLEncoding.EncodeToString(hash[:]) {
 		t.Fatal("challenge is not S256 verifier")
 	}
+}
+
+func TestStartAuthorizationLogsPersistenceFailure(t *testing.T) {
+	client, store, _ := newOAuthTestClient(t, "alice", time.Now())
+	store.saveSessionErr = errors.New("database unavailable")
+	logs := captureOAuthLogs(t)
+
+	_, err := client.StartAuthorization(context.Background())
+	if err == nil {
+		t.Fatal("StartAuthorization error = nil")
+	}
+	assertOAuthLogContains(t, logs.String(), "stage=authorization_start", "result=started", "stage=session_persistence", "result=failed", "database unavailable")
+	assertOAuthLogExcludes(t, logs.String(), "client-secret")
 }
 
 func TestCallbackNormalizesLocalAccountAndPersistsEncryptedToken(t *testing.T) {
@@ -152,6 +168,7 @@ func TestExpiredTokenRefreshesWithoutLeakingSecretsInErrors(t *testing.T) {
 		t.Fatalf("callback status = %d", got.Code)
 	}
 	client.now = func() time.Time { return now.Add(2 * time.Hour) }
+	logs := captureOAuthLogs(t)
 	token, err := client.Token(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -159,6 +176,9 @@ func TestExpiredTokenRefreshesWithoutLeakingSecretsInErrors(t *testing.T) {
 	if token.AccessToken != "refreshed-access" || forms.refresh.Get("refresh_token") != "refresh-secret" || forms.refresh.Get("scope") != OAuthScopes {
 		t.Fatalf("token=%#v refresh=%#v", token, forms.refresh)
 	}
+	assertOAuthLogContains(t, logs.String(), "stage=token_refresh", "result=started", "result=succeeded")
+	assertOAuthLogExcludes(t, logs.String(), "access-secret", "refresh-secret", "refreshed-access", "client-secret")
+	logs.Reset()
 	client.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return nil, errors.New("transport includes refresh-secret")
 	})}
@@ -166,6 +186,168 @@ func TestExpiredTokenRefreshesWithoutLeakingSecretsInErrors(t *testing.T) {
 	_, err = client.Token(context.Background())
 	if err == nil || strings.Contains(err.Error(), "refresh-secret") {
 		t.Fatalf("error = %v", err)
+	}
+	assertOAuthLogContains(t, logs.String(), "stage=token_refresh", "result=started", "result=failed")
+	assertOAuthLogExcludes(t, logs.String(), "access-secret", "refresh-secret", "refreshed-access", "client-secret")
+}
+
+func TestOAuthRemoteErrorsRetainSafeDiagnosticsAndRedactRequestSecrets(t *testing.T) {
+	client, _, _ := newOAuthTestClient(t, "alice", time.Now())
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"error":"invalid_grant\n","error_description":"code authorization-secret rejected ` + strings.Repeat("x", 400) + `"}`
+		return &http.Response{StatusCode: http.StatusBadRequest, Status: "400 Bad Request", Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	_, err := client.exchange(context.Background(), url.Values{
+		"grant_type": {"authorization_code"}, "code": {"authorization-secret"}, "client_secret": {"client-secret"},
+	})
+	if err == nil {
+		t.Fatal("exchange error = nil")
+	}
+	text := err.Error()
+	for _, want := range []string{"token exchange", "status=400", `error="invalid_grant"`, "description="} {
+		if !strings.Contains(text, want) {
+			t.Errorf("error %q missing %q", text, want)
+		}
+	}
+	for _, secret := range []string{"authorization-secret", "client-secret", "\n"} {
+		if strings.Contains(text, secret) {
+			t.Errorf("error contains unsafe value %q: %q", secret, text)
+		}
+	}
+	if len(text) > 512 {
+		t.Fatalf("error is unbounded: %d bytes", len(text))
+	}
+}
+
+func TestVerifyCredentialsErrorRedactsAccessToken(t *testing.T) {
+	client, _, _ := newOAuthTestClient(t, "alice", time.Now())
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", Body: io.NopCloser(strings.NewReader(`{"error":"invalid_token","error_description":"access-secret expired"}`)), Header: make(http.Header)}, nil
+	})}
+	_, err := client.verifyCredentials(context.Background(), "access-secret")
+	if err == nil || !strings.Contains(err.Error(), "credential verification") || !strings.Contains(err.Error(), "status=401") {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), "access-secret") {
+		t.Fatalf("error contains access token: %v", err)
+	}
+}
+
+func TestOAuthResponsesIdentifyInvalidResponseReason(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		call func(*OAuthClient) error
+		want string
+	}{
+		{name: "token JSON", body: `{`, call: func(client *OAuthClient) error {
+			_, err := client.exchange(context.Background(), url.Values{"code": {"authorization-secret"}})
+			return err
+		}, want: "decode Mastodon OAuth token response"},
+		{name: "missing access token", body: `{"scope":"` + OAuthScopes + `"}`, call: func(client *OAuthClient) error {
+			_, err := client.exchange(context.Background(), url.Values{"code": {"authorization-secret"}})
+			return err
+		}, want: "missing access token"},
+		{name: "scope mismatch", body: `{"access_token":"access-secret","scope":"profile"}`, call: func(client *OAuthClient) error {
+			_, err := client.exchange(context.Background(), url.Values{"code": {"authorization-secret"}})
+			return err
+		}, want: "scope mismatch"},
+		{name: "account JSON", body: `{`, call: func(client *OAuthClient) error {
+			_, err := client.verifyCredentials(context.Background(), "access-secret")
+			return err
+		}, want: "decode Mastodon account response"},
+		{name: "missing account", body: `{}`, call: func(client *OAuthClient) error {
+			_, err := client.verifyCredentials(context.Background(), "access-secret")
+			return err
+		}, want: "missing account"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, _, _ := newOAuthTestClient(t, "alice", time.Now())
+			client.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(test.body)), Header: make(http.Header)}, nil
+			})}
+			err := test.call(client)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+			assertOAuthLogExcludes(t, err.Error(), "authorization-secret", "access-secret")
+		})
+	}
+}
+
+func TestCallbackLogsSafeTokenExchangeFailure(t *testing.T) {
+	client, _, _ := newOAuthTestClient(t, "alice", time.Now())
+	state := startAuthorization(t, client)
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"error":"invalid_grant","error_description":"authorization-secret client-secret rejected"}`
+		return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	logs := captureOAuthLogs(t)
+	response := callback(t, client, state, "authorization-secret")
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d", response.Code)
+	}
+	assertOAuthLogContains(t, logs.String(), "provider=mastodon", "stage=token_exchange", "result=failed", "status=400", "invalid_grant")
+	assertOAuthLogExcludes(t, logs.String(), state, "authorization-secret", "client-secret", "code=", "state=")
+}
+
+func TestCallbackLogsSafeCredentialVerificationFailure(t *testing.T) {
+	client, _, _ := newOAuthTestClient(t, "alice", time.Now())
+	state := startAuthorization(t, client)
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/oauth/token" {
+			body := `{"access_token":"access-secret","refresh_token":"refresh-secret","scope":"` + OAuthScopes + `"}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		}
+		body := `{"error":"invalid_token","error_description":"access-secret expired"}`
+		return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	logs := captureOAuthLogs(t)
+	response := callback(t, client, state, "authorization-secret")
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d", response.Code)
+	}
+	assertOAuthLogContains(t, logs.String(), "stage=credential_verification", "result=failed", "status=401", "invalid_token")
+	assertOAuthLogExcludes(t, logs.String(), state, "authorization-secret", "access-secret", "refresh-secret", "code=", "state=")
+}
+
+func TestCallbackLogsSuccessfulLifecycleWithoutSecrets(t *testing.T) {
+	client, _, _ := newOAuthTestClient(t, "alice", time.Now())
+	state := startAuthorization(t, client)
+	logs := captureOAuthLogs(t)
+	response := callback(t, client, state, "authorization-secret")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d", response.Code)
+	}
+	assertOAuthLogContains(t, logs.String(), "stage=callback", "result=started", "stage=complete", "result=succeeded")
+	assertOAuthLogExcludes(t, logs.String(), state, "authorization-secret", "access-secret", "refresh-secret", "client-secret", "code=", "state=")
+}
+
+func captureOAuthLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	return &logs
+}
+
+func assertOAuthLogContains(t *testing.T, output string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if !strings.Contains(output, value) {
+			t.Errorf("log %q missing %q", output, value)
+		}
+	}
+}
+
+func assertOAuthLogExcludes(t *testing.T, output string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if value != "" && strings.Contains(output, value) {
+			t.Errorf("log contains unsafe value %q: %q", value, output)
+		}
 	}
 }
 
@@ -221,11 +403,15 @@ func callback(t *testing.T, c *OAuthClient, state, code string) *httptest.Respon
 }
 
 type memoryOAuthStore struct {
-	sessions map[string]bridgestore.OAuthSession
-	tokens   map[string]bridgestore.OAuthToken
+	sessions       map[string]bridgestore.OAuthSession
+	tokens         map[string]bridgestore.OAuthToken
+	saveSessionErr error
 }
 
 func (s *memoryOAuthStore) SaveOAuthSession(_ context.Context, scope bridgestore.SourceScope, v bridgestore.OAuthSession) error {
+	if s.saveSessionErr != nil {
+		return s.saveSessionErr
+	}
 	s.sessions[scope.Provider+"\x00"+scope.Account+"\x00"+v.State] = v
 	return nil
 }
