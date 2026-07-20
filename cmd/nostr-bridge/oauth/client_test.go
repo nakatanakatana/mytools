@@ -288,7 +288,8 @@ func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T)
 	if err := store.SaveOAuthToken(context.Background(), oauthTestScope, bridgestore.OAuthToken{AccountDID: "did:plc:alice", EncryptedPayload: encrypted}); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := NewClient(Options{Store: store, HTTPClient: server.Client(), AuthorizationServerURL: server.URL, ClientID: client.clientID, RedirectURL: client.redirectURL, ClientSigningKey: client.clientSigningKey, EncryptionKey: client.encryptionKey})
+	encryptionKey := sha256.Sum256([]byte("test encryption key"))
+	restarted, err := NewClient(Options{Store: store, HTTPClient: server.Client(), AuthorizationServerURL: server.URL, ClientID: client.clientID, RedirectURL: client.redirectURL, ClientSigningKey: client.clientSigningKey, EncryptionKey: encryptionKey[:]})
 	if err != nil {
 		t.Fatal(err)
 	}

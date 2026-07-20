@@ -53,7 +53,10 @@ func (t *liveTargets) Updates() <-chan struct{} { return t.updates }
 func newLiveTargets(values bluesky.DIDSet) *liveTargets {
 	targets := &liveTargets{updates: make(chan struct{}, 1)}
 	targets.Set(values)
-	<-targets.updates
+	select {
+	case <-targets.updates:
+	default:
+	}
 	return targets
 }
 
@@ -267,13 +270,19 @@ func (r *runtimeSync) runMastodon(ctx context.Context, cfg Config, seed []byte, 
 				var err error
 				client, err = mastodon.NewClient(mastodon.ClientOptions{BaseURL: cfg.Mastodon.BaseURL, Tokens: oauthClient})
 				if err != nil {
+					reportMastodonFailure("client construction", err)
 					return err
 				}
 				snapshot, profiles, err = mastodon.NewReconciler(client, cfg.Mastodon.ListIDs).Reconcile(ctx)
 				if err != nil {
+					reportMastodonFailure("initial reconciliation", err)
 					return err
 				}
-				return coordinator.Reconcile(ctx, scope, snapshot, profiles)
+				err = coordinator.Reconcile(ctx, scope, snapshot, profiles)
+				if err != nil {
+					reportMastodonFailure("initial publication", err)
+				}
+				return err
 			})
 			if attemptErr == nil {
 				health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) {
@@ -289,11 +298,12 @@ func (r *runtimeSync) runMastodon(ctx context.Context, cfg Config, seed []byte, 
 					reconcileMastodonPeriodically(syncCtx, cfg.Mastodon.ReconcileInterval, client, coordinator, scope, cfg.Mastodon.ListIDs, targets, health)
 				}()
 				s := mastodon.NewSyncer(mastodon.SyncOptions{Scope: scope, API: mastodon.ClientTimelineAPI(client), Store: store, MasterSeed: seed, Targets: targets.Get, ListIDs: cfg.Mastodon.ListIDs, BackfillLimit: cfg.Mastodon.BackfillLimit, OutboxLimit: int64(cfg.Shared.OutboxLimit), StreamURL: mastodonStreamURL(cfg.Mastodon.BaseURL, token.AccessToken), Observer: mastodonHealthObserver{health}})
-				_ = s.Run(syncCtx)
+				reportMastodonSyncFailure(s.Run(syncCtx))
 				cancelSync()
 				<-reconcileDone
 			}
 		} else {
+			reportMastodonFailure("authentication", err)
 			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Authenticated = false; m.StreamConnected = false })
 		}
 		if !waitRuntimeRetry(ctx) {
@@ -343,8 +353,13 @@ func reconcileMastodonPeriodically(ctx context.Context, interval time.Duration, 
 		case <-ticker.C:
 			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.PendingWork++ })
 			snapshot, profiles, err := mastodon.NewReconciler(client, listIDs).Reconcile(ctx)
-			if err == nil {
+			if err != nil {
+				reportMastodonFailure("periodic reconciliation", err)
+			} else {
 				err = coordinator.Reconcile(ctx, scope, snapshot, profiles)
+				if err != nil {
+					reportMastodonFailure("periodic publication", err)
+				}
 			}
 			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) {
 				if m.PendingWork > 0 {
@@ -466,6 +481,17 @@ func reportReconciliationFailure(operation string, err error) {
 
 func reportSyncFailure(err error) {
 	reportRuntimeFailure("sync", err)
+}
+
+func reportMastodonFailure(operation string, err error) {
+	reportRuntimeFailure("mastodon "+operation, err)
+}
+
+func reportMastodonSyncFailure(err error) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	reportMastodonFailure("sync", errors.New("stream synchronization failed"))
 }
 
 func reportRuntimeFailure(operation string, err error) {

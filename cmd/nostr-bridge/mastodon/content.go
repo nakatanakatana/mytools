@@ -60,6 +60,35 @@ func HTMLToText(input string) string {
 	return strings.TrimSpace(output.builder.String())
 }
 
+func htmlLinks(input string) []source.Link {
+	document, err := html.Parse(strings.NewReader(input))
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var links []source.Link
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.ElementNode && (hiddenElement(node.Data) || hasClass(node, "invisible")) {
+			return
+		}
+		if node.Type == html.ElementNode && node.Data == "a" {
+			href := strings.TrimSpace(attribute(node, "href"))
+			if absoluteHTTPURL(href) {
+				if _, ok := seen[href]; !ok {
+					seen[href] = struct{}{}
+					links = append(links, source.Link{URL: href})
+				}
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(document)
+	return links
+}
+
 func hiddenElement(name string) bool {
 	switch name {
 	case "script", "style", "template", "head", "noscript", "iframe", "object", "svg", "math":
@@ -208,7 +237,7 @@ func NormalizeStatus(status Status) (source.Post, bool, error) {
 	}
 	post := source.Post{
 		ID: "mastodon:" + status.URI, Author: source.ActorIdentity{Provider: "mastodon", ID: status.Account.URI},
-		SourceURL: status.URL, Text: text, ContentWarning: warning, CreatedAt: status.CreatedAt,
+		SourceURL: status.URL, Text: text, ContentWarning: warning, CreatedAt: status.CreatedAt, Links: htmlLinks(status.Content),
 	}
 	if !absoluteHTTPURL(post.SourceURL) {
 		post.SourceURL = status.URI

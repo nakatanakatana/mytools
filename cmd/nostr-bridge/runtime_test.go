@@ -52,6 +52,32 @@ func TestRuntimeLogsSyncFailureSuppressesContextCanceled(t *testing.T) {
 	}
 }
 
+func TestRuntimeLogsMastodonFailure(t *testing.T) {
+	logs := captureRuntimeLogs(t)
+	reportMastodonFailure("initial reconciliation", errors.New("instance unavailable"))
+
+	assertRuntimeLogContains(t, logs.String(), "mastodon", "initial reconciliation", "instance unavailable")
+}
+
+func TestRuntimeLogsMastodonFailureSuppressesContextCanceled(t *testing.T) {
+	logs := captureRuntimeLogs(t)
+	reportMastodonFailure("sync", context.Canceled)
+
+	if logs.Len() != 0 {
+		t.Fatalf("log = %q, want empty", logs.String())
+	}
+}
+
+func TestRuntimeLogsMastodonSyncFailureWithoutAccessToken(t *testing.T) {
+	logs := captureRuntimeLogs(t)
+	reportMastodonSyncFailure(errors.New("dial wss://social.example/api/v1/streaming?access_token=secret-token"))
+
+	assertRuntimeLogContains(t, logs.String(), "mastodon", "sync", "stream synchronization failed")
+	if strings.Contains(logs.String(), "secret-token") || strings.Contains(logs.String(), "access_token") {
+		t.Fatalf("log contains streaming credentials: %q", logs.String())
+	}
+}
+
 func captureRuntimeLogs(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var logs bytes.Buffer
@@ -256,6 +282,19 @@ func TestApplyPeriodicTargetsUpdatesBlueskyProviderHealth(t *testing.T) {
 	m = health.providerSnapshot("bluesky")
 	if m.TargetCount != 2 || !m.LastReconciliation.After(first) {
 		t.Fatalf("second provider health = %#v", m)
+	}
+}
+
+func TestNewLiveTargetsReturnsForEmptyInitialSet(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		_ = newLiveTargets(bluesky.DIDSet{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("newLiveTargets blocked for an empty initial set")
 	}
 }
 

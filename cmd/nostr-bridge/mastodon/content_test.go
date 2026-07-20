@@ -83,6 +83,21 @@ func TestNormalizeStatusMapsIdentityReplyWarningAndMedia(t *testing.T) {
 	}
 }
 
+func TestNormalizeStatusPreservesExternalLinks(t *testing.T) {
+	status := Status{
+		URI: "https://social.example/users/alice/statuses/42", URL: "https://social.example/@alice/42", Visibility: "public",
+		Account: Account{URI: "https://social.example/users/alice"},
+		Content: `<p><a href="https://one.example/path">one</a> <a href="https://two.example/long/path"><span class="ellipsis">two.example</span></a> <a href="https://one.example/path">duplicate</a> <a href="javascript:alert(1)">unsafe</a></p>`,
+	}
+	post, ok, err := NormalizeStatus(status)
+	if err != nil || !ok {
+		t.Fatalf("NormalizeStatus() ok=%v err=%v", ok, err)
+	}
+	if len(post.Links) != 2 || post.Links[0].URL != "https://one.example/path" || post.Links[1].URL != "https://two.example/long/path" {
+		t.Fatalf("links = %#v", post.Links)
+	}
+}
+
 func TestNormalizeStatusPreservesCustomEmojiAlt(t *testing.T) {
 	status := Status{URI: "https://social.example/users/alice/statuses/42", URL: "https://social.example/@alice/42", Visibility: "public", Account: Account{URI: "https://social.example/users/alice"}, Content: `<p>Hello <img src="https://social.example/emoji/blob.png" alt=":blobcat:"> friend</p>`}
 	post, ok, err := NormalizeStatus(status)
