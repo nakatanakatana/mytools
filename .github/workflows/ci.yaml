@@ -79,7 +79,7 @@ jobs:
         env:
           GO_VERSION: ${{ steps.parse-go-version.outputs.GO_VERSION }}
       - run: go test ./... -v -coverprofile=coverage.out -covermode=atomic
-      - uses: moznion/cccc-action@8fa5a4b13bf907676709cece09147a047b7be7b0 # v1
+      - uses: moznion/cccc-action@4df3f72f581c87d0792ca89ef401c4ec8e85788b # v1
         with:
           version: ${{ env.CCCC_VERSION }}
       - run: go run ./scripts/gather-metrics.go
