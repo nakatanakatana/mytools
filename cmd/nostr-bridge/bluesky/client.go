@@ -10,10 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
 )
@@ -289,7 +292,7 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, des
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("request Bluesky %s: unexpected status %s", endpoint, response.Status)
+		return pdsResponseError(endpoint, response)
 	}
 	if nonce := response.Header.Get("DPoP-Nonce"); nonce != "" {
 		c.dpopNonce = nonce
@@ -298,6 +301,32 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, des
 		return fmt.Errorf("decode Bluesky %s response: %w", endpoint, err)
 	}
 	return nil
+}
+
+func pdsResponseError(endpoint string, response *http.Response) error {
+	var details struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&details)
+	details.Error = safePDSDetail(details.Error)
+	details.Message = safePDSDetail(details.Message)
+	return fmt.Errorf("request Bluesky %s: unexpected status %s: AT Protocol error=%q message=%q; DPoP-Nonce header present=%t", endpoint, response.Status, details.Error, details.Message, response.Header.Get("DPoP-Nonce") != "")
+}
+
+func safePDSDetail(value string) string {
+	var safe strings.Builder
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			continue
+		}
+		size := utf8.RuneLen(character)
+		if safe.Len()+size > 256 {
+			break
+		}
+		safe.WriteRune(character)
+	}
+	return safe.String()
 }
 
 func (c *Client) doGet(ctx context.Context, endpoint string, query url.Values) (*http.Response, error) {

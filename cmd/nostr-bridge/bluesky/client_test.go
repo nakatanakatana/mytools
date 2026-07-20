@@ -116,6 +116,40 @@ func TestClientRetriesDPoPNonceChallenge(t *testing.T) {
 	}
 }
 
+func TestClientReportsSafePDSFailure(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proof string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proof = r.Header.Get("DPoP")
+		w.Header().Set("DPoP-Nonce", "secret-nonce")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "UseDpopNonce", "message": "proof rejected"})
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{HTTPClient: server.Client(), BaseURL: server.URL, Token: bridgeoauth.Token{AccessToken: "access-token", DPoPKey: key}, AccountDID: "did:plc:owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Timeline(context.Background(), "", 1)
+	if err == nil {
+		t.Fatal("Timeline error = nil, want PDS failure")
+	}
+	errorText := err.Error()
+	for _, want := range []string{"app.bsky.feed.getTimeline", "401 Unauthorized", "UseDpopNonce", "proof rejected", "DPoP-Nonce header present=true"} {
+		if !strings.Contains(errorText, want) {
+			t.Errorf("Timeline error missing %q", want)
+		}
+	}
+	for _, secret := range []string{"secret-nonce", "access-token", proof} {
+		if secret != "" && strings.Contains(errorText, secret) {
+			t.Errorf("Timeline error contains secret data")
+		}
+	}
+}
+
 func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.PrivateKey, wantNonce, accessToken string) {
 	t.Helper()
 	parts := strings.Split(request.Header.Get("DPoP"), ".")
