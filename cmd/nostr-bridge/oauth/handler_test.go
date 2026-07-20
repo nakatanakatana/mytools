@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -122,9 +123,10 @@ func TestHandlerServesConfidentialClientMetadataAndJWKS(t *testing.T) {
 		check func(t *testing.T, body map[string]any)
 	}{
 		{"/oauth/client-metadata.json", func(t *testing.T, body map[string]any) {
-			if body["client_id"] != client.clientID || body["token_endpoint_auth_method"] != "private_key_jwt" || body["dpop_bound_access_tokens"] != true || body["scope"] != "atproto" {
+			if body["client_id"] != client.clientID || body["token_endpoint_auth_method"] != "private_key_jwt" || body["dpop_bound_access_tokens"] != true {
 				t.Fatalf("metadata = %#v", body)
 			}
+			assertRequestedScopes(t, body["scope"].(string))
 			if !containsString(body["grant_types"], "authorization_code") || !containsString(body["grant_types"], "refresh_token") || !containsString(body["response_types"], "code") || body["jwks_uri"] == "" {
 				t.Fatalf("metadata = %#v", body)
 			}
@@ -152,6 +154,25 @@ func TestHandlerServesConfidentialClientMetadataAndJWKS(t *testing.T) {
 			}
 			test.check(t, body)
 		})
+	}
+}
+
+func assertRequestedScopes(t *testing.T, scope string) {
+	t.Helper()
+
+	want := map[string]bool{
+		"atproto": true,
+		"rpc:app.bsky.graph.getFollows?aud=did:web:api.bsky.app%23bsky_appview": true,
+		"rpc:app.bsky.graph.getList?aud=did:web:api.bsky.app%23bsky_appview":    true,
+		"rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview": true,
+		"rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app%23bsky_appview": true,
+	}
+	got := make(map[string]bool)
+	for _, value := range strings.Fields(scope) {
+		got[value] = true
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scope = %q, want permissions %#v", scope, want)
 	}
 }
 

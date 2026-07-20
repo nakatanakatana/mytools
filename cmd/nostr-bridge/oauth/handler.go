@@ -43,7 +43,7 @@ func (c *Client) handleMetadata(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"client_id": c.clientID, "application_type": "web", "grant_types": []string{"authorization_code", "refresh_token"},
-		"response_types": []string{"code"}, "scope": "atproto", "redirect_uris": []string{c.redirectURL},
+		"response_types": []string{"code"}, "scope": clientScope, "redirect_uris": []string{c.redirectURL},
 		"token_endpoint_auth_method": "private_key_jwt", "token_endpoint_auth_signing_alg": "ES256",
 		"dpop_bound_access_tokens": true, "jwks_uri": jwksURL(c.clientID),
 	})

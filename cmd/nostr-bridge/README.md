@@ -71,6 +71,16 @@ Do not publish these endpoints through Cloudflare. In particular, a readiness
 failure can reveal that a private dependency is unavailable even though it does
 not reveal tokens, keys, DIDs, or event contents.
 
+### OAuth authorization
+
+The public client metadata and pushed authorization request ask the Bluesky
+AppView for permission to call `app.bsky.graph.getFollows`,
+`app.bsky.graph.getList`, `app.bsky.actor.getProfile`, and
+`app.bsky.feed.getTimeline`. When a release adds or changes these permissions,
+existing tokens do not gain them through refresh. After deploying such a
+release, start a new authorization with `/oauth/start` and complete the OAuth
+flow before checking synchronization health.
+
 ### External secrets
 
 Provide `NOSTR_BRIDGE_OAUTH_CLIENT_SIGNING_KEY`,
