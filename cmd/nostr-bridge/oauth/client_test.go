@@ -116,7 +116,8 @@ func TestStartAuthorizationPushesPKCEAuthenticatedRequestAndStoresEncryptedState
 	if gotPAR.Get("response_type") != "code" || gotPAR.Get("code_challenge_method") != "S256" || gotPAR.Get("login_hint") != "alice.test" {
 		t.Fatalf("PAR form = %#v", gotPAR)
 	}
-	if gotPAR.Get("scope") != "atproto" || gotPAR.Get("client_assertion_type") != clientAssertionType || gotPAR.Get("client_assertion") == "" || gotDPoP == "" {
+	assertRequestedScopes(t, gotPAR.Get("scope"))
+	if gotPAR.Get("client_assertion_type") != clientAssertionType || gotPAR.Get("client_assertion") == "" || gotDPoP == "" {
 		t.Fatalf("PAR authentication missing: form=%#v DPoP=%q", gotPAR, gotDPoP)
 	}
 	parsed, err := url.Parse(redirect)

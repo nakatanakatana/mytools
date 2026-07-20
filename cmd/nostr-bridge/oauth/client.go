@@ -23,7 +23,14 @@ import (
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
 
-const clientAssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+const (
+	clientAssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+	clientScope         = "atproto" +
+		" rpc:app.bsky.graph.getFollows?aud=did:web:api.bsky.app%23bsky_appview" +
+		" rpc:app.bsky.graph.getList?aud=did:web:api.bsky.app%23bsky_appview" +
+		" rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview" +
+		" rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app%23bsky_appview"
+)
 
 // Options configures a confidential AT Protocol OAuth client.
 type Options struct {
@@ -124,7 +131,7 @@ func (c *Client) StartAuthorization(ctx context.Context, handle string) (string,
 
 	challengeHash := sha256.Sum256([]byte(verifier))
 	form := url.Values{
-		"client_id": {c.clientID}, "response_type": {"code"}, "redirect_uri": {c.redirectURL}, "scope": {"atproto"},
+		"client_id": {c.clientID}, "response_type": {"code"}, "redirect_uri": {c.redirectURL}, "scope": {clientScope},
 		"state": {state}, "login_hint": {handle}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challengeHash[:])}, "code_challenge_method": {"S256"},
 		"client_assertion_type": {clientAssertionType},
 	}
