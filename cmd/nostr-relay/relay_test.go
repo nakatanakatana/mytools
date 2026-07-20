@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -210,6 +211,7 @@ func allowPublisher(t *testing.T, store *relaystore.SQLiteStore, pubkey nostr.Pu
 }
 
 func containsNIP(values []any, want int) bool {
+	wantStr := strconv.Itoa(want)
 	for _, value := range values {
 		switch typed := value.(type) {
 		case int:
@@ -218,6 +220,10 @@ func containsNIP(values []any, want int) bool {
 			}
 		case float64:
 			if int(typed) == want {
+				return true
+			}
+		case string:
+			if typed == wantStr {
 				return true
 			}
 		}

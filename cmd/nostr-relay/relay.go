@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 	"net/http"
+	"strconv"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore/slicestore"
@@ -119,6 +120,10 @@ func configuredRelay(cfg Config, nips []int) *khatru.Relay {
 	relay.Info.Software = softwareURL
 	relay.Info.Version = "dev"
 	relay.Info.SupportedNIPs = nil
-	relay.Info.AddSupportedNIPs(nips)
+	strNIPs := make([]string, len(nips))
+	for i, nip := range nips {
+		strNIPs[i] = strconv.Itoa(nip)
+	}
+	relay.Info.AddSupportedNIPs(strNIPs)
 	return relay
 }
