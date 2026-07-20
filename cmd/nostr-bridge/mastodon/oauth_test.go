@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -217,6 +220,49 @@ func TestOAuthRemoteErrorsRetainSafeDiagnosticsAndRedactRequestSecrets(t *testin
 	if len(text) > 512 {
 		t.Fatalf("error is unbounded: %d bytes", len(text))
 	}
+}
+
+func TestOAuthTransportErrorsExposeOnlySafeClassifications(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "context canceled", err: context.Canceled, want: "context_canceled"},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, want: "deadline_exceeded"},
+		{name: "DNS", err: &net.DNSError{Err: "lookup authorization-secret", Name: "secret.example"}, want: "dns_error"},
+		{name: "network unreachable", err: &net.OpError{Op: "dial", Err: syscall.ENETUNREACH}, want: "network_unreachable"},
+		{name: "connection refused", err: &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, want: "connection_refused"},
+		{name: "connection reset", err: &net.OpError{Op: "read", Err: syscall.ECONNRESET}, want: "connection_reset"},
+		{name: "TLS", err: x509.UnknownAuthorityError{}, want: "tls_error"},
+		{name: "proxy", err: &url.Error{Op: "proxyconnect", URL: "https://proxy-user:authorization-secret@proxy.example", Err: errors.New("proxy rejected client-secret")}, want: "proxy_error"},
+		{name: "other", err: errors.New("https://social.example/oauth/token?code=authorization-secret client-secret"), want: "other_transport_error"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := newOAuthTransportError(test.err).Error()
+			assertOAuthLogContains(t, got, "class="+test.want, "detail=")
+			assertOAuthLogExcludes(t, got, "authorization-secret", "client-secret", "secret.example", "proxy.example", "social.example", "/oauth/token", "code=")
+			if len(got) > 512 {
+				t.Fatalf("transport error is unbounded: %d bytes", len(got))
+			}
+		})
+	}
+}
+
+func TestCallbackLogsSafeTransportFailure(t *testing.T) {
+	client, _, _ := newOAuthTestClient(t, "alice", time.Now())
+	state := startAuthorization(t, client)
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return nil, &url.Error{Op: "proxyconnect", URL: r.URL.String() + "?code=authorization-secret", Err: errors.New("proxy rejected client-secret")}
+	})}
+	logs := captureOAuthLogs(t)
+	response := callback(t, client, state, "authorization-secret")
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d", response.Code)
+	}
+	assertOAuthLogContains(t, logs.String(), "stage=token_exchange", "class=proxy_error", "detail=")
+	assertOAuthLogExcludes(t, logs.String(), state, "authorization-secret", "client-secret", "social.example", "/oauth/token", "code=", "state=")
 }
 
 func TestVerifyCredentialsErrorRedactsAccessToken(t *testing.T) {
