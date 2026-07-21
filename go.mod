@@ -10,7 +10,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/fasthttp/websocket v1.5.12
 	github.com/godbus/dbus/v5 v5.2.2
-	github.com/sqldef/sqldef/v3 v3.11.15
+	github.com/sqldef/sqldef/v3 v3.11.16
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
 	golang.org/x/sync v0.22.0
