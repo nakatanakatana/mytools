@@ -23,7 +23,7 @@ jobs:
             v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.62.0
+          aqua_version: v2.62.1
 
   lint:
     needs: setup
@@ -38,7 +38,7 @@ jobs:
             v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.62.0
+          aqua_version: v2.62.1
       - run: make check-sqlc
       - run: golangci-lint run
 
@@ -55,7 +55,7 @@ jobs:
             v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.62.0
+          aqua_version: v2.62.1
       - run: go build -o dist/ ./cmd/...
 
   test:
@@ -71,7 +71,7 @@ jobs:
             v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.62.0
+          aqua_version: v2.62.1
       # NOTE: workground https://github.com/golang/go/issues/75031
       - id: parse-go-version
         run: echo "GO_VERSION=$(cat aqua.yaml | grep "golang/go" | cut -f2 -d'@')" >> $GITHUB_OUTPUT
@@ -93,7 +93,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.62.0
+          aqua_version: v2.62.1
           policy_allow: "true"
       - run: aqua upc -prune
       - run: git diff --exit-code -- aqua-checksums.json
