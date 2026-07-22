@@ -88,6 +88,8 @@ type ReconciliationBatchRequest struct {
 	Targets     []string
 	EventScopes []SourceScope
 	Events      []EventEnqueueRequest
+	CursorScope SourceScope
+	Cursor      *CursorUpdate
 	Limit       int64
 }
 type DeleteEnqueueRequest struct {
@@ -150,6 +152,7 @@ type ReconciliationStore interface {
 	TargetStore
 	Reconcile(context.Context, ReconciliationRequest) error
 	ReconcileBatch(context.Context, ReconciliationBatchRequest) error
+	Cursor(context.Context, SourceScope, string) (string, error)
 }
 
 // OutboxStore is the production-facing bridge delivery contract. It deliberately

@@ -11,7 +11,7 @@ import (
 )
 
 // ProfileEvent creates a signed kind 0 event for a source profile.
-func ProfileEvent(masterSeed []byte, profile source.Profile) (nostr.Event, error) {
+func ProfileEvent(masterSeed []byte, profile source.Profile, createdAt nostr.Timestamp) (nostr.Event, error) {
 	key, err := DeriveActorKey(masterSeed, profile.Identity)
 	if err != nil {
 		return nostr.Event{}, err
@@ -25,11 +25,11 @@ func ProfileEvent(masterSeed []byte, profile source.Profile) (nostr.Event, error
 	if err != nil {
 		return nostr.Event{}, fmt.Errorf("marshal profile content: %w", err)
 	}
-	return signedEvent(key, nostr.Event{Kind: nostr.KindProfileMetadata, Content: string(content)})
+	return signedEvent(key, nostr.Event{CreatedAt: createdAt, Kind: nostr.KindProfileMetadata, Content: string(content)})
 }
 
 // FollowEvent creates a signed aggregate kind 3 event for the owner's follows.
-func FollowEvent(masterSeed []byte, owner source.ActorIdentity, follows source.IdentitySet) (nostr.Event, error) {
+func FollowEvent(masterSeed []byte, owner source.ActorIdentity, follows source.IdentitySet, createdAt nostr.Timestamp) (nostr.Event, error) {
 	key, err := DeriveActorKey(masterSeed, owner)
 	if err != nil {
 		return nostr.Event{}, err
@@ -38,11 +38,11 @@ func FollowEvent(masterSeed []byte, owner source.ActorIdentity, follows source.I
 	if err != nil {
 		return nostr.Event{}, err
 	}
-	return signedEvent(key, nostr.Event{Kind: nostr.KindFollowList, Tags: tags})
+	return signedEvent(key, nostr.Event{CreatedAt: createdAt, Kind: nostr.KindFollowList, Tags: tags})
 }
 
 // FollowSetEvent creates a signed kind 30000 follow set for one source list.
-func FollowSetEvent(masterSeed []byte, owner source.ActorIdentity, list source.List) (nostr.Event, error) {
+func FollowSetEvent(masterSeed []byte, owner source.ActorIdentity, list source.List, createdAt nostr.Timestamp) (nostr.Event, error) {
 	key, err := DeriveActorKey(masterSeed, owner)
 	if err != nil {
 		return nostr.Event{}, err
@@ -53,7 +53,7 @@ func FollowSetEvent(masterSeed []byte, owner source.ActorIdentity, list source.L
 	}
 	tags := nostr.Tags{{"d", list.ID}, {"title", list.Title}, {"description", list.Description}}
 	tags = append(tags, pTags...)
-	return signedEvent(key, nostr.Event{Kind: nostr.Kind(30000), Tags: tags})
+	return signedEvent(key, nostr.Event{CreatedAt: createdAt, Kind: nostr.Kind(30000), Tags: tags})
 }
 
 // PostEvent creates a signed kind 1 event. A reply is linked only if its parent

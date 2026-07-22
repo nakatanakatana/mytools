@@ -12,17 +12,20 @@ import (
 
 var testSeed = []byte("01234567890123456789012345678901")
 
+const replaceableTestTimestamp nostr.Timestamp = 123
+
 func TestOwnerFollowEventContainsBothProviders(t *testing.T) {
 	owner := source.ActorIdentity{Provider: "bridge-owner", ID: "home"}
 	follows := source.IdentitySet{
 		{Provider: "bluesky", ID: "did:plc:alice"}:                     {},
 		{Provider: "mastodon", ID: "https://social.example/users/bob"}: {},
 	}
-	event, err := FollowEvent(testSeed, owner, follows)
+	event, err := FollowEvent(testSeed, owner, follows, replaceableTestTimestamp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertPTagsForIdentities(t, event.Tags, follows)
+	assertReplaceableTimestamp(t, event)
 }
 
 func assertPTagsForIdentities(t *testing.T, tags nostr.Tags, identities source.IdentitySet) {
@@ -40,13 +43,14 @@ func assertPTagsForIdentities(t *testing.T, tags nostr.Tags, identities source.I
 
 func TestProfileEventMapsBlueskyProfileAndSignsIt(t *testing.T) {
 	profile := source.Profile{Identity: blueskyIdentity("did:plc:alice"), DisplayName: "Alice", Description: "Hello", AvatarURL: "https://example.com/a.png", ProfileURL: "https://bsky.app/profile/alice.bsky.social"}
-	event, err := ProfileEvent(testSeed, profile)
+	event, err := ProfileEvent(testSeed, profile, replaceableTestTimestamp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if event.Kind != nostr.KindProfileMetadata || !event.VerifySignature() {
 		t.Fatalf("profile event = %#v", event)
 	}
+	assertReplaceableTimestamp(t, event)
 	var content map[string]string
 	if err := json.Unmarshal([]byte(event.Content), &content); err != nil {
 		t.Fatal(err)
@@ -59,7 +63,7 @@ func TestProfileEventMapsBlueskyProfileAndSignsIt(t *testing.T) {
 }
 
 func TestFollowEventMapsAllFollowedDIDs(t *testing.T) {
-	event, err := FollowEvent(testSeed, blueskyIdentity("did:plc:owner"), identitySet("did:plc:bob", "did:plc:carol"))
+	event, err := FollowEvent(testSeed, blueskyIdentity("did:plc:owner"), identitySet("did:plc:bob", "did:plc:carol"), replaceableTestTimestamp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,10 +71,11 @@ func TestFollowEventMapsAllFollowedDIDs(t *testing.T) {
 		t.Fatalf("follow event = %#v", event)
 	}
 	assertPTagsForDIDs(t, event.Tags, "did:plc:bob", "did:plc:carol")
+	assertReplaceableTimestamp(t, event)
 }
 
 func TestFollowSetEventMapsMetadataAndMembers(t *testing.T) {
-	event, err := FollowSetEvent(testSeed, blueskyIdentity("did:plc:owner"), source.List{ID: "at://did:plc:owner/app.bsky.graph.list/friends", Title: "Friends", Description: "People I know", Members: identitySet("did:plc:bob")})
+	event, err := FollowSetEvent(testSeed, blueskyIdentity("did:plc:owner"), source.List{ID: "at://did:plc:owner/app.bsky.graph.list/friends", Title: "Friends", Description: "People I know", Members: identitySet("did:plc:bob")}, replaceableTestTimestamp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +88,14 @@ func TestFollowSetEventMapsMetadataAndMembers(t *testing.T) {
 		}
 	}
 	assertPTagsForDIDs(t, event.Tags, "did:plc:bob")
+	assertReplaceableTimestamp(t, event)
+}
+
+func assertReplaceableTimestamp(t *testing.T, event nostr.Event) {
+	t.Helper()
+	if event.CreatedAt != replaceableTestTimestamp || !event.VerifySignature() {
+		t.Fatalf("event timestamp/signature = %d/%v", event.CreatedAt, event.VerifySignature())
+	}
 }
 
 func TestPostEventRetainsTimestampURLAndKnownReplyParent(t *testing.T) {

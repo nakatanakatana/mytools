@@ -138,7 +138,7 @@ func TestReconcileBatchRollsBackProviderTargetsWhenOwnerMappingFails(t *testing.
 	providerEvent := reconciliationTestEventForScope(t, provider, "provider-profile")
 	ownerEvent := reconciliationTestEventForScope(t, owner, "owner-profile")
 	before, _ := s.OutboxCount(ctx)
-	err = s.ReconcileBatch(ctx, ReconciliationBatchRequest{TargetScope: provider, Targets: []string{"new"}, EventScopes: []SourceScope{provider, owner}, Events: []EventEnqueueRequest{providerEvent, ownerEvent}, Limit: 100})
+	err = s.ReconcileBatch(ctx, ReconciliationBatchRequest{TargetScope: provider, Targets: []string{"new"}, EventScopes: []SourceScope{provider, owner}, Events: []EventEnqueueRequest{providerEvent, ownerEvent}, CursorScope: owner, Cursor: &CursorUpdate{Name: "replaceable_created_at", Value: "100"}, Limit: 100})
 	if err == nil {
 		t.Fatal("expected injected owner mapping failure")
 	}
@@ -152,6 +152,36 @@ func TestReconcileBatchRollsBackProviderTargetsWhenOwnerMappingFails(t *testing.
 	}
 	if after, _ := s.OutboxCount(ctx); after != before {
 		t.Fatalf("outbox count = %d, want %d", after, before)
+	}
+	if _, err := s.Cursor(ctx, owner, "replaceable_created_at"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("cursor after rollback error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestReconcileBatchAdvancesCursorWhenEventsAreDeduplicated(t *testing.T) {
+	ctx := context.Background()
+	s, closer, err := Open(ctx, filepath.Join(t.TempDir(), "batch-cursor.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+	owner := SourceScope{Provider: "bridge-owner", Account: "home"}
+	event := reconciliationTestEventForScope(t, owner, "owner/follows")
+	request := ReconciliationBatchRequest{TargetScope: testScope, EventScopes: []SourceScope{owner}, Events: []EventEnqueueRequest{event}, CursorScope: owner, Cursor: &CursorUpdate{Name: "replaceable_created_at", Value: "100"}, Limit: 100}
+	if err := s.ReconcileBatch(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.OutboxCount(ctx)
+	request.Cursor.Value = "101"
+	if err := s.ReconcileBatch(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.OutboxCount(ctx)
+	if after != before {
+		t.Fatalf("outbox count after deduplicated batch = %d, want %d", after, before)
+	}
+	if got, err := s.Cursor(ctx, owner, "replaceable_created_at"); err != nil || got != "101" {
+		t.Fatalf("cursor = %q, %v; want 101", got, err)
 	}
 }
 
