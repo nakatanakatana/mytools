@@ -567,6 +567,17 @@ func (s *memoryOAuthStore) SaveOAuthToken(_ context.Context, scope bridgestore.S
 	s.tokens[scope.Provider+"\x00"+scope.Account+"\x00"+v.AccountDID] = v
 	return nil
 }
+func (s *memoryOAuthStore) UpdateOAuthTokenRefreshFailure(_ context.Context, scope bridgestore.SourceScope, id, class string, reauthRequired bool) error {
+	key := scope.Provider + "\x00" + scope.Account + "\x00" + id
+	v, ok := s.tokens[key]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	v.LastRefreshErrorClass = class
+	v.ReauthRequired = reauthRequired
+	s.tokens[key] = v
+	return nil
+}
 func (s *memoryOAuthStore) OAuthTokenByAccountDID(_ context.Context, scope bridgestore.SourceScope, id string) (bridgestore.OAuthToken, error) {
 	v, ok := s.tokens[scope.Provider+"\x00"+scope.Account+"\x00"+id]
 	if !ok {
