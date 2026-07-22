@@ -8,10 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
@@ -27,7 +30,7 @@ func TestClientFetchesAuthenticatedPagedSources(t *testing.T) {
 		if r.Header.Get("Authorization") != "DPoP access-token" {
 			t.Fatal("unexpected Authorization header")
 		}
-		assertDPoPProof(t, r, key, "", "access-token")
+		assertDPoPProof(t, r, key, "persisted-nonce", "access-token")
 		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
 		switch r.URL.Path {
 		case "/xrpc/app.bsky.feed.getTimeline":
@@ -233,7 +236,11 @@ func assertDPoPProof(t *testing.T, request *http.Request, wantKey *ecdsa.Private
 	if header.Typ != "dpop+jwt" || header.Alg != "ES256" || header.JWK.Kty != "EC" || header.JWK.Crv != "P-256" {
 		t.Fatalf("DPoP header = %#v", header)
 	}
-	if header.JWK.X != base64.RawURLEncoding.EncodeToString(wantKey.X.Bytes()) || header.JWK.Y != base64.RawURLEncoding.EncodeToString(wantKey.Y.Bytes()) {
+	xBytes := make([]byte, 32)
+	yBytes := make([]byte, 32)
+	wantKey.X.FillBytes(xBytes)
+	wantKey.Y.FillBytes(yBytes)
+	if header.JWK.X != base64.RawURLEncoding.EncodeToString(xBytes) || header.JWK.Y != base64.RawURLEncoding.EncodeToString(yBytes) {
 		t.Fatalf("DPoP JWK does not match persisted key: %#v", header.JWK)
 	}
 	if claims.HTM != request.Method || claims.HTU != "http://"+request.Host+request.URL.Path || claims.Nonce != wantNonce || claims.JTI == "" {
@@ -261,5 +268,438 @@ func decodeJWTPart(t *testing.T, part string, destination any) {
 	}
 	if err := json.Unmarshal(decoded, destination); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type sequenceTokenProvider struct {
+	tokens []bridgeoauth.Token
+	calls  []string
+}
+
+func (p *sequenceTokenProvider) TokenByAccountDID(ctx context.Context, did string) (bridgeoauth.Token, error) {
+	p.calls = append(p.calls, did)
+	if len(p.tokens) == 0 {
+		return bridgeoauth.Token{}, errors.New("no token available")
+	}
+	tok := p.tokens[0]
+	p.tokens = p.tokens[1:]
+	return tok, nil
+}
+
+func TestClientLoadsTokenForEachRequest(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if r.Header.Get("Authorization") != "DPoP first-access" {
+				t.Fatalf("request 1 Authorization = %q, want DPoP first-access", r.Header.Get("Authorization"))
+			}
+			assertDPoPProof(t, r, key, "", "first-access")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did": "did:plc:one", "handle": "one.test",
+			})
+		case 2:
+			if r.Header.Get("Authorization") != "DPoP second-access" {
+				t.Fatalf("request 2 Authorization = %q, want DPoP second-access", r.Header.Get("Authorization"))
+			}
+			assertDPoPProof(t, r, key, "", "second-access")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did": "did:plc:two", "handle": "two.test",
+			})
+		default:
+			t.Fatalf("unexpected request %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	provider := &sequenceTokenProvider{
+		tokens: []bridgeoauth.Token{
+			{AccessToken: "first-access", DPoPKey: key},
+			{AccessToken: "second-access", DPoPKey: key},
+		},
+	}
+
+	client, err := NewClient(ClientOptions{
+		HTTPClient: server.Client(),
+		BaseURL:    server.URL,
+		Tokens:     provider,
+		AccountDID: "did:plc:owner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p1, err := client.Profile(context.Background(), "did:plc:one")
+	if err != nil || p1.Handle != "one.test" {
+		t.Fatalf("Profile 1 = %#v, %v", p1, err)
+	}
+
+	p2, err := client.Profile(context.Background(), "did:plc:two")
+	if err != nil || p2.Handle != "two.test" {
+		t.Fatalf("Profile 2 = %#v, %v", p2, err)
+	}
+
+	if len(provider.calls) != 2 {
+		t.Fatalf("provider calls count = %d, want 2", len(provider.calls))
+	}
+	if provider.calls[0] != "did:plc:owner" || provider.calls[1] != "did:plc:owner" {
+		t.Fatalf("provider calls = %#v, want [did:plc:owner, did:plc:owner]", provider.calls)
+	}
+}
+
+type errorTokenProvider struct {
+	err error
+}
+
+func (p *errorTokenProvider) TokenByAccountDID(ctx context.Context, did string) (bridgeoauth.Token, error) {
+	return bridgeoauth.Token{}, p.err
+}
+
+func TestClientDoesNotRequestWithTokenProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("unexpected HTTP request when token provider returns error")
+	}))
+	defer server.Close()
+
+	provider := &errorTokenProvider{err: errors.New("token store error")}
+
+	client, err := NewClient(ClientOptions{
+		HTTPClient: server.Client(),
+		BaseURL:    server.URL,
+		Tokens:     provider,
+		AccountDID: "did:plc:owner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.Profile(context.Background(), "did:plc:owner")
+	if err == nil {
+		t.Fatal("Profile err = nil, want token store error")
+	}
+	if !strings.Contains(err.Error(), "token store error") {
+		t.Fatalf("Profile err = %v, want token store error contained", err)
+	}
+}
+
+func TestClientConcurrentGetDPoPNonceRace(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := bridgeoauth.Token{
+		AccessToken: "test-token",
+		DPoPKey:     key,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("DPoP-Nonce", "new-nonce")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"did":    "did:plc:owner",
+			"handle": "owner.test",
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientOptions{
+		HTTPClient: server.Client(),
+		BaseURL:    server.URL,
+		Token:      tok,
+		AccountDID: "did:plc:owner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines = 10
+	errCh := make(chan error, goroutines)
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := client.Profile(context.Background(), "did:plc:owner")
+			if err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent Profile failed: %v", err)
+		}
+	}
+}
+
+type invalidTokenProvider struct{}
+
+func (p invalidTokenProvider) TokenByAccountDID(ctx context.Context, did string) (bridgeoauth.Token, error) {
+	return bridgeoauth.Token{AccessToken: "", DPoPKey: nil}, nil
+}
+
+func TestClientDoesNotPanicWithInvalidToken(t *testing.T) {
+	client, err := NewClient(ClientOptions{
+		HTTPClient: http.DefaultClient,
+		BaseURL:    "http://127.0.0.1",
+		Tokens:     invalidTokenProvider{},
+		AccountDID: "did:plc:owner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.Profile(context.Background(), "did:plc:owner")
+	if err == nil {
+		t.Fatal("Profile err = nil, want invalid token error")
+	}
+	if !strings.Contains(err.Error(), "invalid token") {
+		t.Fatalf("Profile err = %v, want 'invalid token' error", err)
+	}
+}
+
+func TestClientPreventsStaleDPoPNonceOverwrite(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := bridgeoauth.Token{
+		AccessToken: "test-token",
+		DPoPKey:     key,
+	}
+	client, err := NewClient(ClientOptions{
+		HTTPClient: http.DefaultClient,
+		BaseURL:    "http://127.0.0.1",
+		Token:      tok,
+		AccountDID: "did:plc:owner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, gen0 := client.nonceAndGen()
+
+	// Update with gen0 succeeds and advances generation
+	if !client.updateNonce(gen0, "nonce-gen1") {
+		t.Fatal("updateNonce with initial gen0 failed")
+	}
+
+	nonce, gen1 := client.nonceAndGen()
+	if nonce != "nonce-gen1" || gen1 != gen0+1 {
+		t.Fatalf("nonce = %q, gen = %d, want nonce-gen1, gen = %d", nonce, gen1, gen0+1)
+	}
+
+	// Attempt stale update with old gen0 fails
+	if client.updateNonce(gen0, "stale-nonce-gen0") {
+		t.Fatal("updateNonce with stale gen0 returned true, want false")
+	}
+	if nonce, _ := client.nonceAndGen(); nonce != "nonce-gen1" {
+		t.Fatalf("nonce = %q, want nonce-gen1", nonce)
+	}
+
+	// Valid update with current gen1 succeeds
+	if !client.updateNonce(gen1, "nonce-gen2") {
+		t.Fatal("updateNonce with gen1 failed")
+	}
+	if nonce, _ := client.nonceAndGen(); nonce != "nonce-gen2" {
+		t.Fatalf("nonce = %q, want nonce-gen2", nonce)
+	}
+}
+
+func TestClientPreventsStaleDPoPNonceOverwriteConcurrentHTTP(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := bridgeoauth.Token{
+		AccessToken: "test-token",
+		DPoPKey:     key,
+	}
+
+	req1Started := make(chan struct{})
+	req1Gate := make(chan struct{})
+	var requestCount int32
+	var gateOnce sync.Once
+	closeGate := func() {
+		gateOnce.Do(func() { close(req1Gate) })
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&requestCount, 1)
+		if count == 1 {
+			close(req1Started)
+			<-req1Gate
+			w.Header().Set("DPoP-Nonce", "stale-slow-nonce")
+		} else {
+			w.Header().Set("DPoP-Nonce", "fresh-fast-nonce")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"did":    "did:plc:owner",
+			"handle": "owner.test",
+		})
+	}))
+	defer server.Close()
+	defer closeGate()
+
+	client, err := NewClient(ClientOptions{
+		HTTPClient: server.Client(),
+		BaseURL:    server.URL,
+		Token:      tok,
+		AccountDID: "did:plc:owner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	// Req 1 (slow)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = client.Profile(context.Background(), "did:plc:owner")
+	}()
+
+	<-req1Started
+
+	// Req 2 (fast, completes first and updates nonce to fresh-fast-nonce)
+	_, err = client.Profile(context.Background(), "did:plc:owner")
+	if err != nil {
+		t.Fatalf("fast Profile failed: %v", err)
+	}
+
+	// Release slow Req 1
+	closeGate()
+	wg.Wait()
+
+	// Verify that the slow response did not overwrite fresh-fast-nonce with stale-slow-nonce
+	nonce, _ := client.nonceAndGen()
+	if nonce != "fresh-fast-nonce" {
+		t.Fatalf("dpopNonce = %q, want fresh-fast-nonce", nonce)
+	}
+}
+
+func parseDPoPNonce(t *testing.T, proofJWT string) string {
+	t.Helper()
+	parts := strings.Split(proofJWT, ".")
+	if len(parts) != 3 {
+		t.Fatalf("invalid DPoP JWT format: %s", proofJWT)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("failed to decode DPoP payload: %v", err)
+	}
+	var claims struct {
+		Nonce string `json:"nonce"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatalf("failed to unmarshal DPoP claims: %v", err)
+	}
+	return claims.Nonce
+}
+
+func TestClientDPoPChallengeRetryStaleAndFailureNonce(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := bridgeoauth.Token{
+		AccessToken: "test-token",
+		DPoPKey:     key,
+	}
+
+	slowReqStarted := make(chan struct{})
+	slowReqGate := make(chan struct{})
+	var gateOnce sync.Once
+	closeGate := func() {
+		gateOnce.Do(func() { close(slowReqGate) })
+	}
+
+	var reqCount int32
+	var retriedProofNonce string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&reqCount, 1)
+		switch count {
+		case 1:
+			// Slow req 1: receives 401 challenge after gate
+			close(slowReqStarted)
+			<-slowReqGate
+			w.Header().Set("DPoP-Nonce", "stale-401-challenge")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "use_dpop_nonce"})
+		case 2:
+			// Fast req 2: completes first and saves fast-fresh-nonce
+			w.Header().Set("DPoP-Nonce", "fast-fresh-nonce")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"did": "did:plc:owner", "handle": "owner.test"})
+		case 3:
+			// Slow req 1 retry: verify proof nonce and return final failure with new nonce
+			retriedProofNonce = r.Header.Get("DPoP")
+			w.Header().Set("DPoP-Nonce", "final-failure-nonce")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_request"})
+		}
+	}))
+	defer server.Close()
+	defer closeGate()
+
+	client, err := NewClient(ClientOptions{
+		HTTPClient: server.Client(),
+		BaseURL:    server.URL,
+		Token:      tok,
+		AccountDID: "did:plc:owner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var slowErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, slowErr = client.Profile(context.Background(), "did:plc:owner")
+	}()
+
+	<-slowReqStarted
+
+	// Fast request completes and updates nonce to fast-fresh-nonce
+	_, err = client.Profile(context.Background(), "did:plc:owner")
+	if err != nil {
+		t.Fatalf("fast Profile failed: %v", err)
+	}
+
+	// Release slow request to receive 401 challenge and retry
+	closeGate()
+	wg.Wait()
+
+	// 1. Verify slow request returned expected error containing both invalid_request and 400 Bad Request status
+	if slowErr == nil || !strings.Contains(slowErr.Error(), "invalid_request") || !strings.Contains(slowErr.Error(), "400 Bad Request") {
+		t.Fatalf("slow Profile err = %v, want invalid_request and 400 Bad Request contained", slowErr)
+	}
+
+	// 2. Verify total request count was exactly 3 (no extra retries)
+	if count := atomic.LoadInt32(&reqCount); count != 3 {
+		t.Fatalf("request count = %d, want 3", count)
+	}
+
+	// 3. Verify retried proof used fast-fresh-nonce (the latest nonce available when slow request retried)
+	usedNonce := parseDPoPNonce(t, retriedProofNonce)
+	if usedNonce != "fast-fresh-nonce" {
+		t.Fatalf("retried DPoP proof nonce = %q, want fast-fresh-nonce", usedNonce)
+	}
+
+	// 4. Verify that the final failure response updated the nonce to final-failure-nonce
+	nonce, _ := client.nonceAndGen()
+	if nonce != "final-failure-nonce" {
+		t.Fatalf("dpopNonce = %q, want final-failure-nonce", nonce)
 	}
 }

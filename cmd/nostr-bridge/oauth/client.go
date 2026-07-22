@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/secretbox"
@@ -55,6 +56,7 @@ type Client struct {
 	clientSigningKey *ecdsa.PrivateKey
 	box              secretbox.Box
 	now              func() time.Time
+	tokenMu          sync.Mutex
 }
 
 type sessionPayload struct {
@@ -257,12 +259,15 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
 		return
 	}
-	if err := c.store.SaveOAuthToken(r.Context(), c.scope, bridgestore.OAuthToken{AccountDID: tokens.Sub, EncryptedPayload: encrypted, UpdatedAt: c.now().Unix()}); err != nil {
+	if err := func() error {
+		c.tokenMu.Lock()
+		defer c.tokenMu.Unlock()
+		if err := c.store.SaveOAuthToken(r.Context(), c.scope, bridgestore.OAuthToken{AccountDID: tokens.Sub, EncryptedPayload: encrypted, UpdatedAt: c.now().Unix()}); err != nil {
+			return err
+		}
+		return c.store.DeleteOAuthSession(r.Context(), c.scope, state)
+	}(); err != nil {
 		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
-		return
-	}
-	if err := c.store.DeleteOAuthSession(r.Context(), c.scope, state); err != nil {
-		http.Error(w, "OAuth session cleanup failed", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -270,6 +275,9 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 // TokenByAccountDID returns the persisted access token and its DPoP credential.
 func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (Token, error) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+
 	stored, err := c.store.OAuthTokenByAccountDID(ctx, c.scope, accountDID)
 	if err != nil {
 		return Token{}, fmt.Errorf("load OAuth token: %w", err)

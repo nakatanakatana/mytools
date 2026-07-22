@@ -172,10 +172,35 @@ func enabledProviderScopes(cfg Config) []bridgestore.SourceScope {
 	return scopes
 }
 
+type healthBlueskyTokenProvider struct {
+	tokens bluesky.TokenProvider
+	health *Health
+}
+
+func (p healthBlueskyTokenProvider) TokenByAccountDID(ctx context.Context, accountDID string) (bridgeoauth.Token, error) {
+	token, err := p.tokens.TokenByAccountDID(ctx, accountDID)
+	if err != nil {
+		p.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+			m.Authenticated = false
+		})
+		return bridgeoauth.Token{}, err
+	}
+	p.health.Update(func(metrics *HealthMetrics) {
+		metrics.OAuthConnected = true
+		metrics.OAuthExpiry = token.Expiry
+	})
+	p.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+		m.Authenticated = true
+		m.OAuthExpiry = token.Expiry
+	})
+	return token, nil
+}
+
 func (r *runtimeSync) runBluesky(ctx context.Context, cfg Config, seed []byte, store runtimeStore, oauthClient *bridgeoauth.Client, health *Health, coordinator reconciliationCoordinator) {
+	tokenProvider := healthBlueskyTokenProvider{tokens: oauthClient, health: health}
 	for ctx.Err() == nil {
 		scope := bridgestore.SourceScope{Provider: "bluesky", Account: cfg.Bluesky.AccountDID}
-		token, err := oauthClient.TokenByAccountDID(ctx, cfg.Bluesky.AccountDID)
+		token, err := tokenProvider.TokenByAccountDID(ctx, cfg.Bluesky.AccountDID)
 		if err == nil {
 			if !token.Expiry.IsZero() && !token.Expiry.After(time.Now()) {
 				health.Update(func(metrics *HealthMetrics) {
@@ -192,9 +217,7 @@ func (r *runtimeSync) runBluesky(ctx context.Context, cfg Config, seed []byte, s
 				}
 				continue
 			}
-			health.Update(func(metrics *HealthMetrics) { metrics.OAuthConnected = true; metrics.OAuthExpiry = token.Expiry })
-			health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.Authenticated = true; m.OAuthExpiry = token.Expiry })
-			if source, sourceErr := bluesky.NewClient(bluesky.ClientOptions{BaseURL: cfg.Bluesky.BaseURL, Token: token, AccountDID: cfg.Bluesky.AccountDID}); sourceErr == nil {
+			if source, sourceErr := bluesky.NewClient(bluesky.ClientOptions{BaseURL: cfg.Bluesky.BaseURL, Tokens: tokenProvider, AccountDID: cfg.Bluesky.AccountDID}); sourceErr == nil {
 				health.Update(func(metrics *HealthMetrics) { metrics.PendingWork++ })
 				var targets bluesky.TargetSet
 				var reconcileErr error

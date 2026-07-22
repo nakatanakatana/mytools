@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -29,22 +30,57 @@ type SourceClient interface {
 	Profile(context.Context, string) (Profile, error)
 }
 
+// TokenProvider fetches OAuth tokens by account DID.
+type TokenProvider interface {
+	TokenByAccountDID(context.Context, string) (bridgeoauth.Token, error)
+}
+
 // ClientOptions configures an OAuth-authenticated Bluesky API client.
 type ClientOptions struct {
 	HTTPClient *http.Client
 	BaseURL    string
 	Token      bridgeoauth.Token
+	Tokens     TokenProvider
 	AccountDID string
 }
 
 // Client reads Bluesky XRPC endpoints on behalf of one authenticated account.
 type Client struct {
-	httpClient  *http.Client
-	baseURL     string
-	accessToken string
-	dpopKey     *ecdsa.PrivateKey
-	dpopNonce   string
-	accountDID  string
+	httpClient *http.Client
+	baseURL    string
+	tokens     TokenProvider
+	nonceMu    sync.RWMutex
+	dpopNonce  string
+	nonceGen   uint64
+	accountDID string
+}
+
+func (c *Client) nonceAndGen() (string, uint64) {
+	c.nonceMu.RLock()
+	defer c.nonceMu.RUnlock()
+	return c.dpopNonce, c.nonceGen
+}
+
+func (c *Client) updateNonce(usedGen uint64, newNonce string) bool {
+	if newNonce == "" {
+		return false
+	}
+	c.nonceMu.Lock()
+	defer c.nonceMu.Unlock()
+	if c.dpopNonce == "" || usedGen == c.nonceGen {
+		c.dpopNonce = newNonce
+		c.nonceGen++
+		return true
+	}
+	return false
+}
+
+type fixedTokenProvider struct {
+	token bridgeoauth.Token
+}
+
+func (p fixedTokenProvider) TokenByAccountDID(ctx context.Context, did string) (bridgeoauth.Token, error) {
+	return p.token, nil
 }
 
 // Actor identifies a Bluesky account.
@@ -129,13 +165,25 @@ type Page struct {
 
 // NewClient returns a Bluesky client using a DPoP-bound OAuth access token.
 func NewClient(options ClientOptions) (*Client, error) {
-	if strings.TrimSpace(options.BaseURL) == "" || strings.TrimSpace(options.Token.AccessToken) == "" || options.Token.DPoPKey == nil || strings.TrimSpace(options.AccountDID) == "" {
+	if strings.TrimSpace(options.BaseURL) == "" || strings.TrimSpace(options.AccountDID) == "" {
 		return nil, errors.New("Bluesky client requires base URL, DPoP-bound access token, and account DID") //nolint:staticcheck // Bluesky is a product name.
+	}
+	provider := options.Tokens
+	if provider == nil {
+		if strings.TrimSpace(options.Token.AccessToken) == "" || options.Token.DPoPKey == nil {
+			return nil, errors.New("Bluesky client requires base URL, DPoP-bound access token, and account DID") //nolint:staticcheck // Bluesky is a product name.
+		}
+		provider = fixedTokenProvider{token: options.Token}
 	}
 	if options.HTTPClient == nil {
 		options.HTTPClient = http.DefaultClient
 	}
-	return &Client{httpClient: options.HTTPClient, baseURL: strings.TrimRight(options.BaseURL, "/"), accessToken: options.Token.AccessToken, dpopKey: options.Token.DPoPKey, accountDID: options.AccountDID}, nil
+	return &Client{
+		httpClient: options.HTTPClient,
+		baseURL:    strings.TrimRight(options.BaseURL, "/"),
+		tokens:     provider,
+		accountDID: options.AccountDID,
+	}, nil
 }
 
 // Timeline returns one authenticated timeline page.
@@ -322,24 +370,24 @@ func (c *Client) actors(ctx context.Context, endpoint, field string, query url.V
 }
 
 func (c *Client) get(ctx context.Context, endpoint string, query url.Values, destination any) error {
-	response, err := c.doGet(ctx, endpoint, query)
+	response, usedGen, err := c.doGet(ctx, endpoint, query)
 	if err != nil {
 		return err
 	}
 	if (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusBadRequest) && response.Header.Get("DPoP-Nonce") != "" {
-		c.dpopNonce = response.Header.Get("DPoP-Nonce")
+		c.updateNonce(usedGen, response.Header.Get("DPoP-Nonce"))
 		_ = response.Body.Close()
-		response, err = c.doGet(ctx, endpoint, query)
+		response, usedGen, err = c.doGet(ctx, endpoint, query)
 		if err != nil {
 			return err
 		}
 	}
 	defer func() { _ = response.Body.Close() }()
+	if nonce := response.Header.Get("DPoP-Nonce"); nonce != "" {
+		c.updateNonce(usedGen, nonce)
+	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return pdsResponseError(endpoint, response)
-	}
-	if nonce := response.Header.Get("DPoP-Nonce"); nonce != "" {
-		c.dpopNonce = nonce
 	}
 	if err := json.NewDecoder(response.Body).Decode(destination); err != nil {
 		return fmt.Errorf("decode Bluesky %s response: %w", endpoint, err)
@@ -373,22 +421,33 @@ func safePDSDetail(value string) string {
 	return safe.String()
 }
 
-func (c *Client) doGet(ctx context.Context, endpoint string, query url.Values) (*http.Response, error) {
+func (c *Client) doGet(ctx context.Context, endpoint string, query url.Values) (*http.Response, uint64, error) {
+	tok, err := c.tokens.TokenByAccountDID(ctx, c.accountDID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("load Bluesky token for %s: %w", c.accountDID, err)
+	}
+	if strings.TrimSpace(tok.AccessToken) == "" || tok.DPoPKey == nil {
+		return nil, 0, fmt.Errorf("load Bluesky token for %s: invalid token (missing access token or DPoP key)", c.accountDID)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/xrpc/"+endpoint+"?"+query.Encode(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("create Bluesky %s request: %w", endpoint, err)
+		return nil, 0, fmt.Errorf("create Bluesky %s request: %w", endpoint, err)
 	}
-	proof, err := dpopProof(c.dpopKey, request.Method, request.URL, c.dpopNonce, c.accessToken)
+	nonce, gen := c.nonceAndGen()
+	if nonce == "" {
+		nonce = tok.DPoPNonce
+	}
+	proof, err := dpopProof(tok.DPoPKey, request.Method, request.URL, nonce, tok.AccessToken)
 	if err != nil {
-		return nil, fmt.Errorf("create Bluesky DPoP proof: %w", err)
+		return nil, 0, fmt.Errorf("create Bluesky DPoP proof: %w", err)
 	}
-	request.Header.Set("Authorization", "DPoP "+c.accessToken)
+	request.Header.Set("Authorization", "DPoP "+tok.AccessToken)
 	request.Header.Set("DPoP", proof)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("request Bluesky %s: %w", endpoint, err)
+		return nil, 0, fmt.Errorf("request Bluesky %s: %w", endpoint, err)
 	}
-	return response, nil
+	return response, gen, nil
 }
 
 func dpopProof(key *ecdsa.PrivateKey, method string, requestURL *url.URL, nonce, accessToken string) (string, error) {
