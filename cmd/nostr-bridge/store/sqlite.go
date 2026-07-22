@@ -295,6 +295,11 @@ func (s SQLiteStore) ReconcileBatch(ctx context.Context, request ReconciliationB
 	for _, scope := range request.EventScopes {
 		allowedScopes[scope] = struct{}{}
 	}
+	if request.Cursor != nil {
+		if _, ok := allowedScopes[request.CursorScope]; !ok {
+			return ErrSourceScopeMismatch
+		}
+	}
 	for _, event := range request.Events {
 		if _, ok := allowedScopes[event.Mapping.Source.Scope]; !ok {
 			return ErrSourceScopeMismatch
@@ -370,6 +375,11 @@ func (s SQLiteStore) ReconcileBatch(ctx context.Context, request ReconciliationB
 		}
 		if err := enqueueOutbox(ctx, queries, event.Event); err != nil {
 			return err
+		}
+	}
+	if request.Cursor != nil {
+		if err := saveCursor(ctx, queries, request.CursorScope, request.Cursor); err != nil {
+			return fmt.Errorf("save reconciliation cursor: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

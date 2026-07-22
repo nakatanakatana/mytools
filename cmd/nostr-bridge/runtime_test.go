@@ -158,7 +158,7 @@ func TestRuntimeCoordinatorRestartPreservesUnavailableProviderSnapshotAndList(t 
 	b := bridgestore.SourceScope{Provider: "bluesky", Account: "did:plc:owner"}
 	m := bridgestore.SourceScope{Provider: "mastodon", Account: "owner@social.example"}
 	scopes := []bridgestore.SourceScope{b, m}
-	options := bridgeowner.Options{MasterSeed: []byte("01234567890123456789012345678901"), OwnerID: "home", Store: s, OutboxLimit: 100, EnabledScopes: scopes}
+	options := bridgeowner.Options{MasterSeed: []byte("01234567890123456789012345678901"), OwnerID: "home", Store: s, OutboxLimit: 100, EnabledScopes: scopes, Now: func() time.Time { return time.Unix(100, 0) }}
 	first := bridgeowner.New(options)
 	blue := source.TargetSnapshot{Union: source.IdentitySet{{Provider: "bluesky", ID: "did:plc:alice"}: {}}, Lists: map[string]source.List{}}
 	bob := source.ActorIdentity{Provider: "mastodon", ID: "https://social.example/users/bob"}
@@ -211,6 +211,9 @@ func TestRuntimeCoordinatorRestartPreservesUnavailableProviderSnapshotAndList(t 
 		if latest.Tags.FindWithValue("p", key.Public().Hex()) == nil {
 			t.Errorf("latest owner follows missing %#v", identity)
 		}
+	}
+	if latest.CreatedAt != 102 {
+		t.Fatalf("latest owner follows created_at = %d, want 102", latest.CreatedAt)
 	}
 }
 

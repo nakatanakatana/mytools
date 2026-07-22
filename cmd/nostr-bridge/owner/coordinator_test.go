@@ -2,15 +2,87 @@ package owner
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"fiatjaf.com/nostr"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/nostrmap"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
+
+func TestCoordinatorMonotonicallyIncreasesReplaceableEventTimestamps(t *testing.T) {
+	s := &recordingStore{}
+	now := time.Unix(100, 0)
+	c := New(Options{MasterSeed: []byte("01234567890123456789012345678901"), OwnerID: "home", Store: s, OutboxLimit: 100, Now: func() time.Time { return now }})
+	b := store.SourceScope{Provider: "bluesky", Account: "owner"}
+	m := store.SourceScope{Provider: "mastodon", Account: "owner"}
+	alice := identity("bluesky", "alice")
+	bob := identity("mastodon", "bob")
+	if err := c.Reconcile(context.Background(), b, snapshot(alice), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Reconcile(context.Background(), m, snapshot(bob), nil); err != nil {
+		t.Fatal(err)
+	}
+	events := s.kindEvents(t, nostr.KindFollowList)
+	if len(events) != 2 {
+		t.Fatalf("follow event count = %d, want 2", len(events))
+	}
+	if events[0].CreatedAt != 100 || events[1].CreatedAt != 101 {
+		t.Fatalf("follow timestamps = %#v", []nostr.Timestamp{events[0].CreatedAt, events[1].CreatedAt})
+	}
+	assertFollows(t, events[1], []source.ActorIdentity{alice, bob})
+}
+
+func TestCoordinatorDoesNotAdvanceTimestampAfterFailedReconciliation(t *testing.T) {
+	s := &recordingStore{failAt: 1}
+	now := time.Unix(100, 0)
+	c := New(Options{MasterSeed: []byte("01234567890123456789012345678901"), OwnerID: "home", Store: s, OutboxLimit: 100, Now: func() time.Time { return now }})
+	scope := store.SourceScope{Provider: "bluesky", Account: "owner"}
+	state := snapshot(identity("bluesky", "alice"))
+	if err := c.Reconcile(context.Background(), scope, state, nil); err == nil {
+		t.Fatal("failed reconciliation error = nil")
+	}
+	s.failAt = 0
+	if err := c.Reconcile(context.Background(), scope, state, nil); err != nil {
+		t.Fatal(err)
+	}
+	event := s.latestKind(t, nostr.KindFollowList)
+	if event.CreatedAt != 100 {
+		t.Fatalf("created_at after retry = %d, want 100", event.CreatedAt)
+	}
+}
+
+func TestCoordinatorRestoresReplaceableEventTimestampAfterRestart(t *testing.T) {
+	b := store.SourceScope{Provider: "bluesky", Account: "owner"}
+	m := store.SourceScope{Provider: "mastodon", Account: "owner"}
+	alice := identity("bluesky", "alice")
+	bob := identity("mastodon", "bob")
+	s := &recordingStore{targets: map[store.SourceScope][]string{}}
+	now := time.Unix(100, 0)
+	options := Options{MasterSeed: []byte("01234567890123456789012345678901"), OwnerID: "home", Store: s, OutboxLimit: 100, Now: func() time.Time { return now }}
+	if err := New(options).Reconcile(context.Background(), b, snapshot(alice), nil); err != nil {
+		t.Fatal(err)
+	}
+	s.targets[b] = []string{alice.ID}
+	restartedOptions := options
+	restartedOptions.EnabledScopes = []store.SourceScope{b, m}
+	if err := New(restartedOptions).Reconcile(context.Background(), m, snapshot(bob), nil); err != nil {
+		t.Fatal(err)
+	}
+	events := s.kindEvents(t, nostr.KindFollowList)
+	if len(events) != 2 {
+		t.Fatalf("follow event count = %d, want 2", len(events))
+	}
+	if events[0].CreatedAt != 100 || events[1].CreatedAt != 101 {
+		t.Fatalf("follow timestamps across restart = %d, %d", events[0].CreatedAt, events[1].CreatedAt)
+	}
+	assertFollows(t, events[1], []source.ActorIdentity{alice, bob})
+}
 
 func TestCoordinatorPublishesAggregateFollowFromLatestSnapshots(t *testing.T) {
 	s := &recordingStore{}
@@ -122,6 +194,7 @@ type recordingStore struct {
 	failAt   int
 	calls    int
 	targets  map[store.SourceScope][]string
+	cursors  map[string]string
 	loadErr  error
 }
 
@@ -149,7 +222,25 @@ func (s *recordingStore) ReconcileBatch(_ context.Context, r store.Reconciliatio
 		return errors.New("failed")
 	}
 	s.requests = append(s.requests, store.ReconciliationRequest{Scope: r.TargetScope, Targets: r.Targets, Events: r.Events, Limit: r.Limit})
+	if r.Cursor != nil {
+		if s.cursors == nil {
+			s.cursors = make(map[string]string)
+		}
+		s.cursors[cursorKey(r.CursorScope, r.Cursor.Name)] = r.Cursor.Value
+	}
 	return nil
+}
+func (s *recordingStore) Cursor(_ context.Context, scope store.SourceScope, name string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.cursors[cursorKey(scope, name)]
+	if !ok {
+		return "", sql.ErrNoRows
+	}
+	return value, nil
+}
+func cursorKey(scope store.SourceScope, name string) string {
+	return scope.Provider + "\x00" + scope.Account + "\x00" + name
 }
 func (s *recordingStore) latestKind(t *testing.T, kind nostr.Kind) nostr.Event {
 	t.Helper()
@@ -165,6 +256,22 @@ func (s *recordingStore) latestKind(t *testing.T, kind nostr.Kind) nostr.Event {
 	}
 	t.Fatalf("kind %d missing", kind)
 	return nostr.Event{}
+}
+
+func (s *recordingStore) kindEvents(t *testing.T, kind nostr.Kind) []nostr.Event {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var events []nostr.Event
+	for _, reconciliation := range s.requests {
+		for _, request := range reconciliation.Events {
+			var event nostr.Event
+			if event.UnmarshalJSON([]byte(request.Event.Payload)) == nil && event.Kind == kind {
+				events = append(events, event)
+			}
+		}
+	}
+	return events
 }
 func (s *recordingStore) assertEventScope(t *testing.T, kind nostr.Kind, scope store.SourceScope, uri string) {
 	t.Helper()
