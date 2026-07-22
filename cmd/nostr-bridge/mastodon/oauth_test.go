@@ -250,6 +250,74 @@ func TestOAuthTransportErrorsExposeOnlySafeClassifications(t *testing.T) {
 	}
 }
 
+func TestOAuthTokenRedirectRejectsDifferentHost(t *testing.T) {
+	targetHits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "stolen", "scope": OAuthScopes})
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/steal", http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	client := newOAuthClientForBaseURL(t, source.URL, source.Client())
+	_, err := client.exchange(context.Background(), url.Values{"code": {"authorization-secret"}, "client_secret": {"client-secret"}})
+	if err == nil {
+		t.Fatal("exchange error = nil")
+	}
+	if targetHits != 0 {
+		t.Fatalf("cross-host redirect target hits = %d, want 0", targetHits)
+	}
+	assertOAuthLogExcludes(t, err.Error(), "authorization-secret", "client-secret", target.URL)
+}
+
+func TestOAuthTokenRedirectAllowsSameHost(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/token" {
+			http.Redirect(w, r, server.URL+"/oauth/token-final", http.StatusTemporaryRedirect)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-secret", "scope": OAuthScopes})
+	}))
+	defer server.Close()
+
+	client := newOAuthClientForBaseURL(t, server.URL, server.Client())
+	token, err := client.exchange(context.Background(), url.Values{"code": {"authorization-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token.AccessToken != "access-secret" {
+		t.Fatalf("access token = %q", token.AccessToken)
+	}
+}
+
+func TestOAuthTokenRedirectPreservesConfiguredPolicy(t *testing.T) {
+	policyCalls := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, server.URL+"/oauth/token-final", http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+	httpClient := server.Client()
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		policyCalls++
+		return http.ErrUseLastResponse
+	}
+
+	client := newOAuthClientForBaseURL(t, server.URL, httpClient)
+	_, err := client.exchange(context.Background(), url.Values{"code": {"authorization-secret"}})
+	if err == nil {
+		t.Fatal("exchange error = nil")
+	}
+	if policyCalls != 1 {
+		t.Fatalf("configured redirect policy calls = %d, want 1", policyCalls)
+	}
+}
+
 func TestCallbackLogsSafeTransportFailure(t *testing.T) {
 	client, _, _ := newOAuthTestClient(t, "alice", time.Now())
 	state := startAuthorization(t, client)
@@ -399,10 +467,33 @@ func assertOAuthLogExcludes(t *testing.T, output string, values ...string) {
 
 type recordedForms struct{ token, refresh url.Values }
 
+func newOAuthClientForBaseURL(t *testing.T, baseURL string, httpClient *http.Client) *OAuthClient {
+	t.Helper()
+	account := normalizeAccount("alice", instanceHost(baseURL))
+	client, err := NewOAuthClient(OAuthOptions{
+		Scope:         bridgestore.SourceScope{Provider: "mastodon", Account: account},
+		Store:         &memoryOAuthStore{},
+		HTTPClient:    httpClient,
+		BaseURL:       baseURL,
+		Account:       account,
+		ClientID:      "client",
+		ClientSecret:  "client-secret",
+		RedirectURL:   "https://bridge.example/oauth/mastodon/callback",
+		EncryptionKey: make([]byte, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
 func newOAuthTestClient(t *testing.T, acct string, now time.Time) (*OAuthClient, *memoryOAuthStore, *recordedForms) {
 	t.Helper()
 	forms := &recordedForms{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != "nostr-bridge" {
+			t.Errorf("User-Agent = %q, want %q", got, "nostr-bridge")
+		}
 		switch r.URL.Path {
 		case "/oauth/token":
 			_ = r.ParseForm()

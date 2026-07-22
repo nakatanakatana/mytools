@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	maxResponseBytes = 4 << 20
-	maxPages         = 100
+	mastodonUserAgent = "nostr-bridge"
+	maxResponseBytes  = 4 << 20
+	maxPages          = 100
 )
 
 type TokenSource interface {
@@ -50,7 +51,7 @@ func NewClient(o ClientOptions) (*Client, error) {
 	}
 	base.Path, base.RawPath, base.RawQuery, base.Fragment = "", "", "", ""
 	if o.HTTPClient == nil {
-		o.HTTPClient = newHTTPClient()
+		o.HTTPClient = http.DefaultClient
 	}
 	if o.MaxRetries < 0 {
 		return nil, errors.New("mastodon retry count cannot be negative")
@@ -203,6 +204,7 @@ func (c *Client) getJSONPage(ctx context.Context, u *url.URL, target any) (strin
 		}
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", mastodonUserAgent)
 		resp, err := c.http.Do(req)
 		if err != nil {
 			if attempt < c.maxRetries {
