@@ -50,7 +50,7 @@ func NewClient(o ClientOptions) (*Client, error) {
 	}
 	base.Path, base.RawPath, base.RawQuery, base.Fragment = "", "", "", ""
 	if o.HTTPClient == nil {
-		o.HTTPClient = http.DefaultClient
+		o.HTTPClient = newHTTPClient()
 	}
 	if o.MaxRetries < 0 {
 		return nil, errors.New("mastodon retry count cannot be negative")

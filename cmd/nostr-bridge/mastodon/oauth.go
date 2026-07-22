@@ -179,7 +179,7 @@ func NewOAuthClient(o OAuthOptions) (*OAuthClient, error) {
 		return nil, err
 	}
 	if o.HTTPClient == nil {
-		o.HTTPClient = http.DefaultClient
+		o.HTTPClient = newHTTPClient()
 	}
 	if o.Now == nil {
 		o.Now = time.Now
