@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -434,4 +436,118 @@ func newTestClient(t *testing.T, issuer string, httpClients ...*http.Client) (*C
 		t.Fatal(err)
 	}
 	return client, store
+}
+
+func TestTokenByAccountDIDSerializesConcurrentRefresh(t *testing.T) {
+	var refreshCalls int32
+	refreshStarted := make(chan struct{})
+	refreshGate := make(chan struct{})
+
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-authorization-server" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
+			return
+		}
+		if r.URL.Path != "/oauth/token" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if r.Form.Get("grant_type") == "refresh_token" {
+			count := atomic.AddInt32(&refreshCalls, 1)
+			if count == 1 {
+				close(refreshStarted)
+			}
+			<-refreshGate
+			w.Header().Set("DPoP-Nonce", "refreshed-nonce")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  "new-access",
+				"refresh_token": "new-refresh",
+				"scope":         "atproto",
+				"expires_in":    3600,
+			})
+			return
+		}
+		t.Fatalf("unexpected grant_type %s", r.Form.Get("grant_type"))
+	}))
+	defer server.Close()
+
+	client, store := newTestClient(t, server.URL, server.Client())
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(tokenPayload{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		Scope:        "atproto",
+		DPoPKey:      privateJWK(key),
+		Expiry:       time.Now().Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := client.encrypt(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveOAuthToken(context.Background(), oauthTestScope, bridgestore.OAuthToken{AccountDID: "did:plc:alice", EncryptedPayload: encrypted}); err != nil {
+		t.Fatal(err)
+	}
+
+	const numCallers = 5
+	errCh := make(chan error, numCallers)
+	tokens := make([]Token, numCallers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < numCallers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			tok, err := client.TokenByAccountDID(context.Background(), "did:plc:alice")
+			if err != nil {
+				errCh <- err
+				return
+			}
+			tokens[idx] = tok
+		}(i)
+	}
+
+	<-refreshStarted
+	time.Sleep(50 * time.Millisecond)
+	close(refreshGate)
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("unexpected error from caller: %v", err)
+		}
+	}
+
+	if got := atomic.LoadInt32(&refreshCalls); got != 1 {
+		t.Fatalf("refresh endpoint calls = %d, want 1", got)
+	}
+
+	for i, tok := range tokens {
+		if tok.AccessToken != "new-access" || tok.RefreshToken != "new-refresh" {
+			t.Fatalf("caller %d token = %#v, want new-access / new-refresh", i, tok)
+		}
+	}
+
+	storedToken, err := store.OAuthTokenByAccountDID(context.Background(), oauthTestScope, "did:plc:alice")
+	if err != nil {
+		t.Fatalf("failed to load stored token: %v", err)
+	}
+	var storedPayload tokenPayload
+	if err := client.decryptJSON(storedToken.EncryptedPayload, &storedPayload); err != nil {
+		t.Fatalf("failed to decrypt stored token: %v", err)
+	}
+	if storedPayload.AccessToken != "new-access" || storedPayload.RefreshToken != "new-refresh" {
+		t.Fatalf("stored payload = %#v, want new-access / new-refresh", storedPayload)
+	}
 }
