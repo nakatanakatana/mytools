@@ -46,6 +46,23 @@ func TestClientFollowingUsesBearerAuthAndSameOriginPagination(t *testing.T) {
 	}
 }
 
+func TestClientSendsUserAgent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != "nostr-bridge" {
+			t.Errorf("User-Agent = %q, want %q", got, "nostr-bridge")
+		}
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer server.Close()
+	c, err := NewClient(ClientOptions{BaseURL: server.URL, Tokens: staticTokenSource{Token{AccessToken: "secret"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Lists(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientRejectsCrossOriginPagination(t *testing.T) {
 	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("followed cross-origin link") }))
 	defer other.Close()

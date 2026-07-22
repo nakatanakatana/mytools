@@ -179,7 +179,7 @@ func NewOAuthClient(o OAuthOptions) (*OAuthClient, error) {
 		return nil, err
 	}
 	if o.HTTPClient == nil {
-		o.HTTPClient = newHTTPClient()
+		o.HTTPClient = http.DefaultClient
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -298,7 +298,22 @@ func (c *OAuthClient) exchange(ctx context.Context, form url.Values) (mastodonTo
 		return mastodonTokenResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := c.httpClient.Do(req)
+	req.Header.Set("User-Agent", mastodonUserAgent)
+	tokenClient := *c.httpClient
+	configuredRedirectPolicy := tokenClient.CheckRedirect
+	tokenClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) == 0 || !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+			return errors.New("mastodon OAuth token redirect changed host")
+		}
+		if configuredRedirectPolicy != nil {
+			return configuredRedirectPolicy(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	resp, err := tokenClient.Do(req)
 	if err != nil {
 		return mastodonTokenResponse{}, newOAuthTransportError(err)
 	}
@@ -321,6 +336,7 @@ func (c *OAuthClient) exchange(ctx context.Context, form url.Values) (mastodonTo
 func (c *OAuthClient) verifyCredentials(ctx context.Context, access string) (string, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/accounts/verify_credentials", nil)
 	req.Header.Set("Authorization", "Bearer "+access)
+	req.Header.Set("User-Agent", mastodonUserAgent)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", newOAuthTransportError(err)
