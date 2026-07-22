@@ -15,6 +15,7 @@ import (
 	"fiatjaf.com/nostr"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/nostrmap"
+	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
 	bridgeowner "github.com/nakatanakatana/mytools/cmd/nostr-bridge/owner"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
@@ -455,4 +456,75 @@ func (failingTargetStore) ReplaceSyncTargets(context.Context, bridgestore.Source
 }
 func (failingTargetStore) SyncTargets(context.Context, bridgestore.SourceScope) ([]string, error) {
 	return nil, nil
+}
+
+type fakeBlueskyTokenProvider struct {
+	token bridgeoauth.Token
+	err   error
+}
+
+func (f *fakeBlueskyTokenProvider) TokenByAccountDID(context.Context, string) (bridgeoauth.Token, error) {
+	return f.token, f.err
+}
+
+func TestHealthBlueskyTokenProvider(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"bluesky", "mastodon"}})
+	mastoExpiry := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) {
+		m.Authenticated = true
+		m.OAuthExpiry = mastoExpiry
+	})
+
+	futureTime := time.Now().Add(time.Hour).Truncate(time.Second)
+	fake := &fakeBlueskyTokenProvider{
+		token: bridgeoauth.Token{AccessToken: "token123", Expiry: futureTime},
+	}
+
+	provider := healthBlueskyTokenProvider{tokens: fake, health: health}
+
+	gotToken, err := provider.TokenByAccountDID(context.Background(), "did:plc:alice")
+	if err != nil {
+		t.Fatalf("TokenByAccountDID() error = %v", err)
+	}
+	if gotToken.AccessToken != "token123" {
+		t.Fatalf("TokenByAccountDID() got AccessToken %q, want %q", gotToken.AccessToken, "token123")
+	}
+
+	globalSnap := health.snapshot()
+	if !globalSnap.OAuthConnected {
+		t.Error("global OAuthConnected = false, want true")
+	}
+	if !globalSnap.OAuthExpiry.Equal(futureTime) {
+		t.Errorf("global OAuthExpiry = %v, want %v", globalSnap.OAuthExpiry, futureTime)
+	}
+
+	bskySnap := health.providerSnapshot("bluesky")
+	if !bskySnap.Authenticated {
+		t.Error("bluesky Authenticated = false, want true")
+	}
+	if !bskySnap.OAuthExpiry.Equal(futureTime) {
+		t.Errorf("bluesky OAuthExpiry = %v, want %v", bskySnap.OAuthExpiry, futureTime)
+	}
+
+	// Test failure case
+	fake.err = errors.New("refresh failed")
+	fake.token = bridgeoauth.Token{}
+
+	_, err = provider.TokenByAccountDID(context.Background(), "did:plc:alice")
+	if err == nil {
+		t.Fatal("TokenByAccountDID() expected error, got nil")
+	}
+
+	bskySnap = health.providerSnapshot("bluesky")
+	if bskySnap.Authenticated {
+		t.Error("bluesky Authenticated = true, want false after error")
+	}
+
+	mastoSnap := health.providerSnapshot("mastodon")
+	if !mastoSnap.Authenticated {
+		t.Error("mastodon Authenticated = false, want true (should be unchanged)")
+	}
+	if !mastoSnap.OAuthExpiry.Equal(mastoExpiry) {
+		t.Errorf("mastodon OAuthExpiry = %v, want %v (should be unchanged)", mastoSnap.OAuthExpiry, mastoExpiry)
+	}
 }
