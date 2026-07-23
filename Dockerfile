@@ -33,6 +33,11 @@ FROM base AS wsl-keyring
 COPY --from=builder-from /app/output/wsl-keyring /app/
 ENTRYPOINT ["/app/wsl-keyring"]
 
+# ff image
+FROM base AS ff
+COPY --from=builder-from /app/output/ff /app/
+ENTRYPOINT ["/app/ff"]
+
 # nostr-relay image
 FROM base AS nostr-relay
 COPY --from=builder-from /app/output/nostr-relay /app/

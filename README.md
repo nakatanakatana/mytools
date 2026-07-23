@@ -25,8 +25,10 @@ A D-Bus Secret Service provider daemon that exposes the `org.freedesktop.secrets
 A minimal Nostr relay built on `fiatjaf.com/nostr/khatru`, supporting NIP-01 relay flow and NIP-11 relay metadata with in-memory storage.
 
 ### 5. [herdr-plugin-tabinfo](file:///home/tanaka/repos/github.com/nakatanakatana/mytools/cmd/herdr-plugin-tabinfo/README.md)
+A Herdr plugin that rewrites tab labels with live tab information through the Herdr Socket API.
 
----
+### 6. [ff](file:///home/tanaka/repos/github.com/nakatanakatana/mytools/cmd/ff/README.md)
+A feed filtering proxy server that allows filtering and modifying RSS/Atom feeds via URL query parameters.
 
 ## Development and Build
 
@@ -78,6 +80,9 @@ docker build --target wsl-keyring -t wsl-keyring .
 
 # For nostr-relay only
 docker build --target nostr-relay -t nostr-relay .
+
+# For ff only
+docker build --target ff -t ff .
 ```
 
 ### Build All Tools Image

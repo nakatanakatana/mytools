@@ -1,6 +1,17 @@
 version: 2
 
 builds:
+  - id: ff
+    main: ./cmd/ff
+    binary: ff
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
   - id: sarif-to-codequality
     main: ./cmd/sarif-to-codequality
     binary: sarif-to-codequality
