@@ -107,6 +107,41 @@ func TestDocumentedConfigurationMatchesConfig(t *testing.T) {
 	}
 }
 
+func TestConfigVariablesAreDocumented(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(contents)
+	}
+	readme := read("README.md")
+	deployment := read("examples/kubernetes/deployment.yaml")
+	containsSetting := func(contents, name, defaultValue string) bool {
+		for _, line := range strings.Split(contents, "\n") {
+			if strings.Contains(line, name) && strings.Contains(line, defaultValue) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, variable := range []struct {
+		name, defaultValue string
+	}{
+		{"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD", "720h"},
+		{"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL", "24h"},
+	} {
+		if !containsSetting(readme, variable.name, variable.defaultValue) {
+			t.Errorf("README does not document %s with default %s", variable.name, variable.defaultValue)
+		}
+		if !containsSetting(deployment, variable.name, variable.defaultValue) {
+			t.Errorf("deployment does not document %s with default %s", variable.name, variable.defaultValue)
+		}
+	}
+}
+
 func setSharedEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("NOSTR_BRIDGE_HOST", "127.0.0.1")
