@@ -50,6 +50,26 @@ type RefreshResult struct {
 	Token     Token
 }
 
+// RefreshError reports a bounded failure class without retaining response
+// descriptions, token material, or other secret-bearing causes.
+type RefreshError struct {
+	Class             RefreshErrorClass
+	ReauthRequired    bool
+	PersistenceFailed bool
+}
+
+func (e *RefreshError) Error() string {
+	if e == nil {
+		return "OAuth token refresh failed"
+	}
+	return fmt.Sprintf(
+		"OAuth token refresh failed: class=%s reauth_required=%t persistence_failed=%t",
+		boundedRefreshErrorClass(e.Class),
+		e.ReauthRequired,
+		e.PersistenceFailed,
+	)
+}
+
 // AuthorizationStatus inspects locally persisted authorization without making
 // discovery or token endpoint requests and without changing the stored row.
 func (c *Client) AuthorizationStatus(ctx context.Context, accountDID string, period time.Duration) (Status, error) {
@@ -111,11 +131,11 @@ func (c *Client) RefreshIfDue(ctx context.Context, accountDID string, period tim
 	}
 	payload, err := c.decryptTokenPayload(stored)
 	if err != nil {
-		return result, fmt.Errorf("decrypt OAuth token: %w", err)
+		return result, c.persistRefreshFailureLocked(ctx, stored.AccountDID, RefreshErrorDecrypt, true)
 	}
 	key, err := payload.DPoPKey.ecdsa()
 	if err != nil {
-		return result, fmt.Errorf("decode OAuth DPoP key: %w", err)
+		return result, c.persistRefreshFailureLocked(ctx, stored.AccountDID, RefreshErrorDPoPKey, true)
 	}
 	if effectiveLastRefresh(stored).Add(period).After(c.now()) {
 		return result, nil
@@ -138,4 +158,21 @@ func effectiveLastRefresh(stored bridgestore.OAuthToken) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(value, 0)
+}
+
+func boundedRefreshErrorClass(class RefreshErrorClass) RefreshErrorClass {
+	switch class {
+	case RefreshErrorTimeout,
+		RefreshErrorConnection,
+		RefreshErrorRateLimit,
+		RefreshErrorServer,
+		RefreshErrorInvalidGrant,
+		RefreshErrorMissingRefreshToken,
+		RefreshErrorDecrypt,
+		RefreshErrorDPoPKey,
+		RefreshErrorProtocol:
+		return class
+	default:
+		return RefreshErrorProtocol
+	}
 }

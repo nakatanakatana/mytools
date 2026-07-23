@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -245,9 +246,10 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid OAuth token response", http.StatusBadGateway)
 		return
 	}
+	now := c.now()
 	var expiry time.Time
 	if tokens.ExpiresIn > 0 {
-		expiry = c.now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
+		expiry = now.Add(time.Duration(tokens.ExpiresIn) * time.Second)
 	}
 	encoded, err := json.Marshal(tokenPayload{AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken, Scope: tokens.Scope, DPoPKey: payload.DPoPKey, DPoPNonce: response.Header.Get("DPoP-Nonce"), Expiry: expiry})
 	if err != nil {
@@ -262,7 +264,14 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	if err := func() error {
 		c.tokenMu.Lock()
 		defer c.tokenMu.Unlock()
-		if err := c.store.SaveOAuthToken(r.Context(), c.scope, bridgestore.OAuthToken{AccountDID: tokens.Sub, EncryptedPayload: encrypted, UpdatedAt: c.now().Unix()}); err != nil {
+		if err := c.store.SaveOAuthToken(r.Context(), c.scope, bridgestore.OAuthToken{
+			AccountDID:            tokens.Sub,
+			EncryptedPayload:      encrypted,
+			UpdatedAt:             now.Unix(),
+			LastRefreshAt:         now.Unix(),
+			ReauthRequired:        false,
+			LastRefreshErrorClass: "",
+		}); err != nil {
 			return err
 		}
 		return c.store.DeleteOAuthSession(r.Context(), c.scope, state)
@@ -284,16 +293,22 @@ func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (Toke
 	}
 	payload, err := c.decryptTokenPayload(stored)
 	if err != nil {
-		return Token{}, fmt.Errorf("decrypt OAuth token: %w", err)
+		return Token{}, c.persistRefreshFailureLocked(ctx, stored.AccountDID, RefreshErrorDecrypt, true)
 	}
 	key, err := payload.DPoPKey.ecdsa()
 	if err != nil {
-		return Token{}, fmt.Errorf("decode OAuth DPoP key: %w", err)
+		return Token{}, c.persistRefreshFailureLocked(ctx, stored.AccountDID, RefreshErrorDPoPKey, true)
 	}
 	if strings.TrimSpace(payload.AccessToken) == "" {
 		return Token{}, errors.New("OAuth token has no access token")
 	}
 	if !payload.Expiry.IsZero() && !payload.Expiry.After(c.now()) {
+		if stored.ReauthRequired {
+			return Token{}, &RefreshError{
+				Class:          boundedRefreshErrorClass(RefreshErrorClass(stored.LastRefreshErrorClass)),
+				ReauthRequired: true,
+			}
+		}
 		return c.refreshTokenLocked(ctx, stored.AccountDID, payload, key)
 	}
 	return Token{AccessToken: payload.AccessToken, RefreshToken: payload.RefreshToken, Scope: payload.Scope, DPoPKey: key, DPoPNonce: payload.DPoPNonce, Expiry: payload.Expiry}, nil
@@ -319,11 +334,11 @@ func (c *Client) decryptTokenPayload(stored bridgestore.OAuthToken) (tokenPayloa
 // refreshTokenLocked refreshes and persists a token while its caller holds tokenMu.
 func (c *Client) refreshTokenLocked(ctx context.Context, accountDID string, current tokenPayload, key *ecdsa.PrivateKey) (Token, error) {
 	if strings.TrimSpace(current.RefreshToken) == "" {
-		return Token{}, errors.New("OAuth token has no refresh token")
+		return Token{}, c.persistRefreshFailureLocked(ctx, accountDID, RefreshErrorMissingRefreshToken, true)
 	}
 	metadata, err := c.discoverAuthorizationServer(ctx, c.issuer)
 	if err != nil {
-		return Token{}, fmt.Errorf("discover authorization server metadata: %w", err)
+		return Token{}, c.persistClassifiedRefreshFailureLocked(ctx, accountDID, err)
 	}
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {current.RefreshToken}, "client_id": {c.clientID}, "client_assertion_type": {clientAssertionType}}
 	response, err := c.doDPoPFormRequest(ctx, "refresh OAuth token", metadata.TokenEndpoint, key, current.DPoPNonce, func() (url.Values, error) {
@@ -336,25 +351,26 @@ func (c *Client) refreshTokenLocked(ctx context.Context, accountDID string, curr
 		return attemptForm, nil
 	})
 	if err != nil {
-		return Token{}, err
+		return Token{}, c.persistClassifiedRefreshFailureLocked(ctx, accountDID, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return Token{}, responseError("refresh OAuth token", response)
+		return Token{}, c.persistClassifiedRefreshFailureLocked(ctx, accountDID, responseError("refresh OAuth token", response))
 	}
 	var refreshed tokenResponse
 	if err := json.NewDecoder(response.Body).Decode(&refreshed); err != nil {
-		return Token{}, fmt.Errorf("decode OAuth refresh response: %w", err)
+		return Token{}, c.persistRefreshFailureLocked(ctx, accountDID, RefreshErrorProtocol, true)
 	}
 	if strings.TrimSpace(refreshed.AccessToken) == "" || !hasScope(refreshed.Scope, "atproto") {
-		return Token{}, errors.New("invalid OAuth refresh response")
+		return Token{}, c.persistRefreshFailureLocked(ctx, accountDID, RefreshErrorProtocol, true)
 	}
 	if refreshed.RefreshToken == "" {
 		refreshed.RefreshToken = current.RefreshToken
 	}
+	now := c.now()
 	expiry := time.Time{}
 	if refreshed.ExpiresIn > 0 {
-		expiry = c.now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
+		expiry = now.Add(time.Duration(refreshed.ExpiresIn) * time.Second)
 	}
 	nonce := response.Header.Get("DPoP-Nonce")
 	if nonce == "" {
@@ -362,16 +378,65 @@ func (c *Client) refreshTokenLocked(ctx context.Context, accountDID string, curr
 	}
 	payload, err := json.Marshal(tokenPayload{AccessToken: refreshed.AccessToken, RefreshToken: refreshed.RefreshToken, Scope: refreshed.Scope, DPoPKey: current.DPoPKey, DPoPNonce: nonce, Expiry: expiry})
 	if err != nil {
-		return Token{}, fmt.Errorf("encode refreshed OAuth token: %w", err)
+		return Token{}, c.persistRefreshFailureLocked(ctx, accountDID, RefreshErrorProtocol, true)
 	}
 	encrypted, err := c.encrypt(payload)
 	if err != nil {
-		return Token{}, err
+		return Token{}, c.persistRefreshFailureLocked(ctx, accountDID, RefreshErrorProtocol, true)
 	}
-	if err := c.store.SaveOAuthToken(ctx, c.scope, bridgestore.OAuthToken{AccountDID: accountDID, EncryptedPayload: encrypted, UpdatedAt: c.now().Unix()}); err != nil {
+	if err := c.store.SaveOAuthToken(ctx, c.scope, bridgestore.OAuthToken{
+		AccountDID:            accountDID,
+		EncryptedPayload:      encrypted,
+		UpdatedAt:             now.Unix(),
+		LastRefreshAt:         now.Unix(),
+		ReauthRequired:        false,
+		LastRefreshErrorClass: "",
+	}); err != nil {
 		return Token{}, fmt.Errorf("save refreshed OAuth token: %w", err)
 	}
 	return Token{AccessToken: refreshed.AccessToken, RefreshToken: refreshed.RefreshToken, Scope: refreshed.Scope, DPoPKey: key, DPoPNonce: nonce, Expiry: expiry}, nil
+}
+
+func (c *Client) persistClassifiedRefreshFailureLocked(ctx context.Context, accountDID string, err error) error {
+	class, reauthRequired := classifyRefreshFailure(err)
+	return c.persistRefreshFailureLocked(ctx, accountDID, class, reauthRequired)
+}
+
+func (c *Client) persistRefreshFailureLocked(ctx context.Context, accountDID string, class RefreshErrorClass, reauthRequired bool) error {
+	class = boundedRefreshErrorClass(class)
+	refreshErr := &RefreshError{Class: class, ReauthRequired: reauthRequired}
+	if err := c.store.UpdateOAuthTokenRefreshFailure(ctx, c.scope, accountDID, string(class), reauthRequired); err != nil {
+		refreshErr.PersistenceFailed = true
+	}
+	return refreshErr
+}
+
+func classifyRefreshFailure(err error) (RefreshErrorClass, bool) {
+	var responseErr *oauthResponseError
+	if errors.As(err, &responseErr) {
+		switch {
+		case responseErr.invalidGrant:
+			return RefreshErrorInvalidGrant, true
+		case responseErr.statusCode == http.StatusTooManyRequests:
+			return RefreshErrorRateLimit, false
+		case responseErr.statusCode >= http.StatusInternalServerError && responseErr.statusCode < 600:
+			return RefreshErrorServer, false
+		default:
+			return RefreshErrorProtocol, true
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return RefreshErrorTimeout, false
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return RefreshErrorTimeout, false
+	}
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) {
+		return RefreshErrorConnection, false
+	}
+	return RefreshErrorProtocol, true
 }
 
 func (c *Client) clientAssertion(audience string) (string, error) {
@@ -390,9 +455,42 @@ func (c *Client) decryptJSON(ciphertext []byte, value any) error {
 	return json.Unmarshal(plaintext, value)
 }
 
+type oauthResponseError struct {
+	operation    string
+	statusCode   int
+	invalidGrant bool
+	statusLabel  bool
+}
+
+func (e *oauthResponseError) Error() string {
+	if e.statusLabel {
+		return fmt.Sprintf("%s: status %d", e.operation, e.statusCode)
+	}
+	return fmt.Sprintf("%s: %d %s", e.operation, e.statusCode, http.StatusText(e.statusCode))
+}
+
 func responseError(operation string, response *http.Response) error {
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-	return fmt.Errorf("%s: %s", operation, response.Status)
+	return newOAuthResponseError(operation, response, false)
+}
+
+func statusResponseError(operation string, response *http.Response) error {
+	return newOAuthResponseError(operation, response, true)
+}
+
+func newOAuthResponseError(operation string, response *http.Response, statusLabel bool) error {
+	body, _ := io.ReadAll(io.LimitReader(response.Body, dpopErrorBodyLimit+1))
+	var bodyError struct {
+		Error string `json:"error"`
+	}
+	invalidGrant := len(body) <= dpopErrorBodyLimit &&
+		json.Unmarshal(body, &bodyError) == nil &&
+		bodyError.Error == "invalid_grant"
+	return &oauthResponseError{
+		operation:    operation,
+		statusCode:   response.StatusCode,
+		invalidGrant: invalidGrant,
+		statusLabel:  statusLabel,
+	}
 }
 func hasScope(scope, want string) bool {
 	for _, value := range strings.Fields(scope) {
