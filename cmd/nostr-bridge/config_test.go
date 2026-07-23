@@ -190,6 +190,42 @@ func TestLoadConfigEnablesBothProviders(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDefaultsOAuthRefreshDurations(t *testing.T) {
+	setSharedEnv(t)
+	setBlueskyEnv(t)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Bluesky.OAuthRefreshPeriod != 720*time.Hour {
+		t.Fatalf("OAuthRefreshPeriod = %s, want 720h", cfg.Bluesky.OAuthRefreshPeriod)
+	}
+	if cfg.Bluesky.OAuthRefreshCheckInterval != 24*time.Hour {
+		t.Fatalf("OAuthRefreshCheckInterval = %s, want 24h", cfg.Bluesky.OAuthRefreshCheckInterval)
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveOAuthRefreshDurations(t *testing.T) {
+	for _, variable := range []string{
+		"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD",
+		"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL",
+	} {
+		for _, value := range []string{"0s", "-1s"} {
+			t.Run(variable+"/"+value, func(t *testing.T) {
+				setSharedEnv(t)
+				setBlueskyEnv(t)
+				t.Setenv(variable, value)
+
+				_, err := LoadConfig()
+				if err == nil || !strings.Contains(err.Error(), variable) {
+					t.Fatalf("LoadConfig() error = %v, want %s", err, variable)
+				}
+			})
+		}
+	}
+}
+
 func TestLoadConfigEnablesOneProvider(t *testing.T) {
 	for _, tc := range []struct {
 		name string

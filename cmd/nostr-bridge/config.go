@@ -44,6 +44,8 @@ type BlueskyConfig struct {
 	OAuthClientID               string        `env:"NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID"`
 	OAuthClientSigningKey       string        `env:"NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_SIGNING_KEY"`
 	OAuthEncryptionKey          string        `env:"NOSTR_BRIDGE_BLUESKY_OAUTH_ENCRYPTION_KEY"`
+	OAuthRefreshPeriod          time.Duration `env:"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD" envDefault:"720h"`
+	OAuthRefreshCheckInterval   time.Duration `env:"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL" envDefault:"24h"`
 }
 
 func (c BlueskyConfig) Enabled() bool { return strings.TrimSpace(c.BaseURL) != "" }
@@ -111,6 +113,8 @@ var configVariables = []configVariable{
 	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_SIGNING_KEY", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_ENCRYPTION_KEY", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD", documentation: documentInReadme},
+	{name: "NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL", documentation: documentInReadme},
 	{name: "NOSTR_BRIDGE_MASTODON_BASE_URL", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_MASTODON_ACCOUNT", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_MASTODON_LIST_IDS", documentation: documentInReadmeAndDeployment},
@@ -176,6 +180,12 @@ func LoadConfig() (Config, error) {
 		}
 		if !sameOrigin(cfg.Bluesky.OAuthCallbackURL, cfg.Bluesky.OAuthClientID) {
 			return Config{}, fmt.Errorf("NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID must use the OAuth callback public origin")
+		}
+		if cfg.Bluesky.OAuthRefreshPeriod <= 0 {
+			return Config{}, fmt.Errorf("NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD must be positive")
+		}
+		if cfg.Bluesky.OAuthRefreshCheckInterval <= 0 {
+			return Config{}, fmt.Errorf("NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL must be positive")
 		}
 	}
 	if cfg.Mastodon.Enabled() {
