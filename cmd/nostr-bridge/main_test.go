@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -182,6 +183,116 @@ func TestRunServesConfiguredOAuthRoutes(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("OAuth metadata route was not reachable")
+}
+
+func TestFreshBlueskyOAuthMaintenanceKeepsProcessAvailableAfterFirstCheck(t *testing.T) {
+	var issuerRequests atomic.Int32
+	issuer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		issuerRequests.Add(1)
+	}))
+	defer issuer.Close()
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testRuntimeConfig(t)
+	cfg.Shared.Port = port
+	cfg.Bluesky.OAuthAuthorizationServerURL = issuer.URL
+	cfg.Bluesky.OAuthRefreshCheckInterval = 5 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, cfg)
+	}()
+	finished := false
+	t.Cleanup(func() {
+		cancel()
+		if !finished {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("Run did not stop")
+			}
+		}
+	})
+
+	baseURL := "http://127.0.0.1:" + port
+	deadline := time.Now().Add(5 * time.Second)
+	metadataReady := false
+	for time.Now().Before(deadline) {
+		response, requestErr := http.Get(baseURL + "/oauth/bluesky/client-metadata.json")
+		if requestErr == nil {
+			_ = response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("metadata status = %d", response.StatusCode)
+			}
+			metadataReady = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !metadataReady {
+		t.Fatal("OAuth metadata route was not reachable")
+	}
+
+	time.Sleep(10 * cfg.Bluesky.OAuthRefreshCheckInterval)
+	select {
+	case runErr := <-done:
+		finished = true
+		t.Fatalf("Run stopped after fresh authorization check: %v", runErr)
+	default:
+	}
+
+	response, err := http.Get(baseURL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("readiness status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
+	}
+	var readiness struct {
+		Providers map[string]struct {
+			AuthorizationAvailable   bool `json:"authorization_available"`
+			MaintenanceWorkerRunning bool `json:"maintenance_worker_running"`
+		} `json:"providers"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&readiness); err != nil {
+		t.Fatal(err)
+	}
+	bluesky := readiness.Providers["bluesky"]
+	if bluesky.AuthorizationAvailable || !bluesky.MaintenanceWorkerRunning {
+		t.Fatalf("fresh Bluesky readiness = %#v", bluesky)
+	}
+	if got := issuerRequests.Load(); got != 0 {
+		t.Fatalf("fresh authorization maintenance made %d issuer HTTP requests", got)
+	}
+
+	response, err = http.Get(baseURL + "/oauth/bluesky/client-metadata.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("metadata status after maintenance check = %d", response.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		finished = true
+		if err != nil {
+			t.Fatalf("Run() after cancellation = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after cancellation")
+	}
 }
 
 func testOAuthSigningKey(t *testing.T) string {
@@ -379,6 +490,74 @@ type orderedCloser struct {
 
 func (c orderedCloser) Close() error                       { *c.order = append(*c.order, c.name); return nil }
 func (c orderedCloser) CloseContext(context.Context) error { return c.Close() }
+
+type constructionShutdownWorker struct {
+	name        string
+	canceled    bool
+	done        chan struct{}
+	cancelOrder *[]string
+	waitOrder   *[]string
+	allCanceled func() bool
+}
+
+func (w *constructionShutdownWorker) Cancel() {
+	w.canceled = true
+	*w.cancelOrder = append(*w.cancelOrder, w.name)
+}
+
+func (w *constructionShutdownWorker) Wait(ctx context.Context) error {
+	if !w.allCanceled() {
+		return errors.New("wait started before every worker was canceled")
+	}
+	*w.waitOrder = append(*w.waitOrder, w.name)
+	select {
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestCloseRuntimeConstructionFailureCancelsAllWorkersBeforeWaitAndKeepsDatabaseOpenOnTimeout(t *testing.T) {
+	old := shutdownTimeout
+	shutdownTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { shutdownTimeout = old })
+
+	cancelOrder, waitOrder := []string{}, []string{}
+	dispatcherDone := make(chan struct{})
+	close(dispatcherDone)
+	dispatcher := &constructionShutdownWorker{
+		name: "dispatcher", done: dispatcherDone,
+		cancelOrder: &cancelOrder, waitOrder: &waitOrder,
+	}
+	maintenance := &constructionShutdownWorker{
+		name: "maintenance", done: make(chan struct{}),
+		cancelOrder: &cancelOrder, waitOrder: &waitOrder,
+	}
+	allCanceled := func() bool { return dispatcher.canceled && maintenance.canceled }
+	dispatcher.allCanceled = allCanceled
+	maintenance.allCanceled = allCanceled
+	database := &countingCloser{}
+	constructionErr := errors.New("construct runtime sync")
+
+	err := closeRuntimeConstructionFailure(constructionErr, runtimeResources{
+		dispatcher:       dispatcher,
+		oauthMaintenance: maintenance,
+		database:         database,
+	})
+	if !errors.Is(err, constructionErr) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("closeRuntimeConstructionFailure() = %v", err)
+	}
+	if got := strings.Join(cancelOrder, ","); got != "dispatcher,maintenance" {
+		t.Fatalf("cancel order = %s", got)
+	}
+	if got := strings.Join(waitOrder, ","); got != "dispatcher,maintenance" {
+		t.Fatalf("wait order = %s", got)
+	}
+	if database.count != 0 {
+		t.Fatalf("database close count = %d", database.count)
+	}
+}
 
 func TestCloseRuntimeResourcesTimeoutDoesNotCloseDatabaseAndCancelsAllWorkers(t *testing.T) {
 	old := shutdownTimeout

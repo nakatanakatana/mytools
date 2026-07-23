@@ -2,6 +2,8 @@ package oauth
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -78,6 +80,9 @@ func (c *Client) AuthorizationStatus(ctx context.Context, accountDID string, per
 
 	stored, err := c.loadTokenLocked(ctx, accountDID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Status{}, nil
+		}
 		return Status{}, err
 	}
 	lastRefresh := effectiveLastRefresh(stored)
@@ -124,6 +129,9 @@ func (c *Client) RefreshIfDue(ctx context.Context, accountDID string, period tim
 
 	stored, err := c.loadTokenLocked(ctx, accountDID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return result, nil
+		}
 		return result, err
 	}
 	if stored.ReauthRequired {

@@ -69,6 +69,48 @@ func TestAuthorizationStatusUsesLegacyTimestampForExpiredRefreshableToken(t *tes
 	}
 }
 
+func TestMissingAuthorizationIsUnavailableAndMaintenanceSkipsRefresh(t *testing.T) {
+	client, _ := newStatusTestClient(t, time.Unix(2_000_000_000, 0))
+
+	status, err := client.AuthorizationStatus(context.Background(), oauthTestScope.Account, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != (Status{}) {
+		t.Fatalf("missing authorization status = %#v, want unavailable zero status", status)
+	}
+
+	result, err := client.RefreshIfDue(context.Background(), oauthTestScope.Account, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refreshed || result.Reason != RefreshReasonMaintenance {
+		t.Fatalf("missing authorization refresh result = %#v", result)
+	}
+}
+
+type failingOAuthTokenReader struct {
+	bridgestore.OAuthStore
+	err error
+}
+
+func (s failingOAuthTokenReader) OAuthTokenByAccountDID(context.Context, bridgestore.SourceScope, string) (bridgestore.OAuthToken, error) {
+	return bridgestore.OAuthToken{}, s.err
+}
+
+func TestAuthorizationStatusAndMaintenancePreserveOperationalStoreErrors(t *testing.T) {
+	client, store := newStatusTestClient(t, time.Unix(2_000_000_000, 0))
+	want := errors.New("database unavailable")
+	client.store = failingOAuthTokenReader{OAuthStore: store, err: want}
+
+	if _, err := client.AuthorizationStatus(context.Background(), oauthTestScope.Account, time.Hour); !errors.Is(err, want) {
+		t.Fatalf("AuthorizationStatus() error = %v, want %v", err, want)
+	}
+	if _, err := client.RefreshIfDue(context.Background(), oauthTestScope.Account, time.Hour); !errors.Is(err, want) {
+		t.Fatalf("RefreshIfDue() error = %v, want %v", err, want)
+	}
+}
+
 type failPersistenceOAuthStore struct {
 	bridgestore.OAuthStore
 	t *testing.T

@@ -137,14 +137,18 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 	if client != nil {
 		oauthMaintenance = startBlueskyOAuthMaintenance(cfg.Bluesky, client, health)
 	}
+	trackedDatabase := newTrackedDatabaseCloser(database)
 	runtime, err := newRuntimeSync(cfg, bridgeStore, client, mastodonOAuth, health)
 	if err != nil {
-		if oauthMaintenance != nil {
-			_ = oauthMaintenance.Close()
+		resources := runtimeResources{
+			dispatcher: dispatchWorker,
+			database:   trackedDatabase,
 		}
-		_ = dispatchWorker.Close()
-		_ = database.Close()
-		return runtimeResources{}, err
+		if oauthMaintenance != nil {
+			resources.oauthMaintenance = oauthMaintenance
+			resources.oauthMaintenanceDone = oauthMaintenance.Done()
+		}
+		return runtimeResources{}, closeRuntimeConstructionFailure(err, resources)
 	}
 	mux := http.NewServeMux()
 	RegisterOAuthRoutes(mux, client, mastodonOAuth)
@@ -154,13 +158,17 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		jetstream:      runtime,
 		dispatcher:     dispatchWorker,
 		dispatcherDone: dispatchWorker.Done(),
-		database:       newTrackedDatabaseCloser(database),
+		database:       trackedDatabase,
 	}
 	if oauthMaintenance != nil {
 		resources.oauthMaintenance = oauthMaintenance
 		resources.oauthMaintenanceDone = oauthMaintenance.Done()
 	}
 	return resources, nil
+}
+
+func closeRuntimeConstructionFailure(constructionErr error, resources runtimeResources) error {
+	return errors.Join(constructionErr, closeRuntimeResources(resources))
 }
 
 func enabledProviders(cfg Config) []string {
