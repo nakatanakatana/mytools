@@ -172,17 +172,25 @@ func enabledProviderScopes(cfg Config) []bridgestore.SourceScope {
 	return scopes
 }
 
+type blueskyAuthorizationProvider interface {
+	bluesky.TokenProvider
+	AuthorizationStatus(context.Context, string, time.Duration) (bridgeoauth.Status, error)
+}
+
 type healthBlueskyTokenProvider struct {
-	tokens bluesky.TokenProvider
-	health *Health
+	tokens        blueskyAuthorizationProvider
+	health        *Health
+	refreshPeriod time.Duration
 }
 
 func (p healthBlueskyTokenProvider) TokenByAccountDID(ctx context.Context, accountDID string) (bridgeoauth.Token, error) {
 	token, err := p.tokens.TokenByAccountDID(ctx, accountDID)
-	if err != nil {
+	if status, statusErr := p.tokens.AuthorizationStatus(ctx, accountDID, p.refreshPeriod); statusErr == nil {
 		p.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
-			m.Authenticated = false
+			applyBlueskyAuthorizationStatus(m, status)
 		})
+	}
+	if err != nil {
 		return bridgeoauth.Token{}, err
 	}
 	p.health.Update(func(metrics *HealthMetrics) {
@@ -190,14 +198,103 @@ func (p healthBlueskyTokenProvider) TokenByAccountDID(ctx context.Context, accou
 		metrics.OAuthExpiry = token.Expiry
 	})
 	p.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
-		m.Authenticated = true
 		m.OAuthExpiry = token.Expiry
 	})
 	return token, nil
 }
 
+func applyBlueskyAuthorizationStatus(m *ProviderHealthMetrics, status bridgeoauth.Status) {
+	m.AuthorizationAvailable = status.AuthorizationAvailable
+	m.ReauthRequired = status.ReauthRequired
+	m.Degraded = status.LastRefreshErrorClass != ""
+	m.AccessTokenExpired = !status.AccessTokenValid
+	m.LastRefreshSucceededAt = status.LastRefreshSucceededAt
+	m.NextMaintenanceRefresh = status.NextMaintenanceRefresh
+	if status.LastRefreshErrorClass == "" {
+		m.LastRefreshErrorClass = ""
+	} else {
+		m.LastRefreshErrorClass = boundedProviderRefreshErrorClass(status.LastRefreshErrorClass)
+	}
+}
+
+type healthOAuthMaintenanceObserver struct {
+	health *Health
+}
+
+func (o healthOAuthMaintenanceObserver) Started(time.Time) {
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+		m.MaintenanceWorkerRunning = true
+	})
+}
+
+func (o healthOAuthMaintenanceObserver) Stopped(time.Time) {
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+		m.MaintenanceWorkerRunning = false
+	})
+}
+
+func (o healthOAuthMaintenanceObserver) Checked(_ time.Time, status bridgeoauth.Status) {
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+		applyBlueskyAuthorizationStatus(m, status)
+	})
+}
+
+func (o healthOAuthMaintenanceObserver) RefreshSucceeded(_ time.Time, reason bridgeoauth.RefreshReason) {
+	if !isProviderRefreshReason(reason) {
+		return
+	}
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+		ensureProviderRefreshCounters(m)
+		m.RefreshSuccesses[reason]++
+		m.RefreshExecutions[reason]++
+		m.LastRefreshErrorClass = ""
+		m.Degraded = false
+	})
+}
+
+func (o healthOAuthMaintenanceObserver) RefreshFailed(
+	_ time.Time,
+	reason bridgeoauth.RefreshReason,
+	class bridgeoauth.RefreshErrorClass,
+) {
+	if !isProviderRefreshReason(reason) {
+		return
+	}
+	class = boundedProviderRefreshErrorClass(class)
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+		ensureProviderRefreshCounters(m)
+		if m.RefreshFailures[reason] == nil {
+			m.RefreshFailures[reason] = map[bridgeoauth.RefreshErrorClass]uint64{}
+		}
+		m.RefreshFailures[reason][class]++
+		m.RefreshExecutions[reason]++
+		m.LastRefreshErrorClass = class
+		m.Degraded = true
+	})
+}
+
+func (healthOAuthMaintenanceObserver) RetryScheduled(
+	time.Time,
+	bridgeoauth.RefreshReason,
+	bridgeoauth.RefreshErrorClass,
+	time.Duration,
+) {
+}
+
+func ensureProviderRefreshCounters(m *ProviderHealthMetrics) {
+	if m.RefreshSuccesses == nil {
+		m.RefreshSuccesses = map[bridgeoauth.RefreshReason]uint64{}
+	}
+	if m.RefreshFailures == nil {
+		m.RefreshFailures = map[bridgeoauth.RefreshReason]map[bridgeoauth.RefreshErrorClass]uint64{}
+	}
+	if m.RefreshExecutions == nil {
+		m.RefreshExecutions = map[bridgeoauth.RefreshReason]uint64{}
+	}
+}
+
 func (r *runtimeSync) runBluesky(ctx context.Context, cfg Config, seed []byte, store runtimeStore, oauthClient *bridgeoauth.Client, health *Health, coordinator reconciliationCoordinator) {
-	tokenProvider := healthBlueskyTokenProvider{tokens: oauthClient, health: health}
+	tokenProvider := healthBlueskyTokenProvider{tokens: oauthClient, health: health, refreshPeriod: cfg.Bluesky.OAuthRefreshPeriod}
 	for ctx.Err() == nil {
 		scope := bridgestore.SourceScope{Provider: "bluesky", Account: cfg.Bluesky.AccountDID}
 		token, err := tokenProvider.TokenByAccountDID(ctx, cfg.Bluesky.AccountDID)
@@ -208,8 +305,8 @@ func (r *runtimeSync) runBluesky(ctx context.Context, cfg Config, seed []byte, s
 					metrics.OAuthExpiry = token.Expiry
 				})
 				health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
-					m.Authenticated = false
 					m.OAuthExpiry = token.Expiry
+					m.AccessTokenExpired = true
 					m.StreamConnected = false
 				})
 				if !waitRuntimeRetry(ctx) {
@@ -272,7 +369,7 @@ func (r *runtimeSync) runBluesky(ctx context.Context, cfg Config, seed []byte, s
 			}
 		} else {
 			health.Update(func(metrics *HealthMetrics) { metrics.OAuthConnected = false; metrics.JetstreamConnected = false })
-			health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.Authenticated = false; m.StreamConnected = false })
+			health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) { m.StreamConnected = false })
 		}
 		if !waitRuntimeRetry(ctx) {
 			return
@@ -285,7 +382,7 @@ func (r *runtimeSync) runMastodon(ctx context.Context, cfg Config, seed []byte, 
 	for ctx.Err() == nil {
 		token, err := oauthClient.Token(ctx)
 		if err == nil {
-			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Authenticated = true; m.OAuthExpiry = token.Expiry })
+			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.AuthorizationAvailable = true; m.OAuthExpiry = token.Expiry })
 			var client *mastodon.Client
 			var snapshot neutral.TargetSnapshot
 			var profiles []neutral.Profile
@@ -327,7 +424,7 @@ func (r *runtimeSync) runMastodon(ctx context.Context, cfg Config, seed []byte, 
 			}
 		} else {
 			reportMastodonFailure("authentication", err)
-			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.Authenticated = false; m.StreamConnected = false })
+			health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) { m.AuthorizationAvailable = false; m.StreamConnected = false })
 		}
 		if !waitRuntimeRetry(ctx) {
 			return
