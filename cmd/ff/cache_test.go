@@ -66,7 +66,7 @@ func TestCacheMiddleware(t *testing.T) {
 
 	// Cleanup
 	t.Cleanup(func() {
-		os.Remove(cachePath)
+		_ = os.Remove(cachePath)
 	})
 }
 
@@ -284,7 +284,7 @@ func TestCacheMiddlewareWithTempDir(t *testing.T) {
 
 	// Cleanup
 	t.Cleanup(func() {
-		os.Remove(cachePath)
+		_ = os.Remove(cachePath)
 	})
 }
 

@@ -39,7 +39,7 @@ func createHandler(filtersMap FilterFuncMap, modifiersMap ModifierFuncMap) http.
 		u, err := parseAndValidateURL(r)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, err)
+			_, _ = fmt.Fprint(w, err)
 
 			return
 		}
@@ -49,7 +49,7 @@ func createHandler(filtersMap FilterFuncMap, modifiersMap ModifierFuncMap) http.
 		originFeed, err := fp.ParseURL(u)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintln(w, fmt.Errorf("ParseURL Error: %w", err))
+			_, _ = fmt.Fprintln(w, fmt.Errorf("ParseURL Error: %w", err))
 
 			return
 		}
@@ -59,7 +59,7 @@ func createHandler(filtersMap FilterFuncMap, modifiersMap ModifierFuncMap) http.
 		filteredFeed, err := Apply(r.Context(), originFeed, filters, modifiers)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintln(w, err)
+			_, _ = fmt.Fprintln(w, err)
 
 			return
 		}
@@ -69,7 +69,7 @@ func createHandler(filtersMap FilterFuncMap, modifiersMap ModifierFuncMap) http.
 		rss, err := c.ToRss()
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintln(w, err)
+			_, _ = fmt.Fprintln(w, err)
 
 			return
 		}
@@ -80,6 +80,6 @@ func createHandler(filtersMap FilterFuncMap, modifiersMap ModifierFuncMap) http.
 			return
 		}
 
-		fmt.Fprintln(w, rss) // #nosec G705
+		_, _ = fmt.Fprintln(w, rss) // #nosec G705
 	}
 }

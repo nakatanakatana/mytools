@@ -73,7 +73,7 @@ func (c *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Check if cache is fresh
 	if !c.IsCacheFresh(r.Context(), upstreamURLs[0], cacheKey, stat.ModTime()) {
 		// Cache is stale - remove and regenerate
-		os.Remove(cachePath)
+		_ = os.Remove(cachePath)
 		c.RemoveETag(cacheKey)
 		c.generateAndCacheResponse(w, r, queries, cachePath, cacheKey)
 
@@ -156,7 +156,9 @@ func (c *CacheMiddleware) IsCacheFresh(
 	if err != nil {
 		return true
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusNotModified {
 		return true
@@ -239,7 +241,9 @@ func (r *ResponseRecorder) captureAndStoreETag(ctx context.Context, upstreamURL 
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if etag := resp.Header.Get("ETag"); etag != "" {
 		r.cacheMiddleware.StoreETag(r.cacheKey, etag)
