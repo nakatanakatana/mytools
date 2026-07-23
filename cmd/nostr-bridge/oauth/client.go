@@ -278,12 +278,12 @@ func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (Toke
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()
 
-	stored, err := c.store.OAuthTokenByAccountDID(ctx, c.scope, accountDID)
+	stored, err := c.loadTokenLocked(ctx, accountDID)
 	if err != nil {
-		return Token{}, fmt.Errorf("load OAuth token: %w", err)
+		return Token{}, err
 	}
-	var payload tokenPayload
-	if err := c.decryptJSON(stored.EncryptedPayload, &payload); err != nil {
+	payload, err := c.decryptTokenPayload(stored)
+	if err != nil {
 		return Token{}, fmt.Errorf("decrypt OAuth token: %w", err)
 	}
 	key, err := payload.DPoPKey.ecdsa()
@@ -294,12 +294,30 @@ func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (Toke
 		return Token{}, errors.New("OAuth token has no access token")
 	}
 	if !payload.Expiry.IsZero() && !payload.Expiry.After(c.now()) {
-		return c.refreshToken(ctx, stored.AccountDID, payload, key)
+		return c.refreshTokenLocked(ctx, stored.AccountDID, payload, key)
 	}
 	return Token{AccessToken: payload.AccessToken, RefreshToken: payload.RefreshToken, Scope: payload.Scope, DPoPKey: key, DPoPNonce: payload.DPoPNonce, Expiry: payload.Expiry}, nil
 }
 
-func (c *Client) refreshToken(ctx context.Context, accountDID string, current tokenPayload, key *ecdsa.PrivateKey) (Token, error) {
+// loadTokenLocked reloads a token row while its caller holds tokenMu.
+func (c *Client) loadTokenLocked(ctx context.Context, accountDID string) (bridgestore.OAuthToken, error) {
+	stored, err := c.store.OAuthTokenByAccountDID(ctx, c.scope, accountDID)
+	if err != nil {
+		return bridgestore.OAuthToken{}, fmt.Errorf("load OAuth token: %w", err)
+	}
+	return stored, nil
+}
+
+func (c *Client) decryptTokenPayload(stored bridgestore.OAuthToken) (tokenPayload, error) {
+	var payload tokenPayload
+	if err := c.decryptJSON(stored.EncryptedPayload, &payload); err != nil {
+		return tokenPayload{}, err
+	}
+	return payload, nil
+}
+
+// refreshTokenLocked refreshes and persists a token while its caller holds tokenMu.
+func (c *Client) refreshTokenLocked(ctx context.Context, accountDID string, current tokenPayload, key *ecdsa.PrivateKey) (Token, error) {
 	if strings.TrimSpace(current.RefreshToken) == "" {
 		return Token{}, errors.New("OAuth token has no refresh token")
 	}

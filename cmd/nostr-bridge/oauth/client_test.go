@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log"
 	"math/big"
 	"net/http"
@@ -549,5 +550,100 @@ func TestTokenByAccountDIDSerializesConcurrentRefresh(t *testing.T) {
 	}
 	if storedPayload.AccessToken != "new-access" || storedPayload.RefreshToken != "new-refresh" {
 		t.Fatalf("stored payload = %#v, want new-access / new-refresh", storedPayload)
+	}
+}
+
+func TestRefreshIfDueSkipsTokenRefreshed29DaysAgo(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("RefreshIfDue made an HTTP request before the refresh period elapsed")
+		return nil, errors.New("unexpected HTTP request")
+	})}
+	client, store := newTestClient(t, "https://issuer.example", httpClient)
+	client.now = func() time.Time { return now }
+	saveStatusTestToken(t, client, store, tokenPayload{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		Scope:        "atproto",
+		DPoPKey:      newStatusTestJWK(t),
+		Expiry:       now.Add(time.Hour),
+	}, bridgestore.OAuthToken{
+		AccountDID:    "did:plc:alice",
+		LastRefreshAt: now.Add(-29 * 24 * time.Hour).Unix(),
+	})
+
+	result, err := client.RefreshIfDue(context.Background(), "did:plc:alice", 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refreshed || result.Reason != RefreshReasonMaintenance {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRefreshIfDueUsesLegacyUpdatedAtAt30DayBoundaryAfterClientReload(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	var tokenRequests int32
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
+		case "/oauth/token":
+			atomic.AddInt32(&tokenRequests, 1)
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.Form.Get("grant_type"); got != "refresh_token" {
+				t.Fatalf("grant_type = %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  "refreshed-access",
+				"refresh_token": "refreshed-refresh",
+				"scope":         "atproto",
+				"expires_in":    3600,
+			})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, store := newTestClient(t, server.URL, server.Client())
+	saveStatusTestToken(t, client, store, tokenPayload{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		Scope:        "atproto",
+		DPoPKey:      newStatusTestJWK(t),
+		Expiry:       now.Add(time.Hour),
+	}, bridgestore.OAuthToken{
+		AccountDID: "did:plc:alice",
+		UpdatedAt:  now.Add(-30 * 24 * time.Hour).Unix(),
+	})
+	encryptionKey := sha256.Sum256([]byte("test encryption key"))
+	reloaded, err := NewClient(Options{
+		Store:                  store,
+		HTTPClient:             server.Client(),
+		AuthorizationServerURL: server.URL,
+		ClientID:               client.clientID,
+		RedirectURL:            client.redirectURL,
+		ClientSigningKey:       client.clientSigningKey,
+		EncryptionKey:          encryptionKey[:],
+		Now:                    func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := reloaded.RefreshIfDue(context.Background(), "did:plc:alice", 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Refreshed || result.Reason != RefreshReasonMaintenance || result.Token.AccessToken != "refreshed-access" {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := atomic.LoadInt32(&tokenRequests); got != 1 {
+		t.Fatalf("token endpoint requests = %d, want 1", got)
 	}
 }
