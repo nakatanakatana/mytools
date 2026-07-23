@@ -647,6 +647,75 @@ func TestAuthorizationFailureClassificationForMaintenance(t *testing.T) {
 	}
 }
 
+func TestAuthorizationFailureSuppressesRepeatedDecryptAndDPoPUpdates(t *testing.T) {
+	fixedNow := time.Unix(2_000_000_000, 0)
+	tests := []struct {
+		name       string
+		payload    *tokenPayload
+		ciphertext []byte
+		wantClass  RefreshErrorClass
+	}{
+		{name: "prior decrypt failure", ciphertext: []byte("invalid encrypted payload"), wantClass: RefreshErrorDecrypt},
+		{
+			name: "prior DPoP key failure",
+			payload: &tokenPayload{
+				AccessToken: "old-access", RefreshToken: "old-refresh", Scope: "atproto",
+				DPoPKey: jwk{Kty: "EC", Crv: "P-256", X: "invalid", Y: "invalid", D: "invalid"},
+				Expiry:  fixedNow.Add(-time.Minute),
+			},
+			wantClass: RefreshErrorDPoPKey,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var httpCalls int32
+			httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				atomic.AddInt32(&httpCalls, 1)
+				return nil, errors.New("unexpected request")
+			})}
+			client, store := newTestClient(t, "https://issuer.example", httpClient)
+			client.now = func() time.Time { return fixedNow }
+			before := bridgestore.OAuthToken{
+				AccountDID: "did:plc:alice", UpdatedAt: fixedNow.Add(-48 * time.Hour).Unix(),
+				LastRefreshAt: fixedNow.Add(-24 * time.Hour).Unix(),
+			}
+			if test.payload != nil {
+				before = saveStatusTestToken(t, client, store, *test.payload, before)
+			} else {
+				before.EncryptedPayload = append([]byte(nil), test.ciphertext...)
+				if err := store.SaveOAuthToken(context.Background(), oauthTestScope, before); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recordingStore := &recordingOAuthStore{OAuthStore: store}
+			client.store = recordingStore
+
+			_, firstErr := client.TokenByAccountDID(context.Background(), before.AccountDID)
+			assertPermanentRefreshError(t, firstErr, test.wantClass)
+			if recordingStore.saveCalls != 0 || recordingStore.failureCalls != 1 {
+				t.Fatalf("first call store mutations: save=%d failure=%d, want 0/1", recordingStore.saveCalls, recordingStore.failureCalls)
+			}
+
+			recordingStore.saveCalls = 0
+			recordingStore.failureCalls = 0
+			_, secondErr := client.TokenByAccountDID(context.Background(), before.AccountDID)
+			assertPermanentRefreshError(t, secondErr, test.wantClass)
+			if got := atomic.LoadInt32(&httpCalls); got != 0 {
+				t.Fatalf("HTTP calls = %d, want 0", got)
+			}
+			if recordingStore.saveCalls != 0 || recordingStore.failureCalls != 0 {
+				t.Fatalf("second call store mutations: save=%d failure=%d, want 0/0", recordingStore.saveCalls, recordingStore.failureCalls)
+			}
+			after, err := store.OAuthTokenByAccountDID(context.Background(), oauthTestScope, before.AccountDID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertRefreshFailurePreservedToken(t, before, after, test.wantClass, true)
+		})
+	}
+}
+
 func TestAuthorizationFailureSuppressesSubsequentOnDemandRefresh(t *testing.T) {
 	fixedNow := time.Unix(2_000_000_000, 0)
 	var httpCalls int32
@@ -682,6 +751,17 @@ func TestAuthorizationFailureSuppressesSubsequentOnDemandRefresh(t *testing.T) {
 	}
 	if recordingStore.saveCalls != 0 || recordingStore.failureCalls != 0 {
 		t.Fatalf("store mutation calls: save=%d failure=%d, want 0/0", recordingStore.saveCalls, recordingStore.failureCalls)
+	}
+}
+
+func assertPermanentRefreshError(t *testing.T, err error, wantClass RefreshErrorClass) {
+	t.Helper()
+	var refreshErr *RefreshError
+	if !errors.As(err, &refreshErr) {
+		t.Fatalf("error = %T %v, want *RefreshError", err, err)
+	}
+	if refreshErr.Class != wantClass || !refreshErr.ReauthRequired {
+		t.Fatalf("refresh error = %#v, want class %q permanent", refreshErr, wantClass)
 	}
 }
 

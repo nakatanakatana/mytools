@@ -291,6 +291,12 @@ func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (Toke
 	if err != nil {
 		return Token{}, err
 	}
+	if stored.ReauthRequired {
+		return Token{}, &RefreshError{
+			Class:          boundedRefreshErrorClass(RefreshErrorClass(stored.LastRefreshErrorClass)),
+			ReauthRequired: true,
+		}
+	}
 	payload, err := c.decryptTokenPayload(stored)
 	if err != nil {
 		return Token{}, c.persistRefreshFailureLocked(ctx, stored.AccountDID, RefreshErrorDecrypt, true)
@@ -303,12 +309,6 @@ func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (Toke
 		return Token{}, errors.New("OAuth token has no access token")
 	}
 	if !payload.Expiry.IsZero() && !payload.Expiry.After(c.now()) {
-		if stored.ReauthRequired {
-			return Token{}, &RefreshError{
-				Class:          boundedRefreshErrorClass(RefreshErrorClass(stored.LastRefreshErrorClass)),
-				ReauthRequired: true,
-			}
-		}
 		return c.refreshTokenLocked(ctx, stored.AccountDID, payload, key)
 	}
 	return Token{AccessToken: payload.AccessToken, RefreshToken: payload.RefreshToken, Scope: payload.Scope, DPoPKey: key, DPoPNonce: payload.DPoPNonce, Expiry: payload.Expiry}, nil
