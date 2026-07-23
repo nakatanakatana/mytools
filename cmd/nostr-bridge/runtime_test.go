@@ -627,3 +627,131 @@ func TestHealthBlueskyOAuthMaintenanceObserverBoundsUnknownLabels(t *testing.T) 
 		t.Errorf("unknown class was not bounded to protocol: %#v", got.RefreshFailures)
 	}
 }
+
+type lifecycleOAuthMaintenanceClient struct {
+	status      bridgeoauth.Status
+	statusCalls int
+}
+
+func (c *lifecycleOAuthMaintenanceClient) RefreshIfDue(ctx context.Context, _ string, _ time.Duration) (bridgeoauth.RefreshResult, error) {
+	<-ctx.Done()
+	return bridgeoauth.RefreshResult{}, nil
+}
+
+func (c *lifecycleOAuthMaintenanceClient) AuthorizationStatus(context.Context, string, time.Duration) (bridgeoauth.Status, error) {
+	c.statusCalls++
+	return c.status, nil
+}
+
+func TestBlueskyOAuthMaintenanceRestoresAuthorizationBeforeRunning(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"bluesky"}})
+	status := bridgeoauth.Status{
+		AccessTokenValid:       false,
+		AuthorizationAvailable: true,
+		LastRefreshSucceededAt: time.Unix(100, 0),
+		NextMaintenanceRefresh: time.Unix(200, 0),
+		LastRefreshErrorClass:  bridgeoauth.RefreshErrorServer,
+	}
+	client := &lifecycleOAuthMaintenanceClient{status: status}
+
+	if health.providerSnapshot("bluesky").MaintenanceWorkerRunning {
+		t.Fatal("maintenance worker marked running before launch")
+	}
+	worker := startBlueskyOAuthMaintenance(BlueskyConfig{
+		AccountDID:                "did:plc:owner",
+		OAuthRefreshPeriod:        time.Hour,
+		OAuthRefreshCheckInterval: time.Hour,
+	}, client, health)
+	t.Cleanup(func() {
+		worker.Cancel()
+		_ = worker.Wait(context.Background())
+	})
+
+	if client.statusCalls != 1 {
+		t.Fatalf("startup AuthorizationStatus calls = %d, want 1", client.statusCalls)
+	}
+	restored := health.providerSnapshot("bluesky")
+	if !restored.AuthorizationAvailable || !restored.AccessTokenExpired || !restored.Degraded {
+		t.Fatalf("restored authorization = %#v", restored)
+	}
+	if !restored.LastRefreshSucceededAt.Equal(status.LastRefreshSucceededAt) ||
+		!restored.NextMaintenanceRefresh.Equal(status.NextMaintenanceRefresh) {
+		t.Fatalf("restored refresh timestamps = %#v", restored)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for !health.providerSnapshot("bluesky").MaintenanceWorkerRunning && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !health.providerSnapshot("bluesky").MaintenanceWorkerRunning {
+		t.Fatal("maintenance worker was not marked running after launch")
+	}
+
+	worker.Cancel()
+	if err := worker.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if health.providerSnapshot("bluesky").MaintenanceWorkerRunning {
+		t.Fatal("maintenance worker remained running after Run returned")
+	}
+}
+
+func TestOAuthMaintenanceLogsUseOnlyBoundedFields(t *testing.T) {
+	logs := captureRuntimeLogs(t)
+	observer := healthOAuthMaintenanceObserver{
+		health: NewHealth(HealthOptions{EnabledProviders: []string{"bluesky"}}),
+	}
+	secrets := []string{
+		"did:plc:fixture-secret",
+		"access-token-fixture",
+		"refresh-token-fixture",
+		"authorization-code-fixture",
+		"dpop-nonce-fixture",
+		`{"d":"private-jwk-fixture"}`,
+		"encrypted-payload-fixture",
+		"remote-response-description-fixture",
+	}
+
+	observer.Checked(time.Time{}, bridgeoauth.Status{
+		LastRefreshErrorClass: bridgeoauth.RefreshErrorClass(strings.Join(secrets, "|")),
+	})
+	observer.RefreshFailed(time.Time{}, bridgeoauth.RefreshReasonMaintenance, bridgeoauth.RefreshErrorServer)
+	observer.RetryScheduled(time.Time{}, bridgeoauth.RefreshReasonMaintenance, bridgeoauth.RefreshErrorServer, time.Second)
+	observer.RefreshFailed(time.Time{}, bridgeoauth.RefreshReasonMaintenance, bridgeoauth.RefreshErrorInvalidGrant)
+	observer.RefreshFailed(
+		time.Time{},
+		bridgeoauth.RefreshReason(strings.Join(secrets, "|")),
+		bridgeoauth.RefreshErrorClass(strings.Join(secrets, "|")),
+	)
+
+	output := logs.String()
+	assertRuntimeLogContains(
+		t,
+		output,
+		"provider=bluesky reason=maintenance result=checked class=protocol retry=false",
+		"provider=bluesky reason=maintenance result=failed class=server retry=false",
+		"provider=bluesky reason=maintenance result=retry_scheduled class=server retry=true",
+		"provider=bluesky reason=maintenance result=failed class=invalid_grant retry=false",
+	)
+	for _, secret := range secrets {
+		if strings.Contains(output, secret) {
+			t.Fatalf("OAuth maintenance log contains secret %q: %q", secret, output)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		const marker = "nostr-bridge OAuth maintenance: "
+		index := strings.Index(line, marker)
+		if index < 0 {
+			t.Fatalf("unexpected OAuth maintenance log line: %q", line)
+		}
+		fields := strings.Fields(line[index+len(marker):])
+		if len(fields) != 5 {
+			t.Fatalf("OAuth maintenance log fields = %v, want five bounded fields", fields)
+		}
+		for index, prefix := range []string{"provider=", "reason=", "result=", "class=", "retry="} {
+			if !strings.HasPrefix(fields[index], prefix) {
+				t.Fatalf("OAuth maintenance log fields = %v, field %d want prefix %q", fields, index, prefix)
+			}
+		}
+	}
+}

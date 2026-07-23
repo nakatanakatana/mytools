@@ -92,6 +92,41 @@ func TestRuntimeResourcesServeHealthRoute(t *testing.T) {
 	}
 }
 
+func TestBlueskyStartupCreatesOAuthMaintenanceWorker(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	resources, err := newRuntimeResources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources) }()
+
+	if resources.oauthMaintenance == nil || resources.oauthMaintenanceDone == nil {
+		t.Fatal("Bluesky runtime has no OAuth maintenance worker")
+	}
+}
+
+func TestMastodonOnlyStartupDoesNotCreateOAuthMaintenanceWorker(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	cfg.Bluesky = BlueskyConfig{}
+	cfg.Mastodon = MastodonConfig{
+		BaseURL:            "https://social.example",
+		Account:            "owner",
+		OAuthCallbackURL:   "https://bridge.example/oauth/mastodon/callback",
+		OAuthClientID:      "mastodon-client",
+		OAuthClientSecret:  "mastodon-secret",
+		OAuthEncryptionKey: base64.StdEncoding.EncodeToString(make([]byte, 32)),
+	}
+	resources, err := newRuntimeResources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources) }()
+
+	if resources.oauthMaintenance != nil || resources.oauthMaintenanceDone != nil {
+		t.Fatal("Mastodon-only runtime unexpectedly has a Bluesky OAuth maintenance worker")
+	}
+}
+
 func TestRuntimeResourcesRejectsInvalidRuntimeSeed(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.Shared.MasterSeed = "not-base64"
@@ -175,7 +210,9 @@ func testRuntimeConfig(t *testing.T) Config {
 			AccountDID: "did:plc:owner", BaseURL: "https://bsky.example",
 			OAuthCallbackURL: "https://bridge.example/oauth/bluesky/callback", OAuthAuthorizationServerURL: "https://issuer.example",
 			OAuthClientID: "https://bridge.example/oauth/bluesky/client-metadata.json", OAuthClientSigningKey: testOAuthSigningKey(t),
-			OAuthEncryptionKey: base64.StdEncoding.EncodeToString(make([]byte, 32)),
+			OAuthEncryptionKey:        base64.StdEncoding.EncodeToString(make([]byte, 32)),
+			OAuthRefreshPeriod:        30 * 24 * time.Hour,
+			OAuthRefreshCheckInterval: 24 * time.Hour,
 		},
 	}
 }
@@ -210,6 +247,38 @@ func TestRunPropagatesDispatcherFailureAndClosesResourcesOnce(t *testing.T) {
 	}
 	if !jetstream.canceled || database.count != 1 {
 		t.Fatalf("shutdown = jetstream canceled %v, database closes %d", jetstream.canceled, database.count)
+	}
+}
+
+func TestRunPropagatesOAuthMaintenanceFailureAndClosesResourcesOnce(t *testing.T) {
+	old := newRuntimeResources
+	t.Cleanup(func() { newRuntimeResources = old })
+	maintenance := startWorker(func(context.Context) error {
+		return errors.New("bounded maintenance failure")
+	})
+	jetstream, dispatcher, database := completedShutdownWorker(), completedShutdownWorker(), &countingCloser{}
+	newRuntimeResources = func(Config) (runtimeResources, error) {
+		return runtimeResources{
+			httpServer:           &http.Server{Addr: "127.0.0.1:0"},
+			jetstream:            jetstream,
+			dispatcher:           dispatcher,
+			oauthMaintenance:     maintenance,
+			oauthMaintenanceDone: maintenance.Done(),
+			database:             database,
+		}, nil
+	}
+
+	err := Run(context.Background(), Config{})
+	if err == nil || !strings.Contains(err.Error(), "OAuth maintenance") || !strings.Contains(err.Error(), "bounded maintenance failure") {
+		t.Fatalf("Run() = %v", err)
+	}
+	if !jetstream.canceled || !dispatcher.canceled || database.count != 1 {
+		t.Fatalf(
+			"shutdown = jetstream canceled %v, dispatcher canceled %v, database closes %d",
+			jetstream.canceled,
+			dispatcher.canceled,
+			database.count,
+		)
 	}
 }
 
@@ -317,17 +386,28 @@ func TestCloseRuntimeResourcesTimeoutDoesNotCloseDatabaseAndCancelsAllWorkers(t 
 	t.Cleanup(func() { shutdownTimeout = old })
 	blocked := &shutdownTestWorker{done: make(chan struct{})}
 	finished := completedShutdownWorker()
+	maintenance := completedShutdownWorker()
 	database := &countingCloser{}
 	started := time.Now()
-	err := closeRuntimeResources(runtimeResources{jetstream: blocked, dispatcher: finished, database: database})
+	err := closeRuntimeResources(runtimeResources{
+		jetstream:        blocked,
+		dispatcher:       finished,
+		oauthMaintenance: maintenance,
+		database:         database,
+	})
 	if err == nil || !strings.Contains(err.Error(), "deadline") {
 		t.Fatalf("closeRuntimeResources() = %v", err)
 	}
 	if time.Since(started) > 250*time.Millisecond {
 		t.Fatalf("shutdown was not bounded: %s", time.Since(started))
 	}
-	if !blocked.canceled || !finished.canceled {
-		t.Fatalf("worker cancellation = blocked %v, finished %v", blocked.canceled, finished.canceled)
+	if !blocked.canceled || !finished.canceled || !maintenance.canceled {
+		t.Fatalf(
+			"worker cancellation = blocked %v, finished %v, maintenance %v",
+			blocked.canceled,
+			finished.canceled,
+			maintenance.canceled,
+		)
 	}
 	if database.count != 0 {
 		t.Fatalf("database close count = %d", database.count)
@@ -340,11 +420,18 @@ func TestCloseRuntimeResourcesWaitsForWorkersBeforeClosingDatabase(t *testing.T)
 	jetstream.order, jetstream.name = &order, "jetstream"
 	dispatcher := completedShutdownWorker()
 	dispatcher.order, dispatcher.name = &order, "dispatcher"
-	err := closeRuntimeResources(runtimeResources{jetstream: jetstream, dispatcher: dispatcher, database: orderedCloser{&order, "database"}})
+	maintenance := completedShutdownWorker()
+	maintenance.order, maintenance.name = &order, "maintenance"
+	err := closeRuntimeResources(runtimeResources{
+		jetstream:        jetstream,
+		dispatcher:       dispatcher,
+		oauthMaintenance: maintenance,
+		database:         orderedCloser{&order, "database"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "jetstream,dispatcher,database" {
+	if got := strings.Join(order, ","); got != "jetstream,dispatcher,maintenance,database" {
 		t.Fatalf("shutdown order = %s", got)
 	}
 }

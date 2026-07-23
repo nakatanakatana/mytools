@@ -225,18 +225,26 @@ func (o healthOAuthMaintenanceObserver) Started(time.Time) {
 	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
 		m.MaintenanceWorkerRunning = true
 	})
+	logOAuthMaintenance(bridgeoauth.RefreshReasonMaintenance, "started", "", false)
 }
 
 func (o healthOAuthMaintenanceObserver) Stopped(time.Time) {
 	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
 		m.MaintenanceWorkerRunning = false
 	})
+	logOAuthMaintenance(bridgeoauth.RefreshReasonMaintenance, "stopped", "", false)
 }
 
 func (o healthOAuthMaintenanceObserver) Checked(_ time.Time, status bridgeoauth.Status) {
 	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
 		applyBlueskyAuthorizationStatus(m, status)
 	})
+	logOAuthMaintenance(
+		bridgeoauth.RefreshReasonMaintenance,
+		"checked",
+		status.LastRefreshErrorClass,
+		false,
+	)
 }
 
 func (o healthOAuthMaintenanceObserver) RefreshSucceeded(_ time.Time, reason bridgeoauth.RefreshReason) {
@@ -250,6 +258,7 @@ func (o healthOAuthMaintenanceObserver) RefreshSucceeded(_ time.Time, reason bri
 		m.LastRefreshErrorClass = ""
 		m.Degraded = false
 	})
+	logOAuthMaintenance(reason, "succeeded", "", false)
 }
 
 func (o healthOAuthMaintenanceObserver) RefreshFailed(
@@ -271,14 +280,69 @@ func (o healthOAuthMaintenanceObserver) RefreshFailed(
 		m.LastRefreshErrorClass = class
 		m.Degraded = true
 	})
+	logOAuthMaintenance(reason, "failed", class, false)
 }
 
 func (healthOAuthMaintenanceObserver) RetryScheduled(
-	time.Time,
-	bridgeoauth.RefreshReason,
-	bridgeoauth.RefreshErrorClass,
-	time.Duration,
+	_ time.Time,
+	reason bridgeoauth.RefreshReason,
+	class bridgeoauth.RefreshErrorClass,
+	_ time.Duration,
 ) {
+	if !isProviderRefreshReason(reason) {
+		return
+	}
+	logOAuthMaintenance(reason, "retry_scheduled", class, true)
+}
+
+func logOAuthMaintenance(
+	reason bridgeoauth.RefreshReason,
+	result string,
+	class bridgeoauth.RefreshErrorClass,
+	retry bool,
+) {
+	classLabel := "none"
+	if class != "" {
+		classLabel = string(boundedProviderRefreshErrorClass(class))
+	}
+	log.Printf(
+		"nostr-bridge OAuth maintenance: provider=bluesky reason=%s result=%s class=%s retry=%t",
+		reason,
+		result,
+		classLabel,
+		retry,
+	)
+}
+
+func startBlueskyOAuthMaintenance(
+	cfg BlueskyConfig,
+	client bridgeoauth.MaintenanceClient,
+	health *Health,
+) *workerCloser {
+	observer := healthOAuthMaintenanceObserver{health: health}
+	status, err := client.AuthorizationStatus(
+		context.Background(),
+		cfg.AccountDID,
+		cfg.OAuthRefreshPeriod,
+	)
+	if err == nil {
+		observer.Checked(time.Now(), status)
+	} else {
+		logOAuthMaintenance(
+			bridgeoauth.RefreshReasonMaintenance,
+			"status_unavailable",
+			bridgeoauth.RefreshErrorProtocol,
+			false,
+		)
+	}
+	maintenance := bridgeoauth.Maintenance{
+		Client:        client,
+		AccountDID:    cfg.AccountDID,
+		RefreshPeriod: cfg.OAuthRefreshPeriod,
+		CheckInterval: cfg.OAuthRefreshCheckInterval,
+		Observer:      observer,
+	}
+	return startWorker(maintenance.Run)
 }
 
 func ensureProviderRefreshCounters(m *ProviderHealthMetrics) {

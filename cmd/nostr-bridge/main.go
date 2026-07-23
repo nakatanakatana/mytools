@@ -68,11 +68,13 @@ func RegisterOAuthRoutes(mux *http.ServeMux, blueskyClient *bridgeoauth.Client, 
 }
 
 type runtimeResources struct {
-	httpServer     *http.Server
-	jetstream      shutdownWorker
-	dispatcher     shutdownWorker
-	dispatcherDone <-chan struct{}
-	database       databaseCloser
+	httpServer           *http.Server
+	jetstream            shutdownWorker
+	dispatcher           shutdownWorker
+	dispatcherDone       <-chan struct{}
+	oauthMaintenance     shutdownWorker
+	oauthMaintenanceDone <-chan struct{}
+	database             databaseCloser
 }
 
 type databaseCloser interface {
@@ -131,8 +133,15 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		defer health.Update(func(m *HealthMetrics) { m.DispatcherRunning = false })
 		return dispatcher.Run(ctx)
 	})
+	var oauthMaintenance *workerCloser
+	if client != nil {
+		oauthMaintenance = startBlueskyOAuthMaintenance(cfg.Bluesky, client, health)
+	}
 	runtime, err := newRuntimeSync(cfg, bridgeStore, client, mastodonOAuth, health)
 	if err != nil {
+		if oauthMaintenance != nil {
+			_ = oauthMaintenance.Close()
+		}
 		_ = dispatchWorker.Close()
 		_ = database.Close()
 		return runtimeResources{}, err
@@ -140,13 +149,18 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 	mux := http.NewServeMux()
 	RegisterOAuthRoutes(mux, client, mastodonOAuth)
 	RegisterHealthRoutes(mux, health)
-	return runtimeResources{
+	resources := runtimeResources{
 		httpServer:     &http.Server{Addr: ServerAddress(cfg), Handler: mux},
 		jetstream:      runtime,
 		dispatcher:     dispatchWorker,
 		dispatcherDone: dispatchWorker.Done(),
 		database:       newTrackedDatabaseCloser(database),
-	}, nil
+	}
+	if oauthMaintenance != nil {
+		resources.oauthMaintenance = oauthMaintenance
+		resources.oauthMaintenanceDone = oauthMaintenance.Done()
+	}
+	return resources, nil
 }
 
 func enabledProviders(cfg Config) []string {
@@ -346,22 +360,27 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 		case <-ctx.Done():
 		case <-resources.dispatcherDone:
-			worker, _ := resources.dispatcher.(*workerCloser)
-			var dispatchErr error
-			if worker != nil {
-				dispatchErr = worker.Err()
-			}
-			if ctx.Err() != nil || errors.Is(dispatchErr, context.Canceled) {
-				return closeRuntimeResources(resources)
-			}
-			if dispatchErr == nil {
-				dispatchErr = errors.New("dispatcher stopped unexpectedly")
-			}
-			return errors.Join(fmt.Errorf("dispatcher: %w", dispatchErr), closeRuntimeResources(resources))
+			return runtimeWorkerStopped(ctx, resources, "dispatcher", resources.dispatcher)
+		case <-resources.oauthMaintenanceDone:
+			return runtimeWorkerStopped(ctx, resources, "OAuth maintenance", resources.oauthMaintenance)
 		}
 	}
 
 	return closeRuntimeResources(resources)
+}
+
+func runtimeWorkerStopped(ctx context.Context, resources runtimeResources, name string, worker shutdownWorker) error {
+	var workerErr error
+	if result, ok := worker.(interface{ Err() error }); ok {
+		workerErr = result.Err()
+	}
+	if ctx.Err() != nil || errors.Is(workerErr, context.Canceled) {
+		return closeRuntimeResources(resources)
+	}
+	if workerErr == nil {
+		workerErr = errors.New("worker stopped unexpectedly")
+	}
+	return errors.Join(fmt.Errorf("%s: %w", name, workerErr), closeRuntimeResources(resources))
 }
 
 func closeRuntimeResources(resources runtimeResources) error {
@@ -371,7 +390,11 @@ func closeRuntimeResources(resources runtimeResources) error {
 	defer cancel()
 	// Initiate every worker cancellation before waiting for HTTP handlers or
 	// any one worker. The single context bounds the entire HTTP/worker phase.
-	for _, worker := range []shutdownWorker{resources.jetstream, resources.dispatcher} {
+	for _, worker := range []shutdownWorker{
+		resources.jetstream,
+		resources.dispatcher,
+		resources.oauthMaintenance,
+	} {
 		if worker != nil {
 			worker.Cancel()
 		}
@@ -387,7 +410,9 @@ func closeRuntimeResources(resources runtimeResources) error {
 		name   string
 		worker shutdownWorker
 	}{
-		{"stop Jetstream", resources.jetstream}, {"stop dispatcher", resources.dispatcher},
+		{"stop Jetstream", resources.jetstream},
+		{"stop dispatcher", resources.dispatcher},
+		{"stop OAuth maintenance", resources.oauthMaintenance},
 	} {
 		if item.worker != nil {
 			if err := item.worker.Wait(ctx); err != nil {
