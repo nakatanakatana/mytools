@@ -26,7 +26,7 @@ import (
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
 
-var oauthTestScope = bridgestore.SourceScope{}
+var oauthTestScope = bridgestore.SourceScope{Provider: "bluesky", Account: "did:plc:alice"}
 
 func TestStartAuthorizationRetriesDPoPNonceChallenge(t *testing.T) {
 	const challengeNonce = "secret-par-nonce"
@@ -292,7 +292,7 @@ func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T)
 		t.Fatal(err)
 	}
 	encryptionKey := sha256.Sum256([]byte("test encryption key"))
-	restarted, err := NewClient(Options{Store: store, HTTPClient: server.Client(), AuthorizationServerURL: server.URL, ClientID: client.clientID, RedirectURL: client.redirectURL, ClientSigningKey: client.clientSigningKey, EncryptionKey: encryptionKey[:]})
+	restarted, err := NewClient(Options{Scope: oauthTestScope, Store: store, HTTPClient: server.Client(), AuthorizationServerURL: server.URL, ClientID: client.clientID, RedirectURL: client.redirectURL, ClientSigningKey: client.clientSigningKey, EncryptionKey: encryptionKey[:]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func newTestClient(t *testing.T, issuer string, httpClients ...*http.Client) (*C
 	if len(httpClients) > 0 {
 		httpClient = httpClients[0]
 	}
-	client, err := NewClient(Options{Store: store, HTTPClient: httpClient, AuthorizationServerURL: issuer, ClientID: "https://bridge.example/oauth/client-metadata.json", RedirectURL: "https://bridge.example/oauth/callback", ClientSigningKey: key, EncryptionKey: encryptionKey[:]})
+	client, err := NewClient(Options{Scope: oauthTestScope, Store: store, HTTPClient: httpClient, AuthorizationServerURL: issuer, ClientID: "https://bridge.example/oauth/client-metadata.json", RedirectURL: "https://bridge.example/oauth/callback", ClientSigningKey: key, EncryptionKey: encryptionKey[:]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,6 +581,47 @@ func TestRefreshIfDueSkipsTokenRefreshed29DaysAgo(t *testing.T) {
 	}
 }
 
+func TestRefreshIfDueRejectsDifferentConfiguredAccountBeforeStoreOrHTTP(t *testing.T) {
+	var httpCalls int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		atomic.AddInt32(&httpCalls, 1)
+		return nil, errors.New("unexpected HTTP request")
+	})}
+	client, store := newTestClient(t, "https://issuer.example", httpClient)
+	client.store = failRefreshStore{OAuthStore: store, t: t}
+
+	result, err := client.RefreshIfDue(context.Background(), "did:plc:mallory", 30*24*time.Hour)
+	if !errors.Is(err, bridgestore.ErrSourceScopeMismatch) {
+		t.Fatalf("error = %v, want source scope mismatch", err)
+	}
+	if result.Refreshed || result.Reason != RefreshReasonMaintenance {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := atomic.LoadInt32(&httpCalls); got != 0 {
+		t.Fatalf("HTTP calls = %d, want 0", got)
+	}
+}
+
+type failRefreshStore struct {
+	bridgestore.OAuthStore
+	t *testing.T
+}
+
+func (s failRefreshStore) OAuthTokenByAccountDID(context.Context, bridgestore.SourceScope, string) (bridgestore.OAuthToken, error) {
+	s.t.Fatal("RefreshIfDue loaded an OAuth token for a different configured account")
+	return bridgestore.OAuthToken{}, errors.New("unexpected persistence access")
+}
+
+func (s failRefreshStore) SaveOAuthToken(context.Context, bridgestore.SourceScope, bridgestore.OAuthToken) error {
+	s.t.Fatal("RefreshIfDue saved an OAuth token for a different configured account")
+	return errors.New("unexpected persistence mutation")
+}
+
+func (s failRefreshStore) UpdateOAuthTokenRefreshFailure(context.Context, bridgestore.SourceScope, string, string, bool) error {
+	s.t.Fatal("RefreshIfDue updated refresh failure state for a different configured account")
+	return errors.New("unexpected persistence mutation")
+}
+
 func TestRefreshIfDueUsesLegacyUpdatedAtAt30DayBoundaryAfterClientReload(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	var tokenRequests int32
@@ -623,6 +664,7 @@ func TestRefreshIfDueUsesLegacyUpdatedAtAt30DayBoundaryAfterClientReload(t *test
 	})
 	encryptionKey := sha256.Sum256([]byte("test encryption key"))
 	reloaded, err := NewClient(Options{
+		Scope:                  oauthTestScope,
 		Store:                  store,
 		HTTPClient:             server.Client(),
 		AuthorizationServerURL: server.URL,

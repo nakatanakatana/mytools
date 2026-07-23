@@ -96,6 +96,9 @@ func (c *Client) AuthorizationStatus(ctx context.Context, accountDID string, per
 // serialized so concurrent callers cannot rotate the same refresh token.
 func (c *Client) RefreshIfDue(ctx context.Context, accountDID string, period time.Duration) (RefreshResult, error) {
 	result := RefreshResult{Reason: RefreshReasonMaintenance}
+	if c.scope.Provider != "bluesky" || strings.TrimSpace(c.scope.Account) == "" || accountDID != c.scope.Account {
+		return result, fmt.Errorf("Bluesky maintenance refresh: %w", bridgestore.ErrSourceScopeMismatch)
+	}
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()
 
