@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -244,7 +245,95 @@ func TestMaintenanceRetriesTransientFailuresWithIncreasingBoundedDelays(t *testi
 	}
 }
 
-func TestMaintenanceDoesNotRetryPermanentFailureBeforePeriodicCheck(t *testing.T) {
+func TestMaintenanceReturnsBoundedOperationalErrorForUnknownRefreshFailure(t *testing.T) {
+	const secret = "rotated-token-save-secret"
+	client := &maintenanceClientFake{
+		refreshErrs: []error{errors.New("save refreshed OAuth token: " + secret)},
+		status:      Status{AuthorizationAvailable: true},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	observer := &maintenanceObserverRecorder{}
+	var timerDelays []time.Duration
+	maintenance := Maintenance{
+		Client:        client,
+		AccountDID:    "did:plc:owner",
+		RefreshPeriod: time.Hour,
+		CheckInterval: 10 * time.Minute,
+		Jitter:        func(time.Duration) time.Duration { return 0 },
+		Timer: func(delay time.Duration) <-chan time.Time {
+			timerDelays = append(timerDelays, delay)
+			cancel()
+			return make(chan time.Time)
+		},
+		Observer: observer,
+	}
+
+	err := maintenance.Run(ctx)
+	if err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want bounded operational error", err)
+	}
+	if got := err.Error(); got != "OAuth maintenance refresh failed: class=protocol persistence_failed=false" {
+		t.Fatalf("Run() error = %q, want bounded operational error", got)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("Run() error leaked raw secret: %q", err)
+	}
+	if len(observer.retryDelays) != 0 || len(timerDelays) != 0 {
+		t.Fatalf("scheduled retries = observer %v timer %v, want none", observer.retryDelays, timerDelays)
+	}
+	if len(observer.failedReasons) != 1 || observer.failedReasons[0] != RefreshReasonMaintenance ||
+		len(observer.failedClasses) != 1 || observer.failedClasses[0] != RefreshErrorProtocol {
+		t.Fatalf("failure events = %v/%v, want bounded maintenance/protocol", observer.failedReasons, observer.failedClasses)
+	}
+}
+
+func TestMaintenanceReturnsBoundedOperationalErrorWhenFailurePersistenceFails(t *testing.T) {
+	const secret = "persistence-secret-class"
+	client := &maintenanceClientFake{
+		refreshErrs: []error{&RefreshError{
+			Class:             RefreshErrorClass(secret),
+			ReauthRequired:    true,
+			PersistenceFailed: true,
+		}},
+		status: Status{ReauthRequired: true, LastRefreshErrorClass: RefreshErrorClass(secret)},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	observer := &maintenanceObserverRecorder{}
+	var timerDelays []time.Duration
+	maintenance := Maintenance{
+		Client:        client,
+		AccountDID:    "did:plc:owner",
+		RefreshPeriod: time.Hour,
+		CheckInterval: 10 * time.Minute,
+		Jitter:        func(time.Duration) time.Duration { return 0 },
+		Timer: func(delay time.Duration) <-chan time.Time {
+			timerDelays = append(timerDelays, delay)
+			cancel()
+			return make(chan time.Time)
+		},
+		Observer: observer,
+	}
+
+	err := maintenance.Run(ctx)
+	if err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want bounded operational error", err)
+	}
+	if got := err.Error(); got != "OAuth maintenance refresh failed: class=protocol persistence_failed=true" {
+		t.Fatalf("Run() error = %q, want bounded operational error", got)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("Run() error leaked raw secret: %q", err)
+	}
+	if len(observer.retryDelays) != 0 || len(timerDelays) != 0 {
+		t.Fatalf("scheduled retries = observer %v timer %v, want none", observer.retryDelays, timerDelays)
+	}
+	if len(observer.failedReasons) != 1 || observer.failedReasons[0] != RefreshReasonMaintenance ||
+		len(observer.failedClasses) != 1 || observer.failedClasses[0] != RefreshErrorProtocol {
+		t.Fatalf("failure events = %v/%v, want bounded maintenance/protocol", observer.failedReasons, observer.failedClasses)
+	}
+}
+
+func TestMaintenanceRunsPeriodicCheckAfterPermanentFailureWithoutRetry(t *testing.T) {
 	client := &maintenanceClientFake{
 		refreshErrs: []error{&RefreshError{Class: RefreshErrorInvalidGrant, ReauthRequired: true}},
 		status: Status{
@@ -257,14 +346,12 @@ func TestMaintenanceDoesNotRetryPermanentFailureBeforePeriodicCheck(t *testing.T
 	timer := func(delay time.Duration) <-chan time.Time {
 		timerDelays = append(timerDelays, delay)
 		ready := make(chan time.Time, 1)
-		if len(timerDelays) == 1 {
+		if len(timerDelays) <= 2 {
 			ready <- time.Unix(1, 0)
-		} else {
-			cancel()
 		}
 		return ready
 	}
-	observer := &maintenanceObserverRecorder{}
+	observer := &maintenanceObserverRecorder{cancel: cancel, cancelChecked: 2}
 	maintenance := Maintenance{
 		Client:        client,
 		AccountDID:    "did:plc:owner",
@@ -279,8 +366,8 @@ func TestMaintenanceDoesNotRetryPermanentFailureBeforePeriodicCheck(t *testing.T
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() error = %v, want context.Canceled", err)
 	}
-	if client.refreshCalls != 1 {
-		t.Fatalf("refresh calls = %d, want 1 before periodic check", client.refreshCalls)
+	if client.refreshCalls != 2 || client.statusCalls != 2 {
+		t.Fatalf("client calls = refresh %d status %d, want periodic second check", client.refreshCalls, client.statusCalls)
 	}
 	if len(observer.retryDelays) != 0 {
 		t.Fatalf("retry delays = %v, want none", observer.retryDelays)

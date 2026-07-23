@@ -58,6 +58,7 @@ type Maintenance struct {
 // Run checks the durable authorization after bounded startup jitter and then
 // on the configured interval. Transient refresh failures use bounded
 // exponential retries; permanent failures wait for the next periodic check.
+// Unexpected failures and refresh-failure persistence errors stop the worker.
 func (m Maintenance) Run(ctx context.Context) error {
 	if m.Client == nil {
 		return errors.New("OAuth maintenance client is required")
@@ -122,9 +123,12 @@ func (m Maintenance) Run(ctx context.Context) error {
 
 		nextDelay := m.CheckInterval
 		if refreshErr != nil {
-			class, permanent := maintenanceFailure(refreshErr)
+			class, retryable, operationalErr := maintenanceFailure(refreshErr)
 			observer.RefreshFailed(now(), RefreshReasonMaintenance, class)
-			if !permanent {
+			if operationalErr != nil {
+				return operationalErr
+			}
+			if retryable {
 				nextDelay = maintenanceRetryDelay(retryAttempt, m.CheckInterval)
 				retryAttempt++
 				observer.RetryScheduled(now(), RefreshReasonMaintenance, class, nextDelay)
@@ -144,12 +148,25 @@ func (m Maintenance) Run(ctx context.Context) error {
 	}
 }
 
-func maintenanceFailure(err error) (RefreshErrorClass, bool) {
+func maintenanceFailure(err error) (RefreshErrorClass, bool, error) {
 	var refreshErr *RefreshError
-	if !errors.As(err, &refreshErr) {
-		return RefreshErrorProtocol, false
+	if !errors.As(err, &refreshErr) || refreshErr == nil {
+		class := RefreshErrorProtocol
+		return class, false, maintenanceOperationalError(class, false)
 	}
-	return boundedRefreshErrorClass(refreshErr.Class), refreshErr.ReauthRequired
+	class := boundedRefreshErrorClass(refreshErr.Class)
+	if refreshErr.PersistenceFailed {
+		return class, false, maintenanceOperationalError(class, true)
+	}
+	return class, !refreshErr.ReauthRequired, nil
+}
+
+func maintenanceOperationalError(class RefreshErrorClass, persistenceFailed bool) error {
+	return fmt.Errorf(
+		"OAuth maintenance refresh failed: class=%s persistence_failed=%t",
+		boundedRefreshErrorClass(class),
+		persistenceFailed,
+	)
 }
 
 func maintenanceRetryDelay(attempt int, checkInterval time.Duration) time.Duration {
