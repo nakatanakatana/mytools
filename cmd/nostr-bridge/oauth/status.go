@@ -141,7 +141,7 @@ func (c *Client) AuthorizationStatus(ctx context.Context, accountDID string, per
 func (c *Client) RefreshIfDue(ctx context.Context, accountDID string, period time.Duration) (RefreshResult, error) {
 	result := RefreshResult{Reason: RefreshReasonMaintenance}
 	if c.scope.Provider != "bluesky" || strings.TrimSpace(c.scope.Account) == "" || accountDID != c.scope.Account {
-		return result, fmt.Errorf("Bluesky maintenance refresh: %w", bridgestore.ErrSourceScopeMismatch)
+		return result, fmt.Errorf("bluesky maintenance refresh: %w", bridgestore.ErrSourceScopeMismatch)
 	}
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()

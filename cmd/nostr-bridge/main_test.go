@@ -398,7 +398,7 @@ func TestFreshBlueskyOAuthMaintenanceKeepsProcessAvailableAfterFirstCheck(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("readiness status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
 	}
