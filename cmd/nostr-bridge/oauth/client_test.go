@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -357,6 +358,110 @@ func TestHandleCallbackPublishesBoundedAuthorizationCodeFailure(t *testing.T) {
 	}
 	exposed := recorder.Body.String() + fmt.Sprint(observer.failures)
 	for _, secret := range []string{stateSecret, codeSecret, descriptionSecret} {
+		if strings.Contains(exposed, secret) {
+			t.Fatalf("callback failure exposed secret %q: %q", secret, exposed)
+		}
+	}
+}
+
+func TestHandleCallbackRejectsTokenSubjectOutsideConfiguredAccount(t *testing.T) {
+	const (
+		stateSecret        = "oauth-state-subject-fixture"
+		codeSecret         = "authorization-code-subject-fixture"
+		accessTokenSecret  = "access-token-subject-fixture"
+		refreshTokenSecret = "refresh-token-subject-fixture"
+		otherDIDSecret     = "did:plc:other-account-fixture"
+	)
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
+		case "/oauth/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  accessTokenSecret,
+				"refresh_token": refreshTokenSecret,
+				"sub":           otherDIDSecret,
+				"scope":         "atproto",
+				"expires_in":    3600,
+			})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, store := newTestClient(t, server.URL, server.Client())
+	observer := &clientObserverRecorder{}
+	client.observer = observer
+	payload, err := json.Marshal(sessionPayload{
+		CodeVerifier: "pkce-verifier-subject-fixture",
+		Issuer:       server.URL,
+		DPoPKey:      newStatusTestJWK(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := client.encrypt(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveOAuthSession(context.Background(), oauthTestScope, bridgestore.OAuthSession{
+		State:            stateSecret,
+		EncryptedPayload: encrypted,
+		ExpiresAt:        time.Now().Add(time.Minute).Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recordingStore := &recordingOAuthStore{OAuthStore: store}
+	client.store = recordingStore
+
+	recorder := httptest.NewRecorder()
+	client.HandleCallback(
+		recorder,
+		httptest.NewRequest(
+			http.MethodGet,
+			"/oauth/callback?state="+url.QueryEscape(stateSecret)+
+				"&code="+url.QueryEscape(codeSecret)+
+				"&iss="+url.QueryEscape(server.URL),
+			nil,
+		),
+	)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("callback status = %d, want %d", recorder.Code, http.StatusBadGateway)
+	}
+	if recordingStore.saveCalls != 0 {
+		t.Fatalf("SaveOAuthToken calls = %d, want 0", recordingStore.saveCalls)
+	}
+	for _, accountDID := range []string{oauthTestScope.Account, otherDIDSecret} {
+		if _, err := store.OAuthTokenByAccountDID(context.Background(), oauthTestScope, accountDID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("OAuth token for %q error = %v, want no row", accountDID, err)
+		}
+	}
+	if len(observer.successes) != 0 || len(observer.statuses) != 0 ||
+		len(observer.failures) != 1 ||
+		observer.failures[0] != (clientObserverFailure{
+			reason: RefreshReasonAuthorizationCode,
+			class:  RefreshErrorProtocol,
+		}) {
+		t.Fatalf(
+			"authorization-code events: successes=%#v failures=%#v statuses=%#v",
+			observer.successes,
+			observer.failures,
+			observer.statuses,
+		)
+	}
+	exposed := recorder.Body.String() + fmt.Sprint(observer.failures)
+	for _, secret := range []string{
+		stateSecret,
+		codeSecret,
+		accessTokenSecret,
+		refreshTokenSecret,
+		oauthTestScope.Account,
+		otherDIDSecret,
+	} {
 		if strings.Contains(exposed, secret) {
 			t.Fatalf("callback failure exposed secret %q: %q", secret, exposed)
 		}

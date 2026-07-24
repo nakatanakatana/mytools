@@ -256,7 +256,7 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var tokens tokenResponse
-	if err := json.NewDecoder(response.Body).Decode(&tokens); err != nil || tokens.Sub == "" || !hasScope(tokens.Scope, "atproto") {
+	if err := json.NewDecoder(response.Body).Decode(&tokens); err != nil || tokens.Sub != c.scope.Account || !hasScope(tokens.Scope, "atproto") {
 		c.observeRefreshFailed(RefreshReasonAuthorizationCode, RefreshErrorProtocol)
 		http.Error(w, "invalid OAuth token response", http.StatusBadGateway)
 		return
