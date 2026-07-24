@@ -23,11 +23,14 @@ type OauthSession struct {
 }
 
 type OauthToken struct {
-	Provider         string
-	SourceAccount    string
-	AccountDid       string
-	EncryptedPayload []byte
-	UpdatedAt        int64
+	Provider              string
+	SourceAccount         string
+	AccountDid            string
+	EncryptedPayload      []byte
+	UpdatedAt             int64
+	LastRefreshAt         int64
+	ReauthRequired        int64
+	LastRefreshErrorClass string
 }
 
 type Outbox struct {

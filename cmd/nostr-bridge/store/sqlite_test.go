@@ -764,8 +764,8 @@ func TestSQLiteStoreUpdatesOAuthToken(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = closer.Close() })
 
-	first := OAuthToken{AccountDID: "did:plc:alice", EncryptedPayload: []byte("first"), UpdatedAt: 1}
-	second := OAuthToken{AccountDID: first.AccountDID, EncryptedPayload: []byte("second"), UpdatedAt: 2}
+	first := OAuthToken{AccountDID: "did:plc:alice", EncryptedPayload: []byte("first"), UpdatedAt: 1, LastRefreshAt: 1, ReauthRequired: true, LastRefreshErrorClass: "temporary"}
+	second := OAuthToken{AccountDID: first.AccountDID, EncryptedPayload: []byte("second"), UpdatedAt: 2, LastRefreshAt: 2, ReauthRequired: false, LastRefreshErrorClass: ""}
 	if err := store.SaveOAuthToken(ctx, testScope, first); err != nil {
 		t.Fatal(err)
 	}
@@ -777,8 +777,46 @@ func TestSQLiteStoreUpdatesOAuthToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.AccountDID != second.AccountDID || string(got.EncryptedPayload) != string(second.EncryptedPayload) || got.UpdatedAt != second.UpdatedAt {
+	if got.AccountDID != second.AccountDID || string(got.EncryptedPayload) != string(second.EncryptedPayload) || got.UpdatedAt != second.UpdatedAt || got.LastRefreshAt != second.LastRefreshAt || got.ReauthRequired != second.ReauthRequired || got.LastRefreshErrorClass != second.LastRefreshErrorClass {
 		t.Fatalf("OAuthTokenByAccountDID() = %#v, want %#v", got, second)
+	}
+}
+
+func TestSQLiteStoreUpdatesOAuthRefreshFailure(t *testing.T) {
+	ctx := context.Background()
+	store, closer, err := Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	want := OAuthToken{
+		AccountDID: "did:plc:alice", EncryptedPayload: []byte("rotated"),
+		UpdatedAt: 20, LastRefreshAt: 19, ReauthRequired: false,
+		LastRefreshErrorClass: "",
+	}
+	if err := store.SaveOAuthToken(ctx, testScope, want); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateOAuthTokenRefreshFailure(ctx, testScope, want.AccountDID, "rate_limited", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.OAuthTokenByAccountDID(ctx, testScope, want.AccountDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.EncryptedPayload) != "rotated" || got.UpdatedAt != 20 || got.LastRefreshAt != 19 || got.LastRefreshErrorClass != "rate_limited" || got.ReauthRequired {
+		t.Fatalf("OAuth token after failure = %#v", got)
+	}
+	if err := store.UpdateOAuthTokenRefreshFailure(ctx, testScope, want.AccountDID, "reauth_required", true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.OAuthTokenByAccountDID(ctx, testScope, want.AccountDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.EncryptedPayload) != "rotated" || got.UpdatedAt != 20 || got.LastRefreshAt != 19 || got.LastRefreshErrorClass != "reauth_required" || !got.ReauthRequired {
+		t.Fatalf("OAuth token after reauth failure = %#v", got)
 	}
 }
 

@@ -7,9 +7,29 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
 )
 
 const defaultJetstreamMaxEventAge = time.Minute
+
+var providerRefreshReasons = [...]bridgeoauth.RefreshReason{
+	bridgeoauth.RefreshReasonAuthorizationCode,
+	bridgeoauth.RefreshReasonOnDemand,
+	bridgeoauth.RefreshReasonMaintenance,
+}
+
+var providerRefreshErrorClasses = [...]bridgeoauth.RefreshErrorClass{
+	bridgeoauth.RefreshErrorTimeout,
+	bridgeoauth.RefreshErrorConnection,
+	bridgeoauth.RefreshErrorRateLimit,
+	bridgeoauth.RefreshErrorServer,
+	bridgeoauth.RefreshErrorInvalidGrant,
+	bridgeoauth.RefreshErrorMissingRefreshToken,
+	bridgeoauth.RefreshErrorDecrypt,
+	bridgeoauth.RefreshErrorDPoPKey,
+	bridgeoauth.RefreshErrorProtocol,
+}
 
 // HealthMetrics is the non-sensitive operational state exported by Health.
 type HealthMetrics struct {
@@ -27,10 +47,19 @@ type HealthMetrics struct {
 }
 
 type ProviderHealthMetrics struct {
-	Authenticated, Bootstrapped, StreamConnected bool
-	OAuthExpiry                                  time.Time
-	TargetCount, PendingWork                     int
-	LastEvent, LastReconciliation                time.Time
+	AuthorizationAvailable, ReauthRequired bool
+	Degraded, AccessTokenExpired           bool
+	MaintenanceWorkerRunning               bool
+	Bootstrapped, StreamConnected          bool
+	OAuthExpiry                            time.Time
+	TargetCount, PendingWork               int
+	LastEvent, LastReconciliation          time.Time
+	LastRefreshSucceededAt                 time.Time
+	NextMaintenanceRefresh                 time.Time
+	LastRefreshErrorClass                  bridgeoauth.RefreshErrorClass
+	RefreshSuccesses                       map[bridgeoauth.RefreshReason]uint64
+	RefreshFailures                        map[bridgeoauth.RefreshReason]map[bridgeoauth.RefreshErrorClass]uint64
+	RefreshExecutions                      map[bridgeoauth.RefreshReason]uint64
 }
 
 // HealthOptions configures process health checks.
@@ -68,7 +97,19 @@ func NewHealth(options HealthOptions) *Health {
 	if options.MaxEventAge <= 0 {
 		options.MaxEventAge = defaultJetstreamMaxEventAge
 	}
-	return &Health{databaseCheck: options.DatabaseCheck, now: options.Now, maxEventAge: options.MaxEventAge, outboxCount: options.OutboxCount, outboxLimit: options.OutboxLimit, requireDispatcher: options.RequireDispatcher, providers: map[string]ProviderHealthMetrics{}, enabledProviders: append([]string(nil), options.EnabledProviders...)}
+	return &Health{databaseCheck: options.DatabaseCheck, now: options.Now, maxEventAge: options.MaxEventAge, outboxCount: options.OutboxCount, outboxLimit: options.OutboxLimit, requireDispatcher: options.RequireDispatcher, providers: map[string]ProviderHealthMetrics{}, enabledProviders: boundedEnabledProviders(options.EnabledProviders)}
+}
+
+func boundedEnabledProviders(providers []string) []string {
+	result := make([]string, 0, len(providers))
+	seen := map[string]bool{}
+	for _, provider := range providers {
+		if (provider == "bluesky" || provider == "mastodon") && !seen[provider] {
+			result = append(result, provider)
+			seen[provider] = true
+		}
+	}
+	return result
 }
 
 func (h *Health) UpdateProvider(provider string, update func(*ProviderHealthMetrics)) {
@@ -135,18 +176,34 @@ func (h *Health) Readiness(w http.ResponseWriter, r *http.Request) {
 	jetstreamReady := metrics.TargetDIDCount == 0 || metrics.JetstreamConnected
 	dispatcherReady := !h.requireDispatcher || metrics.DispatcherRunning
 	providersReady := true
+	providerAuthorizationsReady := true
 	providerStatus := map[string]any{}
 	if len(h.enabledProviders) > 0 {
 		h.mu.RLock()
 		for _, provider := range h.enabledProviders {
 			m := h.providers[provider]
-			auth := m.Authenticated && (m.OAuthExpiry.IsZero() || m.OAuthExpiry.After(now))
+			auth := m.AuthorizationAvailable
+			if provider == "bluesky" {
+				auth = auth && m.MaintenanceWorkerRunning
+			} else {
+				auth = auth && (m.OAuthExpiry.IsZero() || m.OAuthExpiry.After(now))
+			}
 			ok := auth && m.Bootstrapped && (m.TargetCount == 0 || m.StreamConnected)
+			providerAuthorizationsReady = providerAuthorizationsReady && auth
 			providersReady = providersReady && ok
-			providerStatus[provider] = map[string]any{"authenticated": auth, "bootstrapped": m.Bootstrapped, "stream_connected": m.StreamConnected, "target_count": m.TargetCount}
+			providerStatus[provider] = map[string]any{
+				"authorization_available":    m.AuthorizationAvailable,
+				"reauth_required":            m.ReauthRequired,
+				"degraded":                   m.Degraded,
+				"access_token_expired":       m.AccessTokenExpired,
+				"maintenance_worker_running": m.MaintenanceWorkerRunning,
+				"bootstrapped":               m.Bootstrapped,
+				"stream_connected":           m.StreamConnected,
+				"target_count":               m.TargetCount,
+			}
 		}
 		h.mu.RUnlock()
-		oauthConnected, jetstreamReady = providersReady, true
+		oauthConnected, jetstreamReady = providerAuthorizationsReady, true
 	}
 	ready := databaseReady && oauthConnected && jetstreamReady && providersReady && outboxReady && dispatcherReady
 	status := http.StatusOK
@@ -197,15 +254,71 @@ func (h *Health) Metrics(w http.ResponseWriter, r *http.Request) {
 	for _, provider := range h.enabledProviders {
 		m := h.providers[provider]
 		label := fmt.Sprintf("{provider=%q}", provider)
-		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_authenticated%s %d\n", label, boolMetric(m.Authenticated))
+		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_authorization_available%s %d\n", label, boolMetric(m.AuthorizationAvailable))
 		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_bootstrapped%s %d\n", label, boolMetric(m.Bootstrapped))
 		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_stream_connected%s %d\n", label, boolMetric(m.StreamConnected))
 		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_targets%s %d\n", label, m.TargetCount)
 		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_pending_work%s %d\n", label, m.PendingWork)
 		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_last_event_timestamp_seconds%s %.3f\n", label, unixSeconds(m.LastEvent))
 		_, _ = fmt.Fprintf(w, "nostr_bridge_provider_last_reconciliation_timestamp_seconds%s %.3f\n", label, unixSeconds(m.LastReconciliation))
+		if provider == "bluesky" {
+			_, _ = fmt.Fprintf(w, "nostr_bridge_provider_oauth_last_success_timestamp_seconds%s %.3f\n", label, unixSeconds(m.LastRefreshSucceededAt))
+			_, _ = fmt.Fprintf(w, "nostr_bridge_provider_oauth_next_refresh_timestamp_seconds%s %.3f\n", label, unixSeconds(m.NextMaintenanceRefresh))
+			_, _ = fmt.Fprintf(w, "nostr_bridge_provider_oauth_reauth_required%s %d\n", label, boolMetric(m.ReauthRequired))
+			_, _ = fmt.Fprintf(w, "nostr_bridge_provider_oauth_degraded%s %d\n", label, boolMetric(m.Degraded))
+			_, _ = fmt.Fprintf(w, "nostr_bridge_provider_oauth_access_token_expired%s %d\n", label, boolMetric(m.AccessTokenExpired))
+			_, _ = fmt.Fprintf(w, "nostr_bridge_provider_oauth_maintenance_worker_running%s %d\n", label, boolMetric(m.MaintenanceWorkerRunning))
+			for _, reason := range providerRefreshReasons {
+				reasonLabel := fmt.Sprintf("{provider=%q,reason=%q}", provider, reason)
+				_, _ = fmt.Fprintf(w, "nostr_bridge_provider_oauth_refresh_success_total%s %d\n", reasonLabel, m.RefreshSuccesses[reason])
+				_, _ = fmt.Fprintf(w, "nostr_bridge_provider_oauth_refresh_executions_total%s %d\n", reasonLabel, m.RefreshExecutions[reason])
+				for _, class := range providerRefreshErrorClasses {
+					failureLabel := fmt.Sprintf("{provider=%q,reason=%q,class=%q}", provider, reason, class)
+					_, _ = fmt.Fprintf(w, "nostr_bridge_provider_oauth_refresh_failure_total%s %d\n", failureLabel, providerRefreshFailureCount(m, reason, class))
+				}
+			}
+			for _, class := range providerRefreshErrorClasses {
+				classLabel := fmt.Sprintf("{provider=%q,class=%q}", provider, class)
+				_, _ = fmt.Fprintf(
+					w,
+					"nostr_bridge_provider_oauth_last_error_class%s %d\n",
+					classLabel,
+					boolMetric(m.LastRefreshErrorClass == class),
+				)
+			}
+		}
 	}
 	h.mu.RUnlock()
+}
+
+func providerRefreshFailureCount(
+	metrics ProviderHealthMetrics,
+	reason bridgeoauth.RefreshReason,
+	class bridgeoauth.RefreshErrorClass,
+) uint64 {
+	byClass := metrics.RefreshFailures[reason]
+	if byClass == nil {
+		return 0
+	}
+	return byClass[class]
+}
+
+func isProviderRefreshReason(reason bridgeoauth.RefreshReason) bool {
+	for _, candidate := range providerRefreshReasons {
+		if candidate == reason {
+			return true
+		}
+	}
+	return false
+}
+
+func boundedProviderRefreshErrorClass(class bridgeoauth.RefreshErrorClass) bridgeoauth.RefreshErrorClass {
+	for _, candidate := range providerRefreshErrorClasses {
+		if candidate == class {
+			return class
+		}
+	}
+	return bridgeoauth.RefreshErrorProtocol
 }
 
 func unixSeconds(value time.Time) float64 {

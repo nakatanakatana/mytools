@@ -107,6 +107,115 @@ func TestDocumentedConfigurationMatchesConfig(t *testing.T) {
 	}
 }
 
+func readmeDocumentsDefault(contents, name, defaultValue string) bool {
+	for _, line := range strings.Split(contents, "\n") {
+		cells := strings.Split(line, "|")
+		if len(cells) == 5 &&
+			strings.TrimSpace(cells[1]) == "`"+name+"`" &&
+			strings.TrimSpace(cells[3]) == "`"+defaultValue+"`" {
+			return true
+		}
+	}
+	return false
+}
+
+func deploymentDocumentsEnvValue(contents, name, value string) bool {
+	for _, line := range strings.Split(contents, "\n") {
+		entry := strings.TrimSpace(line)
+		if !strings.HasPrefix(entry, "- {") || !strings.HasSuffix(entry, "}") {
+			continue
+		}
+		fields := strings.Split(strings.TrimSuffix(strings.TrimPrefix(entry, "- {"), "}"), ",")
+		if len(fields) != 2 {
+			continue
+		}
+		nameField := strings.SplitN(fields[0], ":", 2)
+		valueField := strings.SplitN(fields[1], ":", 2)
+		if len(nameField) == 2 && len(valueField) == 2 &&
+			strings.TrimSpace(nameField[0]) == "name" &&
+			strings.TrimSpace(nameField[1]) == name &&
+			strings.TrimSpace(valueField[0]) == "value" &&
+			strings.TrimSpace(valueField[1]) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func TestConfigVariablesAreDocumented(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(contents)
+	}
+	readme := read("README.md")
+	deployment := read("examples/kubernetes/deployment.yaml")
+
+	for _, variable := range []struct {
+		name, defaultValue string
+	}{
+		{"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD", "720h"},
+		{"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL", "24h"},
+	} {
+		if !readmeDocumentsDefault(readme, variable.name, variable.defaultValue) {
+			t.Errorf("README does not document %s with default %s", variable.name, variable.defaultValue)
+		}
+		if !deploymentDocumentsEnvValue(deployment, variable.name, variable.defaultValue) {
+			t.Errorf("deployment does not document %s with default %s", variable.name, variable.defaultValue)
+		}
+	}
+}
+
+func TestConfigDocumentationRejectsLongerOrUnassociatedDefaults(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(contents)
+	}
+
+	for _, tc := range []struct {
+		name, contents, variable, exactDefault, longerDefault, unrelatedEntry string
+		matches                                                               func(string, string, string) bool
+	}{
+		{
+			name: "README refresh period", contents: read("README.md"),
+			variable: "NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD", exactDefault: "720h", longerDefault: "1720h",
+			unrelatedEntry: "\n| `OTHER_VARIABLE` | Unrelated | `720h` |\n", matches: readmeDocumentsDefault,
+		},
+		{
+			name: "README check interval", contents: read("README.md"),
+			variable: "NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL", exactDefault: "24h", longerDefault: "124h",
+			unrelatedEntry: "\n| `OTHER_VARIABLE` | Unrelated | `24h` |\n", matches: readmeDocumentsDefault,
+		},
+		{
+			name: "deployment refresh period", contents: read("examples/kubernetes/deployment.yaml"),
+			variable: "NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD", exactDefault: "720h", longerDefault: "1720h",
+			unrelatedEntry: "\n- {name: OTHER_VARIABLE, value: 720h}\n", matches: deploymentDocumentsEnvValue,
+		},
+		{
+			name: "deployment check interval", contents: read("examples/kubernetes/deployment.yaml"),
+			variable: "NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL", exactDefault: "24h", longerDefault: "124h",
+			unrelatedEntry: "\n- {name: OTHER_VARIABLE, value: 24h}\n", matches: deploymentDocumentsEnvValue,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.matches(tc.contents, tc.variable, tc.exactDefault) {
+				t.Fatal("exact documented default was not matched")
+			}
+			mutated := strings.Replace(tc.contents, tc.exactDefault, tc.longerDefault, 1) + tc.unrelatedEntry
+			if tc.matches(mutated, tc.variable, tc.exactDefault) {
+				t.Fatalf("accepted %s for %s because %s occurred elsewhere", tc.longerDefault, tc.variable, tc.exactDefault)
+			}
+		})
+	}
+}
+
 func setSharedEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("NOSTR_BRIDGE_HOST", "127.0.0.1")
@@ -187,6 +296,42 @@ func TestLoadConfigEnablesBothProviders(t *testing.T) {
 	}
 	if cfg.Mastodon.Account != "owner@social.example" || len(cfg.Mastodon.ListIDs) != 2 || cfg.Mastodon.BackfillLimit != 30 || cfg.Mastodon.ReconcileInterval != 20*time.Minute {
 		t.Fatalf("Mastodon config = %#v", cfg.Mastodon)
+	}
+}
+
+func TestLoadConfigDefaultsOAuthRefreshDurations(t *testing.T) {
+	setSharedEnv(t)
+	setBlueskyEnv(t)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Bluesky.OAuthRefreshPeriod != 720*time.Hour {
+		t.Fatalf("OAuthRefreshPeriod = %s, want 720h", cfg.Bluesky.OAuthRefreshPeriod)
+	}
+	if cfg.Bluesky.OAuthRefreshCheckInterval != 24*time.Hour {
+		t.Fatalf("OAuthRefreshCheckInterval = %s, want 24h", cfg.Bluesky.OAuthRefreshCheckInterval)
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveOAuthRefreshDurations(t *testing.T) {
+	for _, variable := range []string{
+		"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD",
+		"NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL",
+	} {
+		for _, value := range []string{"0s", "-1s"} {
+			t.Run(variable+"/"+value, func(t *testing.T) {
+				setSharedEnv(t)
+				setBlueskyEnv(t)
+				t.Setenv(variable, value)
+
+				_, err := LoadConfig()
+				if err == nil || !strings.Contains(err.Error(), variable) {
+					t.Fatalf("LoadConfig() error = %v, want %s", err, variable)
+				}
+			})
+		}
 	}
 }
 
