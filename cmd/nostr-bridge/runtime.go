@@ -208,6 +208,7 @@ func applyBlueskyAuthorizationStatus(m *ProviderHealthMetrics, status bridgeoaut
 	m.ReauthRequired = status.ReauthRequired
 	m.Degraded = status.LastRefreshErrorClass != ""
 	m.AccessTokenExpired = !status.AccessTokenValid
+	m.OAuthExpiry = status.AccessTokenExpiry
 	m.LastRefreshSucceededAt = status.LastRefreshSucceededAt
 	m.NextMaintenanceRefresh = status.NextMaintenanceRefresh
 	if status.LastRefreshErrorClass == "" {
@@ -235,16 +236,24 @@ func (o healthOAuthMaintenanceObserver) Stopped(time.Time) {
 	logOAuthMaintenance(bridgeoauth.RefreshReasonMaintenance, "stopped", "", false)
 }
 
-func (o healthOAuthMaintenanceObserver) Checked(_ time.Time, status bridgeoauth.Status) {
-	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
-		applyBlueskyAuthorizationStatus(m, status)
-	})
+func (o healthOAuthMaintenanceObserver) Checked(at time.Time, status bridgeoauth.Status) {
+	o.AuthorizationStatusChanged(at, status)
 	logOAuthMaintenance(
 		bridgeoauth.RefreshReasonMaintenance,
 		"checked",
 		status.LastRefreshErrorClass,
 		false,
 	)
+}
+
+func (o healthOAuthMaintenanceObserver) AuthorizationStatusChanged(_ time.Time, status bridgeoauth.Status) {
+	o.health.Update(func(m *HealthMetrics) {
+		m.OAuthConnected = status.AuthorizationAvailable
+		m.OAuthExpiry = status.AccessTokenExpiry
+	})
+	o.health.UpdateProvider("bluesky", func(m *ProviderHealthMetrics) {
+		applyBlueskyAuthorizationStatus(m, status)
+	})
 }
 
 func (o healthOAuthMaintenanceObserver) RefreshSucceeded(_ time.Time, reason bridgeoauth.RefreshReason) {

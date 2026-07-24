@@ -38,12 +38,30 @@ const (
 // Status describes the locally persisted authorization without refreshing it.
 type Status struct {
 	AccessTokenValid       bool
+	AccessTokenExpiry      time.Time
 	AuthorizationAvailable bool
 	ReauthRequired         bool
 	LastRefreshSucceededAt time.Time
 	NextMaintenanceRefresh time.Time
 	LastRefreshErrorClass  RefreshErrorClass
 }
+
+// ClientObserver receives bounded, secret-free token-write and local status
+// events from authorization-code and on-demand client operations.
+type ClientObserver interface {
+	RefreshSucceeded(time.Time, RefreshReason)
+	RefreshFailed(time.Time, RefreshReason, RefreshErrorClass)
+	AuthorizationStatusChanged(time.Time, Status)
+}
+
+// NopClientObserver provides no-op default observer methods.
+type NopClientObserver struct{}
+
+func (NopClientObserver) RefreshSucceeded(time.Time, RefreshReason) {}
+
+func (NopClientObserver) RefreshFailed(time.Time, RefreshReason, RefreshErrorClass) {}
+
+func (NopClientObserver) AuthorizationStatusChanged(time.Time, Status) {}
 
 // RefreshResult describes whether a due check performed a refresh.
 type RefreshResult struct {
@@ -106,6 +124,7 @@ func (c *Client) AuthorizationStatus(ctx context.Context, accountDID string, per
 		status.LastRefreshErrorClass = RefreshErrorDPoPKey
 		return status, nil
 	}
+	status.AccessTokenExpiry = payload.Expiry
 	status.AccessTokenValid = strings.TrimSpace(payload.AccessToken) != "" && (payload.Expiry.IsZero() || payload.Expiry.After(c.now()))
 	if strings.TrimSpace(payload.RefreshToken) == "" {
 		status.ReauthRequired = true

@@ -92,11 +92,6 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 	if err != nil {
 		return runtimeResources{}, err
 	}
-	client, mastodonOAuth, err := newOAuthClients(cfg, bridgeStore)
-	if err != nil {
-		_ = database.Close()
-		return runtimeResources{}, err
-	}
 	health := NewHealth(HealthOptions{
 		DatabaseCheck: func(ctx context.Context) error {
 			pinger, ok := database.(interface{ PingContext(context.Context) error })
@@ -107,6 +102,15 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		},
 		OutboxCount: bridgeStore.OutboxCount, OutboxLimit: int64(cfg.Shared.OutboxLimit), RequireDispatcher: true, EnabledProviders: enabledProviders(cfg),
 	})
+	client, mastodonOAuth, err := newOAuthClients(
+		cfg,
+		bridgeStore,
+		healthOAuthMaintenanceObserver{health: health},
+	)
+	if err != nil {
+		_ = database.Close()
+		return runtimeResources{}, err
+	}
 	managementURL, err := url.Parse(cfg.Shared.RelayManagementURL)
 	if err != nil {
 		_ = database.Close()
@@ -182,12 +186,16 @@ func enabledProviders(cfg Config) []string {
 	return p
 }
 
-func newOAuthClients(cfg Config, store bridgestore.OAuthStore) (*bridgeoauth.Client, *mastodon.OAuthClient, error) {
+func newOAuthClients(
+	cfg Config,
+	store bridgestore.OAuthStore,
+	blueskyObserver bridgeoauth.ClientObserver,
+) (*bridgeoauth.Client, *mastodon.OAuthClient, error) {
 	var b *bridgeoauth.Client
 	var m *mastodon.OAuthClient
 	var err error
 	if cfg.Bluesky.Enabled() {
-		b, err = newOAuthClient(cfg, store)
+		b, err = newOAuthClient(cfg, store, blueskyObserver)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -215,7 +223,11 @@ func normalizedMastodonAccount(account, baseURL string) string {
 	return account
 }
 
-func newOAuthClient(cfg Config, bridgeStore bridgestore.OAuthStore) (*bridgeoauth.Client, error) {
+func newOAuthClient(
+	cfg Config,
+	bridgeStore bridgestore.OAuthStore,
+	observer bridgeoauth.ClientObserver,
+) (*bridgeoauth.Client, error) {
 	signingKeyDER, err := base64.StdEncoding.DecodeString(cfg.Bluesky.OAuthClientSigningKey)
 	if err != nil {
 		return nil, fmt.Errorf("decode OAuth client signing key: %w", err)
@@ -243,6 +255,8 @@ func newOAuthClient(cfg Config, bridgeStore bridgestore.OAuthStore) (*bridgeoaut
 		RedirectURL:            cfg.Bluesky.OAuthCallbackURL,
 		ClientSigningKey:       signingKey,
 		EncryptionKey:          encryptionKey,
+		RefreshPeriod:          cfg.Bluesky.OAuthRefreshPeriod,
+		Observer:               observer,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct OAuth client: %w", err)

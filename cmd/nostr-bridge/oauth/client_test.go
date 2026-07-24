@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -158,13 +159,16 @@ func TestStartAuthorizationPushesPKCEAuthenticatedRequestAndStoresEncryptedState
 
 func TestHandleCallbackExchangesCodeAndSavesEncryptedTokensWithRefreshState(t *testing.T) {
 	fixedNow := time.Unix(2_000_000_000, 0)
+	observer := &clientObserverRecorder{}
 	var tokenForm url.Values
 	var tokenDPoPs []string
+	var metadataCalls int
 	var state string
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-authorization-server":
+			metadataCalls++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
 		case "/oauth/par":
@@ -197,6 +201,8 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokensWithRefreshState(t *t
 
 	client, stateStore := newTestClient(t, server.URL, server.Client())
 	client.now = func() time.Time { return fixedNow }
+	client.observer = observer
+	client.refreshPeriod = 30 * 24 * time.Hour
 	if _, err := client.StartAuthorization(context.Background(), "alice.test"); err != nil {
 		t.Fatal(err)
 	}
@@ -259,10 +265,107 @@ func TestHandleCallbackExchangesCodeAndSavesEncryptedTokensWithRefreshState(t *t
 	if _, err := stateStore.OAuthSessionByState(context.Background(), oauthTestScope, state); err == nil {
 		t.Fatal("OAuth session remains after callback")
 	}
+	if metadataCalls != 2 {
+		t.Fatalf("authorization metadata requests = %d, want 2 before local callback status refresh", metadataCalls)
+	}
+	if len(observer.successes) != 1 || observer.successes[0] != RefreshReasonAuthorizationCode {
+		t.Fatalf("callback refresh successes = %#v, want authorization_code", observer.successes)
+	}
+	if len(observer.failures) != 0 {
+		t.Fatalf("callback refresh failures = %#v, want none", observer.failures)
+	}
+	if len(observer.statuses) != 1 {
+		t.Fatalf("callback status updates = %d, want 1", len(observer.statuses))
+	}
+	status := observer.statuses[0]
+	if !status.AuthorizationAvailable || !status.AccessTokenValid || status.ReauthRequired ||
+		status.LastRefreshErrorClass != "" ||
+		!status.AccessTokenExpiry.Equal(fixedNow.Add(time.Hour)) ||
+		!status.LastRefreshSucceededAt.Equal(fixedNow) ||
+		!status.NextMaintenanceRefresh.Equal(fixedNow.Add(30*24*time.Hour)) {
+		t.Fatalf("callback authorization status = %#v", status)
+	}
+}
+
+func TestHandleCallbackPublishesBoundedAuthorizationCodeFailure(t *testing.T) {
+	const (
+		stateSecret       = "oauth-state-fixture"
+		codeSecret        = "authorization-code-fixture"
+		descriptionSecret = "remote-response-description-fixture"
+	)
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(validMetadataBody(server.URL)))
+		case "/oauth/token":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error":             "invalid_grant",
+				"error_description": descriptionSecret,
+			})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, store := newTestClient(t, server.URL, server.Client())
+	observer := &clientObserverRecorder{}
+	client.observer = observer
+	payload, err := json.Marshal(sessionPayload{
+		CodeVerifier: "pkce-verifier-fixture",
+		Issuer:       server.URL,
+		DPoPKey:      newStatusTestJWK(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := client.encrypt(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveOAuthSession(context.Background(), oauthTestScope, bridgestore.OAuthSession{
+		State:            stateSecret,
+		EncryptedPayload: encrypted,
+		ExpiresAt:        time.Now().Add(time.Minute).Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/oauth/callback?state="+url.QueryEscape(stateSecret)+
+			"&code="+url.QueryEscape(codeSecret)+
+			"&iss="+url.QueryEscape(server.URL),
+		nil,
+	)
+	client.HandleCallback(recorder, request)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("callback status = %d, want %d", recorder.Code, http.StatusBadGateway)
+	}
+	if len(observer.successes) != 0 ||
+		len(observer.failures) != 1 ||
+		observer.failures[0] != (clientObserverFailure{
+			reason: RefreshReasonAuthorizationCode,
+			class:  RefreshErrorInvalidGrant,
+		}) {
+		t.Fatalf("authorization-code refresh events: successes=%#v failures=%#v", observer.successes, observer.failures)
+	}
+	exposed := recorder.Body.String() + fmt.Sprint(observer.failures)
+	for _, secret := range []string{stateSecret, codeSecret, descriptionSecret} {
+		if strings.Contains(exposed, secret) {
+			t.Fatalf("callback failure exposed secret %q: %q", secret, exposed)
+		}
+	}
 }
 
 func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T) {
 	fixedNow := time.Unix(2_000_000_000, 0)
+	observer := &clientObserverRecorder{}
 	var form url.Values
 	var tokenDPoPs []string
 	var server *httptest.Server
@@ -319,7 +422,7 @@ func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T)
 		Scope: oauthTestScope, Store: recordingStore, HTTPClient: server.Client(),
 		AuthorizationServerURL: server.URL, ClientID: client.clientID, RedirectURL: client.redirectURL,
 		ClientSigningKey: client.clientSigningKey, EncryptionKey: encryptionKey[:],
-		Now: func() time.Time { return fixedNow },
+		Now: func() time.Time { return fixedNow }, Observer: observer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -360,6 +463,12 @@ func TestTokenByAccountDIDRefreshesExpiredTokenAndPersistsRotation(t *testing.T)
 	}
 	if storedPayload.AccessToken != "new-access" || storedPayload.RefreshToken != "new-refresh" || storedPayload.DPoPNonce != "refreshed-nonce" || !storedPayload.Expiry.Equal(fixedNow.Add(time.Hour)) {
 		t.Fatalf("stored refreshed payload = %#v", storedPayload)
+	}
+	if len(observer.successes) != 1 || observer.successes[0] != RefreshReasonOnDemand {
+		t.Fatalf("on-demand refresh successes = %#v, want on_demand", observer.successes)
+	}
+	if len(observer.failures) != 0 {
+		t.Fatalf("on-demand refresh failures = %#v, want none", observer.failures)
 	}
 }
 
@@ -420,6 +529,29 @@ type recordingOAuthStore struct {
 	failureCalls int
 }
 
+type clientObserverFailure struct {
+	reason RefreshReason
+	class  RefreshErrorClass
+}
+
+type clientObserverRecorder struct {
+	successes []RefreshReason
+	failures  []clientObserverFailure
+	statuses  []Status
+}
+
+func (o *clientObserverRecorder) RefreshSucceeded(_ time.Time, reason RefreshReason) {
+	o.successes = append(o.successes, reason)
+}
+
+func (o *clientObserverRecorder) RefreshFailed(_ time.Time, reason RefreshReason, class RefreshErrorClass) {
+	o.failures = append(o.failures, clientObserverFailure{reason: reason, class: class})
+}
+
+func (o *clientObserverRecorder) AuthorizationStatusChanged(_ time.Time, status Status) {
+	o.statuses = append(o.statuses, status)
+}
+
 func (s *recordingOAuthStore) SaveOAuthToken(ctx context.Context, scope bridgestore.SourceScope, token bridgestore.OAuthToken) error {
 	s.saveCalls++
 	s.lastSaved = token
@@ -475,6 +607,8 @@ func TestRefreshFailureClassificationPreservesTokenMaterial(t *testing.T) {
 			})}
 			client, store := newTestClient(t, issuer, httpClient)
 			client.now = func() time.Time { return fixedNow }
+			observer := &clientObserverRecorder{}
+			client.observer = observer
 			before := saveStatusTestToken(t, client, store, tokenPayload{
 				AccessToken: "old-access", RefreshToken: "old-refresh", Scope: "atproto",
 				DPoPKey: newStatusTestJWK(t), DPoPNonce: "old-nonce", Expiry: fixedNow.Add(-time.Minute),
@@ -501,6 +635,16 @@ func TestRefreshFailureClassificationPreservesTokenMaterial(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertRefreshFailurePreservedToken(t, before, after, test.wantClass, test.wantPermanent)
+			if len(observer.successes) != 0 ||
+				len(observer.failures) != 1 ||
+				observer.failures[0] != (clientObserverFailure{reason: RefreshReasonOnDemand, class: test.wantClass}) {
+				t.Fatalf("on-demand refresh events: successes=%#v failures=%#v", observer.successes, observer.failures)
+			}
+			for _, secret := range []string{"old-access", "old-refresh", "old-nonce", "retry response secret", "server response secret", "grant response secret", "client response secret"} {
+				if strings.Contains(fmt.Sprint(observer.failures), secret) {
+					t.Fatalf("on-demand refresh event exposed secret %q: %#v", secret, observer.failures)
+				}
+			}
 		})
 	}
 }

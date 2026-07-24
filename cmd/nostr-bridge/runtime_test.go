@@ -565,10 +565,12 @@ func TestHealthBlueskyOAuthMaintenanceObserverUpdatesCachedStatusAndCounters(t *
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	lastSuccess := now.Add(-time.Hour)
 	nextRefresh := now.Add(30 * 24 * time.Hour)
+	expiry := now.Add(time.Hour)
 
 	observer.Started(now)
 	observer.Checked(now, bridgeoauth.Status{
 		AccessTokenValid:       false,
+		AccessTokenExpiry:      expiry,
 		AuthorizationAvailable: true,
 		LastRefreshSucceededAt: lastSuccess,
 		NextMaintenanceRefresh: nextRefresh,
@@ -587,6 +589,9 @@ func TestHealthBlueskyOAuthMaintenanceObserverUpdatesCachedStatusAndCounters(t *
 	}
 	if !got.LastRefreshSucceededAt.Equal(lastSuccess) || !got.NextMaintenanceRefresh.Equal(nextRefresh) {
 		t.Errorf("cached refresh timestamps = %#v", got)
+	}
+	if !got.OAuthExpiry.Equal(expiry) || !health.snapshot().OAuthExpiry.Equal(expiry) {
+		t.Errorf("cached OAuth expiry: provider=%v global=%v, want %v", got.OAuthExpiry, health.snapshot().OAuthExpiry, expiry)
 	}
 	if got.LastRefreshErrorClass != bridgeoauth.RefreshErrorServer {
 		t.Errorf("last refresh error class = %q", got.LastRefreshErrorClass)

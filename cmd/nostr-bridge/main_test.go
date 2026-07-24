@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,6 +91,150 @@ func TestRuntimeResourcesServeHealthRoute(t *testing.T) {
 	resources.httpServer.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("health status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRuntimeOAuthCallbackPublishesAuthorizationHealthBeforeRedirect(t *testing.T) {
+	var state string
+	var issuer *httptest.Server
+	issuer = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                                issuer.URL,
+				"authorization_endpoint":                issuer.URL + "/oauth/authorize",
+				"token_endpoint":                        issuer.URL + "/oauth/token",
+				"pushed_authorization_request_endpoint": issuer.URL + "/oauth/par",
+				"require_pushed_authorization_requests": true,
+			})
+		case "/oauth/par":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			state = r.Form.Get("state")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"request_uri": "urn:request:runtime-callback",
+				"expires_in":  600,
+			})
+		case "/oauth/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.Form.Get("grant_type"); got != "authorization_code" {
+				t.Fatalf("grant_type = %q, want authorization_code", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  "runtime-access-secret",
+				"refresh_token": "runtime-refresh-secret",
+				"sub":           "did:plc:owner",
+				"scope":         "atproto",
+				"expires_in":    3600,
+			})
+		default:
+			t.Fatalf("unexpected issuer path %q", r.URL.Path)
+		}
+	}))
+	defer issuer.Close()
+
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = issuer.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+
+	cfg := testRuntimeConfig(t)
+	cfg.Bluesky.OAuthAuthorizationServerURL = issuer.URL
+	resources, err := newRuntimeResources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources) }()
+
+	start := httptest.NewRecorder()
+	resources.httpServer.Handler.ServeHTTP(
+		start,
+		httptest.NewRequest(
+			http.MethodPost,
+			"/oauth/bluesky/start",
+			strings.NewReader(`{"handle":"alice.test"}`),
+		),
+	)
+	if start.Code != http.StatusOK || state == "" {
+		t.Fatalf("OAuth start = status %d state %q body %s", start.Code, state, start.Body.String())
+	}
+
+	callback := httptest.NewRecorder()
+	resources.httpServer.Handler.ServeHTTP(
+		callback,
+		httptest.NewRequest(
+			http.MethodGet,
+			"/oauth/bluesky/callback?state="+url.QueryEscape(state)+
+				"&code="+url.QueryEscape("runtime-authorization-code-secret")+
+				"&iss="+url.QueryEscape(issuer.URL),
+			nil,
+		),
+	)
+	if callback.Code != http.StatusSeeOther {
+		t.Fatalf("OAuth callback = status %d body %s", callback.Code, callback.Body.String())
+	}
+
+	ready := httptest.NewRecorder()
+	resources.httpServer.Handler.ServeHTTP(
+		ready,
+		httptest.NewRequest(http.MethodGet, "/readyz", nil),
+	)
+	var readiness struct {
+		Providers map[string]struct {
+			AuthorizationAvailable bool `json:"authorization_available"`
+			ReauthRequired         bool `json:"reauth_required"`
+			Degraded               bool `json:"degraded"`
+			AccessTokenExpired     bool `json:"access_token_expired"`
+		} `json:"providers"`
+	}
+	if err := json.NewDecoder(ready.Body).Decode(&readiness); err != nil {
+		t.Fatal(err)
+	}
+	blueskyHealth := readiness.Providers["bluesky"]
+	if !blueskyHealth.AuthorizationAvailable ||
+		blueskyHealth.ReauthRequired ||
+		blueskyHealth.Degraded ||
+		blueskyHealth.AccessTokenExpired {
+		t.Fatalf("Bluesky health immediately after callback = %#v", blueskyHealth)
+	}
+
+	metrics := httptest.NewRecorder()
+	resources.httpServer.Handler.ServeHTTP(
+		metrics,
+		httptest.NewRequest(http.MethodGet, "/metrics", nil),
+	)
+	for _, sample := range []string{
+		`nostr_bridge_provider_authorization_available{provider="bluesky"} 1`,
+		`nostr_bridge_provider_oauth_refresh_success_total{provider="bluesky",reason="authorization_code"} 1`,
+		`nostr_bridge_provider_oauth_refresh_executions_total{provider="bluesky",reason="authorization_code"} 1`,
+		`nostr_bridge_provider_oauth_reauth_required{provider="bluesky"} 0`,
+		`nostr_bridge_provider_oauth_degraded{provider="bluesky"} 0`,
+		`nostr_bridge_provider_oauth_access_token_expired{provider="bluesky"} 0`,
+	} {
+		if !strings.Contains(metrics.Body.String(), sample) {
+			t.Errorf("metrics immediately after callback missing %q:\n%s", sample, metrics.Body.String())
+		}
+	}
+	for _, zeroTimestamp := range []string{
+		`nostr_bridge_provider_oauth_last_success_timestamp_seconds{provider="bluesky"} 0.000`,
+		`nostr_bridge_provider_oauth_next_refresh_timestamp_seconds{provider="bluesky"} 0.000`,
+	} {
+		if strings.Contains(metrics.Body.String(), zeroTimestamp) {
+			t.Errorf("metrics retained zero callback timestamp %q:\n%s", zeroTimestamp, metrics.Body.String())
+		}
+	}
+	for _, secret := range []string{
+		"runtime-access-secret",
+		"runtime-refresh-secret",
+		"runtime-authorization-code-secret",
+		state,
+	} {
+		if strings.Contains(ready.Body.String(), secret) || strings.Contains(metrics.Body.String(), secret) {
+			t.Fatalf("health output exposed secret %q", secret)
+		}
 	}
 }
 

@@ -44,6 +44,8 @@ type Options struct {
 	ClientSigningKey       *ecdsa.PrivateKey
 	EncryptionKey          []byte
 	Now                    func() time.Time
+	RefreshPeriod          time.Duration
+	Observer               ClientObserver
 }
 
 // Client starts and completes OAuth authorization flows.
@@ -57,6 +59,8 @@ type Client struct {
 	clientSigningKey *ecdsa.PrivateKey
 	box              secretbox.Box
 	now              func() time.Time
+	refreshPeriod    time.Duration
+	observer         ClientObserver
 	tokenMu          sync.Mutex
 }
 
@@ -110,11 +114,14 @@ func NewClient(options Options) (*Client, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
+	if options.Observer == nil {
+		options.Observer = NopClientObserver{}
+	}
 	box, err := secretbox.New(options.EncryptionKey)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{scope: options.Scope, store: options.Store, httpClient: options.HTTPClient, issuer: strings.TrimRight(options.AuthorizationServerURL, "/"), clientID: options.ClientID, redirectURL: options.RedirectURL, clientSigningKey: options.ClientSigningKey, box: box, now: options.Now}, nil
+	return &Client{scope: options.Scope, store: options.Store, httpClient: options.HTTPClient, issuer: strings.TrimRight(options.AuthorizationServerURL, "/"), clientID: options.ClientID, redirectURL: options.RedirectURL, clientSigningKey: options.ClientSigningKey, box: box, now: options.Now, refreshPeriod: options.RefreshPeriod, observer: options.Observer}, nil
 }
 
 // StartAuthorization creates a stateful PAR request and returns the user-facing authorization URL.
@@ -213,11 +220,13 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	metadata, err := c.discoverAuthorizationServer(r.Context(), payload.Issuer)
 	if err != nil {
+		c.observeRefreshFailed(RefreshReasonAuthorizationCode, refreshFailureClass(err))
 		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
 		return
 	}
 	dpopKey, err := payload.DPoPKey.ecdsa()
 	if err != nil {
+		c.observeRefreshFailed(RefreshReasonAuthorizationCode, RefreshErrorDPoPKey)
 		http.Error(w, "invalid OAuth state", http.StatusBadRequest)
 		return
 	}
@@ -233,16 +242,22 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return attemptForm, nil
 	})
 	if err != nil {
+		c.observeRefreshFailed(RefreshReasonAuthorizationCode, refreshFailureClass(err))
 		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
 		return
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
+		c.observeRefreshFailed(
+			RefreshReasonAuthorizationCode,
+			refreshFailureClass(responseError("exchange OAuth code", response)),
+		)
 		http.Error(w, "OAuth token exchange failed", http.StatusBadGateway)
 		return
 	}
 	var tokens tokenResponse
 	if err := json.NewDecoder(response.Body).Decode(&tokens); err != nil || tokens.Sub == "" || !hasScope(tokens.Scope, "atproto") {
+		c.observeRefreshFailed(RefreshReasonAuthorizationCode, RefreshErrorProtocol)
 		http.Error(w, "invalid OAuth token response", http.StatusBadGateway)
 		return
 	}
@@ -253,11 +268,13 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	encoded, err := json.Marshal(tokenPayload{AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken, Scope: tokens.Scope, DPoPKey: payload.DPoPKey, DPoPNonce: response.Header.Get("DPoP-Nonce"), Expiry: expiry})
 	if err != nil {
+		c.observeRefreshFailed(RefreshReasonAuthorizationCode, RefreshErrorProtocol)
 		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
 		return
 	}
 	encrypted, err := c.encrypt(encoded)
 	if err != nil {
+		c.observeRefreshFailed(RefreshReasonAuthorizationCode, RefreshErrorProtocol)
 		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
 		return
 	}
@@ -276,16 +293,36 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		return c.store.DeleteOAuthSession(r.Context(), c.scope, state)
 	}(); err != nil {
+		c.observeRefreshFailed(RefreshReasonAuthorizationCode, RefreshErrorProtocol)
 		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
 		return
 	}
+	status, err := c.AuthorizationStatus(r.Context(), tokens.Sub, c.refreshPeriod)
+	if err != nil {
+		c.observeRefreshFailed(RefreshReasonAuthorizationCode, RefreshErrorProtocol)
+		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
+		return
+	}
+	c.observer.AuthorizationStatusChanged(c.now(), status)
+	c.observeRefreshSucceeded(RefreshReasonAuthorizationCode)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // TokenByAccountDID returns the persisted access token and its DPoP credential.
-func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (Token, error) {
+func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (token Token, err error) {
 	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
+	refreshAttempted := false
+	defer func() {
+		c.tokenMu.Unlock()
+		if !refreshAttempted {
+			return
+		}
+		if err != nil {
+			c.observeRefreshFailed(RefreshReasonOnDemand, refreshFailureClass(err))
+			return
+		}
+		c.observeRefreshSucceeded(RefreshReasonOnDemand)
+	}()
 
 	stored, err := c.loadTokenLocked(ctx, accountDID)
 	if err != nil {
@@ -309,6 +346,7 @@ func (c *Client) TokenByAccountDID(ctx context.Context, accountDID string) (Toke
 		return Token{}, errors.New("OAuth token has no access token")
 	}
 	if !payload.Expiry.IsZero() && !payload.Expiry.After(c.now()) {
+		refreshAttempted = true
 		return c.refreshTokenLocked(ctx, stored.AccountDID, payload, key)
 	}
 	return Token{AccessToken: payload.AccessToken, RefreshToken: payload.RefreshToken, Scope: payload.Scope, DPoPKey: key, DPoPNonce: payload.DPoPNonce, Expiry: payload.Expiry}, nil
@@ -437,6 +475,29 @@ func classifyRefreshFailure(err error) (RefreshErrorClass, bool) {
 		return RefreshErrorConnection, false
 	}
 	return RefreshErrorProtocol, true
+}
+
+func refreshFailureClass(err error) RefreshErrorClass {
+	var refreshErr *RefreshError
+	if errors.As(err, &refreshErr) && refreshErr != nil {
+		return boundedRefreshErrorClass(refreshErr.Class)
+	}
+	class, _ := classifyRefreshFailure(err)
+	return boundedRefreshErrorClass(class)
+}
+
+func (c *Client) observeRefreshSucceeded(reason RefreshReason) {
+	switch reason {
+	case RefreshReasonAuthorizationCode, RefreshReasonOnDemand:
+		c.observer.RefreshSucceeded(c.now(), reason)
+	}
+}
+
+func (c *Client) observeRefreshFailed(reason RefreshReason, class RefreshErrorClass) {
+	switch reason {
+	case RefreshReasonAuthorizationCode, RefreshReasonOnDemand:
+		c.observer.RefreshFailed(c.now(), reason, boundedRefreshErrorClass(class))
+	}
 }
 
 func (c *Client) clientAssertion(audience string) (string, error) {
