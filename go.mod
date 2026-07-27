@@ -12,7 +12,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gorilla/feeds v1.2.0
 	github.com/mmcdole/gofeed v1.4.0
-	github.com/sqldef/sqldef/v3 v3.11.16
+	github.com/sqldef/sqldef/v3 v3.11.17
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
 	golang.org/x/sync v0.22.0
