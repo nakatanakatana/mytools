@@ -62,6 +62,51 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigratePreservesLegacyOAuthToken(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "bridge.db")
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open legacy bridge database: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE oauth_tokens (
+		provider TEXT NOT NULL,
+		source_account TEXT NOT NULL,
+		account_did TEXT NOT NULL,
+		encrypted_payload BLOB NOT NULL,
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY(provider, source_account, account_did)
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create legacy oauth_tokens: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO oauth_tokens(provider, source_account, account_did, encrypted_payload, updated_at) VALUES(?, ?, ?, ?, ?)`, "bluesky", "owner", "did:plc:alice", []byte("encrypted"), 17); err != nil {
+		_ = db.Close()
+		t.Fatalf("insert legacy OAuth token: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy bridge database: %v", err)
+	}
+
+	if err := Migrate(context.Background(), databasePath, false); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	db, err = sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("reopen bridge database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	var payload []byte
+	var updatedAt, lastRefreshAt, reauthRequired int64
+	var lastRefreshErrorClass string
+	if err := db.QueryRow(`SELECT encrypted_payload, updated_at, last_refresh_at, reauth_required, last_refresh_error_class FROM oauth_tokens WHERE provider=? AND source_account=? AND account_did=?`, "bluesky", "owner", "did:plc:alice").Scan(&payload, &updatedAt, &lastRefreshAt, &reauthRequired, &lastRefreshErrorClass); err != nil {
+		t.Fatalf("query migrated OAuth token: %v", err)
+	}
+	if string(payload) != "encrypted" || updatedAt != 17 || lastRefreshAt != 0 || reauthRequired != 0 || lastRefreshErrorClass != "" {
+		t.Fatalf("migrated OAuth token = payload %q, updatedAt %d, lastRefreshAt %d, reauthRequired %d, lastRefreshErrorClass %q", payload, updatedAt, lastRefreshAt, reauthRequired, lastRefreshErrorClass)
+	}
+}
+
 func TestMigrateRestoresMissingOutboxIndex(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "bridge.db")
 	ctx := context.Background()

@@ -68,11 +68,13 @@ func RegisterOAuthRoutes(mux *http.ServeMux, blueskyClient *bridgeoauth.Client, 
 }
 
 type runtimeResources struct {
-	httpServer     *http.Server
-	jetstream      shutdownWorker
-	dispatcher     shutdownWorker
-	dispatcherDone <-chan struct{}
-	database       databaseCloser
+	httpServer           *http.Server
+	jetstream            shutdownWorker
+	dispatcher           shutdownWorker
+	dispatcherDone       <-chan struct{}
+	oauthMaintenance     shutdownWorker
+	oauthMaintenanceDone <-chan struct{}
+	database             databaseCloser
 }
 
 type databaseCloser interface {
@@ -90,11 +92,6 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 	if err != nil {
 		return runtimeResources{}, err
 	}
-	client, mastodonOAuth, err := newOAuthClients(cfg, bridgeStore)
-	if err != nil {
-		_ = database.Close()
-		return runtimeResources{}, err
-	}
 	health := NewHealth(HealthOptions{
 		DatabaseCheck: func(ctx context.Context) error {
 			pinger, ok := database.(interface{ PingContext(context.Context) error })
@@ -105,6 +102,15 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		},
 		OutboxCount: bridgeStore.OutboxCount, OutboxLimit: int64(cfg.Shared.OutboxLimit), RequireDispatcher: true, EnabledProviders: enabledProviders(cfg),
 	})
+	client, mastodonOAuth, err := newOAuthClients(
+		cfg,
+		bridgeStore,
+		healthOAuthMaintenanceObserver{health: health},
+	)
+	if err != nil {
+		_ = database.Close()
+		return runtimeResources{}, err
+	}
 	managementURL, err := url.Parse(cfg.Shared.RelayManagementURL)
 	if err != nil {
 		_ = database.Close()
@@ -131,22 +137,42 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		defer health.Update(func(m *HealthMetrics) { m.DispatcherRunning = false })
 		return dispatcher.Run(ctx)
 	})
+	var oauthMaintenance *workerCloser
+	if client != nil {
+		oauthMaintenance = startBlueskyOAuthMaintenance(cfg.Bluesky, client, health)
+	}
+	trackedDatabase := newTrackedDatabaseCloser(database)
 	runtime, err := newRuntimeSync(cfg, bridgeStore, client, mastodonOAuth, health)
 	if err != nil {
-		_ = dispatchWorker.Close()
-		_ = database.Close()
-		return runtimeResources{}, err
+		resources := runtimeResources{
+			dispatcher: dispatchWorker,
+			database:   trackedDatabase,
+		}
+		if oauthMaintenance != nil {
+			resources.oauthMaintenance = oauthMaintenance
+			resources.oauthMaintenanceDone = oauthMaintenance.Done()
+		}
+		return runtimeResources{}, closeRuntimeConstructionFailure(err, resources)
 	}
 	mux := http.NewServeMux()
 	RegisterOAuthRoutes(mux, client, mastodonOAuth)
 	RegisterHealthRoutes(mux, health)
-	return runtimeResources{
+	resources := runtimeResources{
 		httpServer:     &http.Server{Addr: ServerAddress(cfg), Handler: mux},
 		jetstream:      runtime,
 		dispatcher:     dispatchWorker,
 		dispatcherDone: dispatchWorker.Done(),
-		database:       newTrackedDatabaseCloser(database),
-	}, nil
+		database:       trackedDatabase,
+	}
+	if oauthMaintenance != nil {
+		resources.oauthMaintenance = oauthMaintenance
+		resources.oauthMaintenanceDone = oauthMaintenance.Done()
+	}
+	return resources, nil
+}
+
+func closeRuntimeConstructionFailure(constructionErr error, resources runtimeResources) error {
+	return errors.Join(constructionErr, closeRuntimeResources(resources))
 }
 
 func enabledProviders(cfg Config) []string {
@@ -160,12 +186,16 @@ func enabledProviders(cfg Config) []string {
 	return p
 }
 
-func newOAuthClients(cfg Config, store bridgestore.OAuthStore) (*bridgeoauth.Client, *mastodon.OAuthClient, error) {
+func newOAuthClients(
+	cfg Config,
+	store bridgestore.OAuthStore,
+	blueskyObserver bridgeoauth.ClientObserver,
+) (*bridgeoauth.Client, *mastodon.OAuthClient, error) {
 	var b *bridgeoauth.Client
 	var m *mastodon.OAuthClient
 	var err error
 	if cfg.Bluesky.Enabled() {
-		b, err = newOAuthClient(cfg, store)
+		b, err = newOAuthClient(cfg, store, blueskyObserver)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -193,7 +223,11 @@ func normalizedMastodonAccount(account, baseURL string) string {
 	return account
 }
 
-func newOAuthClient(cfg Config, bridgeStore bridgestore.OAuthStore) (*bridgeoauth.Client, error) {
+func newOAuthClient(
+	cfg Config,
+	bridgeStore bridgestore.OAuthStore,
+	observer bridgeoauth.ClientObserver,
+) (*bridgeoauth.Client, error) {
 	signingKeyDER, err := base64.StdEncoding.DecodeString(cfg.Bluesky.OAuthClientSigningKey)
 	if err != nil {
 		return nil, fmt.Errorf("decode OAuth client signing key: %w", err)
@@ -221,6 +255,8 @@ func newOAuthClient(cfg Config, bridgeStore bridgestore.OAuthStore) (*bridgeoaut
 		RedirectURL:            cfg.Bluesky.OAuthCallbackURL,
 		ClientSigningKey:       signingKey,
 		EncryptionKey:          encryptionKey,
+		RefreshPeriod:          cfg.Bluesky.OAuthRefreshPeriod,
+		Observer:               observer,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct OAuth client: %w", err)
@@ -346,22 +382,27 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 		case <-ctx.Done():
 		case <-resources.dispatcherDone:
-			worker, _ := resources.dispatcher.(*workerCloser)
-			var dispatchErr error
-			if worker != nil {
-				dispatchErr = worker.Err()
-			}
-			if ctx.Err() != nil || errors.Is(dispatchErr, context.Canceled) {
-				return closeRuntimeResources(resources)
-			}
-			if dispatchErr == nil {
-				dispatchErr = errors.New("dispatcher stopped unexpectedly")
-			}
-			return errors.Join(fmt.Errorf("dispatcher: %w", dispatchErr), closeRuntimeResources(resources))
+			return runtimeWorkerStopped(ctx, resources, "dispatcher", resources.dispatcher)
+		case <-resources.oauthMaintenanceDone:
+			return runtimeWorkerStopped(ctx, resources, "OAuth maintenance", resources.oauthMaintenance)
 		}
 	}
 
 	return closeRuntimeResources(resources)
+}
+
+func runtimeWorkerStopped(ctx context.Context, resources runtimeResources, name string, worker shutdownWorker) error {
+	var workerErr error
+	if result, ok := worker.(interface{ Err() error }); ok {
+		workerErr = result.Err()
+	}
+	if ctx.Err() != nil || errors.Is(workerErr, context.Canceled) {
+		return closeRuntimeResources(resources)
+	}
+	if workerErr == nil {
+		workerErr = errors.New("worker stopped unexpectedly")
+	}
+	return errors.Join(fmt.Errorf("%s: %w", name, workerErr), closeRuntimeResources(resources))
 }
 
 func closeRuntimeResources(resources runtimeResources) error {
@@ -371,7 +412,11 @@ func closeRuntimeResources(resources runtimeResources) error {
 	defer cancel()
 	// Initiate every worker cancellation before waiting for HTTP handlers or
 	// any one worker. The single context bounds the entire HTTP/worker phase.
-	for _, worker := range []shutdownWorker{resources.jetstream, resources.dispatcher} {
+	for _, worker := range []shutdownWorker{
+		resources.jetstream,
+		resources.dispatcher,
+		resources.oauthMaintenance,
+	} {
 		if worker != nil {
 			worker.Cancel()
 		}
@@ -387,7 +432,9 @@ func closeRuntimeResources(resources runtimeResources) error {
 		name   string
 		worker shutdownWorker
 	}{
-		{"stop Jetstream", resources.jetstream}, {"stop dispatcher", resources.dispatcher},
+		{"stop Jetstream", resources.jetstream},
+		{"stop dispatcher", resources.dispatcher},
+		{"stop OAuth maintenance", resources.oauthMaintenance},
 	} {
 		if item.worker != nil {
 			if err := item.worker.Wait(ctx); err != nil {

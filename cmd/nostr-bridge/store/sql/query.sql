@@ -134,7 +134,12 @@ SELECT provider,source_account,state,encrypted_payload,expires_at FROM oauth_ses
 DELETE FROM oauth_sessions WHERE provider=? AND source_account=? AND state=?;
 
 -- name: SaveOAuthToken :exec
-INSERT INTO oauth_tokens(provider,source_account,account_did,encrypted_payload,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(provider,source_account,account_did) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,updated_at=excluded.updated_at;
+INSERT INTO oauth_tokens(provider,source_account,account_did,encrypted_payload,updated_at,last_refresh_at,reauth_required,last_refresh_error_class) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider,source_account,account_did) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,updated_at=excluded.updated_at,last_refresh_at=excluded.last_refresh_at,reauth_required=excluded.reauth_required,last_refresh_error_class=excluded.last_refresh_error_class;
 
 -- name: OAuthTokenByAccountDID :one
-SELECT provider,source_account,account_did,encrypted_payload,updated_at FROM oauth_tokens WHERE provider=? AND source_account=? AND account_did=?;
+SELECT provider,source_account,account_did,encrypted_payload,updated_at,last_refresh_at,reauth_required,last_refresh_error_class FROM oauth_tokens WHERE provider=? AND source_account=? AND account_did=?;
+
+-- name: UpdateOAuthTokenRefreshFailure :exec
+UPDATE oauth_tokens
+SET last_refresh_error_class=?, reauth_required=?
+WHERE provider=? AND source_account=? AND account_did=?;

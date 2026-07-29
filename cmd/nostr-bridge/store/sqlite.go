@@ -88,7 +88,7 @@ func oauthSession(row storesqlc.OauthSession) OAuthSession {
 }
 
 func oauthToken(row storesqlc.OauthToken) OAuthToken {
-	return OAuthToken{AccountDID: row.AccountDid, EncryptedPayload: row.EncryptedPayload, UpdatedAt: row.UpdatedAt}
+	return OAuthToken{AccountDID: row.AccountDid, EncryptedPayload: row.EncryptedPayload, UpdatedAt: row.UpdatedAt, LastRefreshAt: row.LastRefreshAt, ReauthRequired: row.ReauthRequired != 0, LastRefreshErrorClass: row.LastRefreshErrorClass}
 }
 
 func eventIDParams(ref SourceRef) storesqlc.EventIDBySourceURIParams {
@@ -915,9 +915,24 @@ func (s SQLiteStore) DeleteOAuthSession(ctx context.Context, scope SourceScope, 
 }
 
 func (s SQLiteStore) SaveOAuthToken(ctx context.Context, scope SourceScope, token OAuthToken) error {
-	err := s.queries.SaveOAuthToken(ctx, storesqlc.SaveOAuthTokenParams{Provider: scope.Provider, SourceAccount: scope.Account, AccountDid: token.AccountDID, EncryptedPayload: token.EncryptedPayload, UpdatedAt: token.UpdatedAt})
+	reauthRequired := int64(0)
+	if token.ReauthRequired {
+		reauthRequired = 1
+	}
+	err := s.queries.SaveOAuthToken(ctx, storesqlc.SaveOAuthTokenParams{Provider: scope.Provider, SourceAccount: scope.Account, AccountDid: token.AccountDID, EncryptedPayload: token.EncryptedPayload, UpdatedAt: token.UpdatedAt, LastRefreshAt: token.LastRefreshAt, ReauthRequired: reauthRequired, LastRefreshErrorClass: token.LastRefreshErrorClass})
 	if err != nil {
 		return fmt.Errorf("save OAuth token: %w", err)
+	}
+	return nil
+}
+
+func (s SQLiteStore) UpdateOAuthTokenRefreshFailure(ctx context.Context, scope SourceScope, accountDID, class string, reauthRequired bool) error {
+	reauthRequiredValue := int64(0)
+	if reauthRequired {
+		reauthRequiredValue = 1
+	}
+	if err := s.queries.UpdateOAuthTokenRefreshFailure(ctx, storesqlc.UpdateOAuthTokenRefreshFailureParams{LastRefreshErrorClass: class, ReauthRequired: reauthRequiredValue, Provider: scope.Provider, SourceAccount: scope.Account, AccountDid: accountDID}); err != nil {
+		return fmt.Errorf("update OAuth token refresh failure: %w", err)
 	}
 	return nil
 }

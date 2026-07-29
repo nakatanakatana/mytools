@@ -121,9 +121,12 @@ type OAuthSession struct {
 
 // OAuthToken is the encrypted OAuth token payload for one Bluesky account.
 type OAuthToken struct {
-	AccountDID       string
-	EncryptedPayload []byte
-	UpdatedAt        int64
+	AccountDID            string
+	EncryptedPayload      []byte
+	UpdatedAt             int64
+	LastRefreshAt         int64
+	ReauthRequired        bool
+	LastRefreshErrorClass string
 }
 
 type OAuthStore interface {
@@ -131,6 +134,7 @@ type OAuthStore interface {
 	OAuthSessionByState(context.Context, SourceScope, string) (OAuthSession, error)
 	DeleteOAuthSession(context.Context, SourceScope, string) error
 	SaveOAuthToken(context.Context, SourceScope, OAuthToken) error
+	UpdateOAuthTokenRefreshFailure(context.Context, SourceScope, string, string, bool) error
 	OAuthTokenByAccountDID(context.Context, SourceScope, string) (OAuthToken, error)
 }
 

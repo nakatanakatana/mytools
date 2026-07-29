@@ -34,7 +34,7 @@ func (c *Client) discoverAuthorizationServer(ctx context.Context, issuer string)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return authorizationServerMetadata{}, fmt.Errorf("authorization server metadata: status %d", response.StatusCode)
+		return authorizationServerMetadata{}, statusResponseError("authorization server metadata", response)
 	}
 	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
