@@ -73,6 +73,9 @@ CREATE TABLE oauth_tokens (
     account_did TEXT NOT NULL,
     encrypted_payload BLOB NOT NULL,
     updated_at INTEGER NOT NULL,
+    last_refresh_at INTEGER NOT NULL DEFAULT 0,
+    reauth_required INTEGER NOT NULL DEFAULT 0,
+    last_refresh_error_class TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(provider, source_account, account_did)
 );
 

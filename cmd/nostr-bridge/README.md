@@ -62,6 +62,17 @@ Bluesky is enabled when `NOSTR_BRIDGE_BLUESKY_BASE_URL` is non-empty:
 | `NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID` | Public HTTPS URL ending `/oauth/bluesky/client-metadata.json` | |
 | `NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_SIGNING_KEY` | Base64 PKCS#8 P-256 signing key | |
 | `NOSTR_BRIDGE_BLUESKY_OAUTH_ENCRYPTION_KEY` | Base64 32-byte token/state encryption key | |
+| `NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD` | Time since the persisted successful refresh before another refresh is due | `720h` |
+| `NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL` | How often OAuth maintenance inspects whether a refresh is due | `24h` |
+
+OAuth maintenance measures the refresh period from the persisted successful
+refresh time, not from process start or the previous inspection. The check
+interval controls only inspection frequency; it does not make a refresh due
+sooner. An expired access token can remain Ready when the durable
+authorization is refreshable. A transient refresh failure is reported as
+degraded and remains Ready while the authorization is refreshable. A permanent
+failure requires reauthorization and makes `/readyz` NotReady until the OAuth
+flow completes successfully.
 
 Mastodon is enabled when `NOSTR_BRIDGE_MASTODON_BASE_URL` is non-empty:
 

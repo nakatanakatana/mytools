@@ -435,7 +435,7 @@ func (q *Queries) OAuthSessionByState(ctx context.Context, arg OAuthSessionBySta
 }
 
 const oAuthTokenByAccountDID = `-- name: OAuthTokenByAccountDID :one
-SELECT provider,source_account,account_did,encrypted_payload,updated_at FROM oauth_tokens WHERE provider=? AND source_account=? AND account_did=?
+SELECT provider,source_account,account_did,encrypted_payload,updated_at,last_refresh_at,reauth_required,last_refresh_error_class FROM oauth_tokens WHERE provider=? AND source_account=? AND account_did=?
 `
 
 type OAuthTokenByAccountDIDParams struct {
@@ -453,6 +453,9 @@ func (q *Queries) OAuthTokenByAccountDID(ctx context.Context, arg OAuthTokenByAc
 		&i.AccountDid,
 		&i.EncryptedPayload,
 		&i.UpdatedAt,
+		&i.LastRefreshAt,
+		&i.ReauthRequired,
+		&i.LastRefreshErrorClass,
 	)
 	return i, err
 }
@@ -623,15 +626,18 @@ func (q *Queries) SaveOAuthSession(ctx context.Context, arg SaveOAuthSessionPara
 }
 
 const saveOAuthToken = `-- name: SaveOAuthToken :exec
-INSERT INTO oauth_tokens(provider,source_account,account_did,encrypted_payload,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(provider,source_account,account_did) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,updated_at=excluded.updated_at
+INSERT INTO oauth_tokens(provider,source_account,account_did,encrypted_payload,updated_at,last_refresh_at,reauth_required,last_refresh_error_class) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider,source_account,account_did) DO UPDATE SET encrypted_payload=excluded.encrypted_payload,updated_at=excluded.updated_at,last_refresh_at=excluded.last_refresh_at,reauth_required=excluded.reauth_required,last_refresh_error_class=excluded.last_refresh_error_class
 `
 
 type SaveOAuthTokenParams struct {
-	Provider         string
-	SourceAccount    string
-	AccountDid       string
-	EncryptedPayload []byte
-	UpdatedAt        int64
+	Provider              string
+	SourceAccount         string
+	AccountDid            string
+	EncryptedPayload      []byte
+	UpdatedAt             int64
+	LastRefreshAt         int64
+	ReauthRequired        int64
+	LastRefreshErrorClass string
 }
 
 func (q *Queries) SaveOAuthToken(ctx context.Context, arg SaveOAuthTokenParams) error {
@@ -641,6 +647,9 @@ func (q *Queries) SaveOAuthToken(ctx context.Context, arg SaveOAuthTokenParams) 
 		arg.AccountDid,
 		arg.EncryptedPayload,
 		arg.UpdatedAt,
+		arg.LastRefreshAt,
+		arg.ReauthRequired,
+		arg.LastRefreshErrorClass,
 	)
 	return err
 }
@@ -737,6 +746,31 @@ func (q *Queries) SyncTargets(ctx context.Context, arg SyncTargetsParams) ([]str
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateOAuthTokenRefreshFailure = `-- name: UpdateOAuthTokenRefreshFailure :exec
+UPDATE oauth_tokens
+SET last_refresh_error_class=?, reauth_required=?
+WHERE provider=? AND source_account=? AND account_did=?
+`
+
+type UpdateOAuthTokenRefreshFailureParams struct {
+	LastRefreshErrorClass string
+	ReauthRequired        int64
+	Provider              string
+	SourceAccount         string
+	AccountDid            string
+}
+
+func (q *Queries) UpdateOAuthTokenRefreshFailure(ctx context.Context, arg UpdateOAuthTokenRefreshFailureParams) error {
+	_, err := q.db.ExecContext(ctx, updateOAuthTokenRefreshFailure,
+		arg.LastRefreshErrorClass,
+		arg.ReauthRequired,
+		arg.Provider,
+		arg.SourceAccount,
+		arg.AccountDid,
+	)
+	return err
 }
 
 const upsertEventMapping = `-- name: UpsertEventMapping :exec

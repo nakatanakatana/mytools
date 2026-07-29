@@ -462,28 +462,37 @@ func (failingTargetStore) SyncTargets(context.Context, bridgestore.SourceScope) 
 }
 
 type fakeBlueskyTokenProvider struct {
-	token bridgeoauth.Token
-	err   error
+	token       bridgeoauth.Token
+	err         error
+	status      bridgeoauth.Status
+	statusErr   error
+	statusCalls int
 }
 
 func (f *fakeBlueskyTokenProvider) TokenByAccountDID(context.Context, string) (bridgeoauth.Token, error) {
 	return f.token, f.err
 }
 
+func (f *fakeBlueskyTokenProvider) AuthorizationStatus(context.Context, string, time.Duration) (bridgeoauth.Status, error) {
+	f.statusCalls++
+	return f.status, f.statusErr
+}
+
 func TestHealthBlueskyTokenProvider(t *testing.T) {
 	health := NewHealth(HealthOptions{EnabledProviders: []string{"bluesky", "mastodon"}})
 	mastoExpiry := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	health.UpdateProvider("mastodon", func(m *ProviderHealthMetrics) {
-		m.Authenticated = true
+		m.AuthorizationAvailable = true
 		m.OAuthExpiry = mastoExpiry
 	})
 
 	futureTime := time.Now().Add(time.Hour).Truncate(time.Second)
 	fake := &fakeBlueskyTokenProvider{
-		token: bridgeoauth.Token{AccessToken: "token123", Expiry: futureTime},
+		token:  bridgeoauth.Token{AccessToken: "token123", Expiry: futureTime},
+		status: bridgeoauth.Status{AccessTokenValid: true, AuthorizationAvailable: true},
 	}
 
-	provider := healthBlueskyTokenProvider{tokens: fake, health: health}
+	provider := healthBlueskyTokenProvider{tokens: fake, health: health, refreshPeriod: 30 * 24 * time.Hour}
 
 	gotToken, err := provider.TokenByAccountDID(context.Background(), "did:plc:alice")
 	if err != nil {
@@ -502,16 +511,21 @@ func TestHealthBlueskyTokenProvider(t *testing.T) {
 	}
 
 	bskySnap := health.providerSnapshot("bluesky")
-	if !bskySnap.Authenticated {
-		t.Error("bluesky Authenticated = false, want true")
+	if !bskySnap.AuthorizationAvailable {
+		t.Error("bluesky AuthorizationAvailable = false, want true")
 	}
 	if !bskySnap.OAuthExpiry.Equal(futureTime) {
 		t.Errorf("bluesky OAuthExpiry = %v, want %v", bskySnap.OAuthExpiry, futureTime)
 	}
 
-	// Test failure case
+	// A transient token refresh failure remains authorization-available according
+	// to the durable local status.
 	fake.err = errors.New("refresh failed")
 	fake.token = bridgeoauth.Token{}
+	fake.status = bridgeoauth.Status{
+		AuthorizationAvailable: true,
+		LastRefreshErrorClass:  bridgeoauth.RefreshErrorServer,
+	}
 
 	_, err = provider.TokenByAccountDID(context.Background(), "did:plc:alice")
 	if err == nil {
@@ -519,15 +533,230 @@ func TestHealthBlueskyTokenProvider(t *testing.T) {
 	}
 
 	bskySnap = health.providerSnapshot("bluesky")
-	if bskySnap.Authenticated {
-		t.Error("bluesky Authenticated = true, want false after error")
+	if !bskySnap.AuthorizationAvailable || !bskySnap.Degraded {
+		t.Errorf("bluesky authorization after transient error = %#v", bskySnap)
+	}
+	if fake.statusCalls != 2 {
+		t.Errorf("AuthorizationStatus calls = %d, want 2 after token success and failure", fake.statusCalls)
+	}
+
+	fake.status = bridgeoauth.Status{
+		ReauthRequired:        true,
+		LastRefreshErrorClass: bridgeoauth.RefreshErrorInvalidGrant,
+	}
+	_, _ = provider.TokenByAccountDID(context.Background(), "did:plc:alice")
+	bskySnap = health.providerSnapshot("bluesky")
+	if bskySnap.AuthorizationAvailable || !bskySnap.ReauthRequired {
+		t.Errorf("bluesky authorization after permanent error = %#v", bskySnap)
 	}
 
 	mastoSnap := health.providerSnapshot("mastodon")
-	if !mastoSnap.Authenticated {
-		t.Error("mastodon Authenticated = false, want true (should be unchanged)")
+	if !mastoSnap.AuthorizationAvailable {
+		t.Error("mastodon AuthorizationAvailable = false, want true (should be unchanged)")
 	}
 	if !mastoSnap.OAuthExpiry.Equal(mastoExpiry) {
 		t.Errorf("mastodon OAuthExpiry = %v, want %v (should be unchanged)", mastoSnap.OAuthExpiry, mastoExpiry)
+	}
+}
+
+func TestHealthBlueskyOAuthMaintenanceObserverUpdatesCachedStatusAndCounters(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"bluesky"}})
+	observer := healthOAuthMaintenanceObserver{health: health}
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	lastSuccess := now.Add(-time.Hour)
+	nextRefresh := now.Add(30 * 24 * time.Hour)
+	expiry := now.Add(time.Hour)
+
+	observer.Started(now)
+	observer.Checked(now, bridgeoauth.Status{
+		AccessTokenValid:       false,
+		AccessTokenExpiry:      expiry,
+		AuthorizationAvailable: true,
+		LastRefreshSucceededAt: lastSuccess,
+		NextMaintenanceRefresh: nextRefresh,
+		LastRefreshErrorClass:  bridgeoauth.RefreshErrorServer,
+	})
+	observer.RefreshSucceeded(now, bridgeoauth.RefreshReasonOnDemand)
+	observer.RefreshFailed(now, bridgeoauth.RefreshReasonMaintenance, bridgeoauth.RefreshErrorServer)
+	observer.RetryScheduled(now, bridgeoauth.RefreshReasonMaintenance, bridgeoauth.RefreshErrorServer, time.Second)
+
+	got := health.providerSnapshot("bluesky")
+	if !got.MaintenanceWorkerRunning || !got.AuthorizationAvailable || !got.AccessTokenExpired || !got.Degraded {
+		t.Errorf("cached authorization status = %#v", got)
+	}
+	if got.ReauthRequired {
+		t.Errorf("cached authorization unexpectedly requires reauthorization: %#v", got)
+	}
+	if !got.LastRefreshSucceededAt.Equal(lastSuccess) || !got.NextMaintenanceRefresh.Equal(nextRefresh) {
+		t.Errorf("cached refresh timestamps = %#v", got)
+	}
+	if !got.OAuthExpiry.Equal(expiry) || !health.snapshot().OAuthExpiry.Equal(expiry) {
+		t.Errorf("cached OAuth expiry: provider=%v global=%v, want %v", got.OAuthExpiry, health.snapshot().OAuthExpiry, expiry)
+	}
+	if got.LastRefreshErrorClass != bridgeoauth.RefreshErrorServer {
+		t.Errorf("last refresh error class = %q", got.LastRefreshErrorClass)
+	}
+	if got.RefreshSuccesses[bridgeoauth.RefreshReasonOnDemand] != 1 {
+		t.Errorf("on-demand successes = %d", got.RefreshSuccesses[bridgeoauth.RefreshReasonOnDemand])
+	}
+	if got.RefreshFailures[bridgeoauth.RefreshReasonMaintenance][bridgeoauth.RefreshErrorServer] != 1 {
+		t.Errorf("maintenance server failures = %d", got.RefreshFailures[bridgeoauth.RefreshReasonMaintenance][bridgeoauth.RefreshErrorServer])
+	}
+	if got.RefreshExecutions[bridgeoauth.RefreshReasonOnDemand] != 1 ||
+		got.RefreshExecutions[bridgeoauth.RefreshReasonMaintenance] != 1 {
+		t.Errorf("refresh executions = %#v", got.RefreshExecutions)
+	}
+
+	observer.Stopped(now)
+	if health.providerSnapshot("bluesky").MaintenanceWorkerRunning {
+		t.Fatal("maintenance worker remained running after stop")
+	}
+}
+
+func TestHealthBlueskyOAuthMaintenanceObserverBoundsUnknownLabels(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"bluesky"}})
+	observer := healthOAuthMaintenanceObserver{health: health}
+
+	observer.RefreshSucceeded(time.Time{}, bridgeoauth.RefreshReason("did:plc:fixture-secret"))
+	observer.RefreshFailed(
+		time.Time{},
+		bridgeoauth.RefreshReasonMaintenance,
+		bridgeoauth.RefreshErrorClass("access-secret"),
+	)
+
+	got := health.providerSnapshot("bluesky")
+	if len(got.RefreshSuccesses) != 0 || len(got.RefreshExecutions) != 1 {
+		t.Errorf("unknown reason affected counters: successes=%#v executions=%#v", got.RefreshSuccesses, got.RefreshExecutions)
+	}
+	if got.RefreshFailures[bridgeoauth.RefreshReasonMaintenance][bridgeoauth.RefreshErrorProtocol] != 1 {
+		t.Errorf("unknown class was not bounded to protocol: %#v", got.RefreshFailures)
+	}
+}
+
+type lifecycleOAuthMaintenanceClient struct {
+	status      bridgeoauth.Status
+	statusCalls int
+}
+
+func (c *lifecycleOAuthMaintenanceClient) RefreshIfDue(ctx context.Context, _ string, _ time.Duration) (bridgeoauth.RefreshResult, error) {
+	<-ctx.Done()
+	return bridgeoauth.RefreshResult{}, nil
+}
+
+func (c *lifecycleOAuthMaintenanceClient) AuthorizationStatus(context.Context, string, time.Duration) (bridgeoauth.Status, error) {
+	c.statusCalls++
+	return c.status, nil
+}
+
+func TestBlueskyOAuthMaintenanceRestoresAuthorizationBeforeRunning(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"bluesky"}})
+	status := bridgeoauth.Status{
+		AccessTokenValid:       false,
+		AuthorizationAvailable: true,
+		LastRefreshSucceededAt: time.Unix(100, 0),
+		NextMaintenanceRefresh: time.Unix(200, 0),
+		LastRefreshErrorClass:  bridgeoauth.RefreshErrorServer,
+	}
+	client := &lifecycleOAuthMaintenanceClient{status: status}
+
+	if health.providerSnapshot("bluesky").MaintenanceWorkerRunning {
+		t.Fatal("maintenance worker marked running before launch")
+	}
+	worker := startBlueskyOAuthMaintenance(BlueskyConfig{
+		AccountDID:                "did:plc:owner",
+		OAuthRefreshPeriod:        time.Hour,
+		OAuthRefreshCheckInterval: time.Hour,
+	}, client, health)
+	t.Cleanup(func() {
+		worker.Cancel()
+		_ = worker.Wait(context.Background())
+	})
+
+	if client.statusCalls != 1 {
+		t.Fatalf("startup AuthorizationStatus calls = %d, want 1", client.statusCalls)
+	}
+	restored := health.providerSnapshot("bluesky")
+	if !restored.AuthorizationAvailable || !restored.AccessTokenExpired || !restored.Degraded {
+		t.Fatalf("restored authorization = %#v", restored)
+	}
+	if !restored.LastRefreshSucceededAt.Equal(status.LastRefreshSucceededAt) ||
+		!restored.NextMaintenanceRefresh.Equal(status.NextMaintenanceRefresh) {
+		t.Fatalf("restored refresh timestamps = %#v", restored)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for !health.providerSnapshot("bluesky").MaintenanceWorkerRunning && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !health.providerSnapshot("bluesky").MaintenanceWorkerRunning {
+		t.Fatal("maintenance worker was not marked running after launch")
+	}
+
+	worker.Cancel()
+	if err := worker.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if health.providerSnapshot("bluesky").MaintenanceWorkerRunning {
+		t.Fatal("maintenance worker remained running after Run returned")
+	}
+}
+
+func TestOAuthMaintenanceLogsUseOnlyBoundedFields(t *testing.T) {
+	logs := captureRuntimeLogs(t)
+	observer := healthOAuthMaintenanceObserver{
+		health: NewHealth(HealthOptions{EnabledProviders: []string{"bluesky"}}),
+	}
+	secrets := []string{
+		"did:plc:fixture-secret",
+		"access-token-fixture",
+		"refresh-token-fixture",
+		"authorization-code-fixture",
+		"dpop-nonce-fixture",
+		`{"d":"private-jwk-fixture"}`,
+		"encrypted-payload-fixture",
+		"remote-response-description-fixture",
+	}
+
+	observer.Checked(time.Time{}, bridgeoauth.Status{
+		LastRefreshErrorClass: bridgeoauth.RefreshErrorClass(strings.Join(secrets, "|")),
+	})
+	observer.RefreshFailed(time.Time{}, bridgeoauth.RefreshReasonMaintenance, bridgeoauth.RefreshErrorServer)
+	observer.RetryScheduled(time.Time{}, bridgeoauth.RefreshReasonMaintenance, bridgeoauth.RefreshErrorServer, time.Second)
+	observer.RefreshFailed(time.Time{}, bridgeoauth.RefreshReasonMaintenance, bridgeoauth.RefreshErrorInvalidGrant)
+	observer.RefreshFailed(
+		time.Time{},
+		bridgeoauth.RefreshReason(strings.Join(secrets, "|")),
+		bridgeoauth.RefreshErrorClass(strings.Join(secrets, "|")),
+	)
+
+	output := logs.String()
+	assertRuntimeLogContains(
+		t,
+		output,
+		"provider=bluesky reason=maintenance result=checked class=protocol retry=false",
+		"provider=bluesky reason=maintenance result=failed class=server retry=false",
+		"provider=bluesky reason=maintenance result=retry_scheduled class=server retry=true",
+		"provider=bluesky reason=maintenance result=failed class=invalid_grant retry=false",
+	)
+	for _, secret := range secrets {
+		if strings.Contains(output, secret) {
+			t.Fatalf("OAuth maintenance log contains secret %q: %q", secret, output)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		const marker = "nostr-bridge OAuth maintenance: "
+		index := strings.Index(line, marker)
+		if index < 0 {
+			t.Fatalf("unexpected OAuth maintenance log line: %q", line)
+		}
+		fields := strings.Fields(line[index+len(marker):])
+		if len(fields) != 5 {
+			t.Fatalf("OAuth maintenance log fields = %v, want five bounded fields", fields)
+		}
+		for index, prefix := range []string{"provider=", "reason=", "result=", "class=", "retry="} {
+			if !strings.HasPrefix(fields[index], prefix) {
+				t.Fatalf("OAuth maintenance log fields = %v, field %d want prefix %q", fields, index, prefix)
+			}
+		}
 	}
 }

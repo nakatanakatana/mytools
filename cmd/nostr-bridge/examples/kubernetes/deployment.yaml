@@ -49,6 +49,8 @@ spec:
             - {name: NOSTR_BRIDGE_BLUESKY_OAUTH_AUTHORIZATION_SERVER_URL, value: https://bsky.social}
             - {name: NOSTR_BRIDGE_BLUESKY_OAUTH_CLIENT_ID, value: https://REPLACE_WITH_PUBLIC_HOST/oauth/bluesky/client-metadata.json}
             - {name: NOSTR_BRIDGE_BLUESKY_OAUTH_CALLBACK_URL, value: https://REPLACE_WITH_PUBLIC_HOST/oauth/bluesky/callback}
+            - {name: NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_PERIOD, value: 720h}
+            - {name: NOSTR_BRIDGE_BLUESKY_OAUTH_REFRESH_CHECK_INTERVAL, value: 24h}
             - {name: NOSTR_BRIDGE_MASTODON_BASE_URL, value: https://REPLACE_WITH_MASTODON_INSTANCE}
             - {name: NOSTR_BRIDGE_MASTODON_ACCOUNT, value: REPLACE_WITH_USER_AT_INSTANCE}
             - {name: NOSTR_BRIDGE_MASTODON_LIST_IDS, value: REPLACE_WITH_COMMA_SEPARATED_LIST_IDS}
