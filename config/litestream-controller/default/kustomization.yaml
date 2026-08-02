@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The namespace every namespaced resource below is deployed into. cert-manager
+# injects the CA bundle for the Certificate named below, which must live in
+# this namespace, and the MutatingWebhookConfiguration's cert-manager
+# annotation is hard-coded to match it.
+namespace: litestream-controller-system
+
+resources:
+- ../crd
+- ../rbac
+- ../manager
+- ../webhook
+- ../certmanager
+
+# Requests cert-manager's CA injector to populate the webhook's caBundle
+# from the Certificate created above; failurePolicy stays at the generated
+# default (Fail). See config/litestream-controller/overlays/webhook-ignore for a variant that
+# relaxes it to Ignore.
+patches:
+- target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
+  patch: |-
+    - op: add
+      path: /metadata/annotations
+      value:
+        cert-manager.io/inject-ca-from: litestream-controller-system/litestream-controller-serving-cert
+- target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
+  patch: |-
+    - op: add
+      path: /metadata/annotations
+      value:
+        cert-manager.io/inject-ca-from: litestream-controller-system/litestream-controller-serving-cert

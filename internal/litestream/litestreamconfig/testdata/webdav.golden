@@ -1,0 +1,8 @@
+dbs:
+    - path: /var/lib/app/app.db
+      replica:
+        type: webdav
+        path: backups/app
+        webdav-url: https://webdav.example.com
+        webdav-username: ${LS_APP_DEST_WEBDAV_USERNAME}
+        webdav-password: ${LS_APP_DEST_WEBDAV_PASSWORD}

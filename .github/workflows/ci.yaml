@@ -40,6 +40,7 @@ jobs:
         with:
           aqua_version: v2.62.3
       - run: make check-sqlc
+      - run: make check-litestream-manifests
       - run: golangci-lint run
 
   build:
@@ -78,6 +79,15 @@ jobs:
       - run: go env -w GOTOOLCHAIN="${GO_VERSION}+auto"
         env:
           GO_VERSION: ${{ steps.parse-go-version.outputs.GO_VERSION }}
+      - name: Set up envtest assets
+        run: |
+          envtest_version="$(go list -m -f '{{.Version}}' sigs.k8s.io/controller-runtime)"
+          envtest_k8s_version="$(go list -m -f '{{.Version}}' k8s.io/api | sed -E 's/^v[0-9]+\.([0-9]+)\..*$/1.\1/')"
+          assets="$(
+            go run sigs.k8s.io/controller-runtime/tools/setup-envtest@"${envtest_version}" \
+              use -p path "${envtest_k8s_version}"
+          )"
+          echo "KUBEBUILDER_ASSETS=${assets}" >> "${GITHUB_ENV}"
       - run: go test ./... -v -coverprofile=coverage.out -covermode=atomic
       - uses: moznion/cccc-action@4df3f72f581c87d0792ca89ef401c4ec8e85788b # v1
         with:

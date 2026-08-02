@@ -1,0 +1,7 @@
+dbs:
+    - path: /var/lib/app/app.db
+      replica:
+        type: nats
+        password: ${LS_APP_DEST_NATS_PASSWORD}
+        url: nats://nats.example.com:4222/destination-bucket
+        username: ${LS_APP_DEST_NATS_USERNAME}

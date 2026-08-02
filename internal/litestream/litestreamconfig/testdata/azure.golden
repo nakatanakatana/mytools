@@ -1,0 +1,8 @@
+dbs:
+    - path: /var/lib/app/app.db
+      replica:
+        type: abs
+        bucket: destination-container
+        path: environments/pr-123/app
+        account-name: destinationaccount
+        account-key: ${LS_APP_DEST_AZURE_ACCOUNT_KEY}

@@ -1,0 +1,53 @@
+# Example application StatefulSet injected with the "app-db" Litestream
+# resource from litestream_v1alpha1_replicate.yaml, backed by a
+# PersistentVolumeClaim so restored data survives a reschedule.
+# Before creating the StatefulSet, label its namespace so the opt-in webhook
+# receives annotated Pods:
+# kubectl label namespace <namespace> litestream.mytools.nakatanakatana.app/injection=enabled
+#
+# replicas: 1 is required for the same single-writer reason as
+# deployment.yaml: SQLite allows only one writer per database file.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: app
+  labels:
+    app.kubernetes.io/name: app
+spec:
+  serviceName: app
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: app
+      annotations:
+        litestream.mytools.nakatanakatana.app/inject: app-db
+    spec:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: app
+          image: example.com/my-app:1.0.0
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  # CSI fsGroup caveat: fsGroup (and fsGroupChangePolicy) only take effect
+  # if the volume's CSI driver reports an fsGroupPolicy of ReadWriteOnceWithFSType
+  # or File. A driver that reports None (many block-storage CSI drivers do,
+  # for performance) silently ignores fsGroup entirely, and the application
+  # and Litestream containers will not share file ownership unless they
+  # already run as the same UID. Check your storage class's CSI driver
+  # before relying on fsGroup with a PersistentVolumeClaim.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi

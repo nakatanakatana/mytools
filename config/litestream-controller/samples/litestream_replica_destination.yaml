@@ -1,0 +1,24 @@
+# Shared destination for one writer. Keep this endpoint and path distinct from
+# app-db-source. A LitestreamReplica destination must never have concurrent
+# writers: make a separate Replica with a separate path for every workload or
+# pull-request preview that writes independently.
+apiVersion: litestream.mytools.nakatanakatana.app/v1alpha1
+kind: LitestreamReplica
+metadata:
+  name: app-db-destination
+spec:
+  replica:
+    type: s3
+    s3:
+      bucket: my-app-backups
+      path: app-db/primary
+      region: us-east-1
+      credentials:
+        accessKeyID:
+          secretKeyRef:
+            name: litestream-s3-credentials
+            key: access-key-id
+        secretAccessKey:
+          secretKeyRef:
+            name: litestream-s3-credentials
+            key: secret-access-key

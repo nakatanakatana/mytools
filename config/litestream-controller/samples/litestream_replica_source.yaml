@@ -1,0 +1,23 @@
+# Shared read-only source for restores. It is deliberately separate from the
+# destination sample: a clone can restore production data without writing to
+# its production replica path.
+apiVersion: litestream.mytools.nakatanakatana.app/v1alpha1
+kind: LitestreamReplica
+metadata:
+  name: app-db-source
+spec:
+  replica:
+    type: s3
+    s3:
+      bucket: my-app-backups
+      path: app-db/production
+      region: us-east-1
+      credentials:
+        accessKeyID:
+          secretKeyRef:
+            name: litestream-s3-credentials
+            key: access-key-id
+        secretAccessKey:
+          secretKeyRef:
+            name: litestream-s3-credentials
+            key: secret-access-key

@@ -1,0 +1,26 @@
+# Continuously replicates a live database to a remote replica. This is the
+# common case for an application's primary SQLite database.
+#
+# The webhook injects the replication sidecar (container name "litestream")
+# as a native sidecar (initContainers[].restartPolicy: Always), so the
+# target cluster must run Kubernetes 1.29 or later. Because SQLite allows
+# only one process to write a database file, run this workload with
+# replicas: 1: a second replica writing the same file corrupts it, and two
+# sidecars replicating the same file to the same replica path race each
+# other.
+apiVersion: litestream.mytools.nakatanakatana.app/v1alpha1
+kind: Litestream
+metadata:
+  name: app-db
+spec:
+  injection:
+    targetContainer: app
+    volume: data
+  databases:
+    - name: app
+      path: /data/app.db
+      replicate:
+        replicaRef:
+          name: app-db-destination
+        syncInterval: 1s
+        autoRecover: true

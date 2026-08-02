@@ -46,6 +46,9 @@ jobs:
           - name: ff
             context: .
             target: ff
+          - name: litestream-controller
+            context: .
+            target: litestream-controller
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - name: Prepare
@@ -103,6 +106,7 @@ jobs:
           - nostr-relay
           - nostr-bridge
           - ff
+          - litestream-controller
     runs-on: ubuntu-latest
     needs:
       - build
