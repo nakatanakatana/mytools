@@ -48,6 +48,11 @@ FROM base AS nostr-bridge
 COPY --from=builder-from /app/output/nostr-bridge /app/
 ENTRYPOINT ["/app/nostr-bridge"]
 
+# litestream-controller image
+FROM base AS litestream-controller
+COPY --from=builder-from /app/output/litestream-controller /app/
+ENTRYPOINT ["/app/litestream-controller"]
+
 # all apps image
 FROM base AS mytools
 COPY --from=builder-from /app/output /app

@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+restore_plan=$(litestream restore -dry-run -json -if-replica-exists -config '/etc/litestream/restore-app-destination.yml' '/var/lib/app/app.db' 2>&1) || {
+  case "$restore_plan" in
+  *'no matching backup files available'*|*'no matching backups found'*) restore_plan='{"files":[]}' ;;
+  *)
+  printf 'litestream: unable to inspect destination replica for database %s; require-empty policy refuses to continue\n' 'app' >&2
+  exit 1
+  ;;
+  esac
+}
+compact_plan=$(printf '%s' "$restore_plan" | tr -d '[:space:]')
+case "$compact_plan" in
+  *'"files":[]'*) ;;
+  *'"files":['*)
+  printf 'litestream: destination replica for database %s already contains data; require-empty policy refuses to continue\n' 'app' >&2
+  exit 1
+  ;;
+  *)
+  printf 'litestream: unable to inspect destination replica for database %s; require-empty policy refuses to continue\n' 'app' >&2
+  exit 1
+  ;;
+esac
+litestream restore '-if-db-not-exists' '-if-replica-exists' '-integrity-check' 'quick' \
+  -config '/etc/litestream/restore-app-destination.yml' '/var/lib/app/app.db'
+litestream restore '-if-db-not-exists' '-if-replica-exists' '-integrity-check' 'quick' \
+  -config '/etc/litestream/restore-app-source.yml' '/var/lib/app/app.db'

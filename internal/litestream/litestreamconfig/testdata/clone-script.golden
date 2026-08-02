@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+litestream restore '-if-db-not-exists' '-if-replica-exists' '-integrity-check' 'quick' \
+  -config '/etc/litestream/restore-app-destination.yml' '/var/lib/app/app.db'
+litestream restore '-if-db-not-exists' '-if-replica-exists' '-integrity-check' 'quick' \
+  -config '/etc/litestream/restore-app-source.yml' '/var/lib/app/app.db'

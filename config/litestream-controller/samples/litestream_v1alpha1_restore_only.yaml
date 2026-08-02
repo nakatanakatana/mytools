@@ -1,0 +1,32 @@
+# Restores a database once, at Pod startup, and never replicates it
+# afterward. Use this for a database an application only reads, or one it
+# rewrites so heavily that continuous replication would not be meaningful
+# (for example, a nightly-rebuilt search index).
+#
+# The webhook injects one init container, litestream-restore-<database
+# name>, that runs before the application container starts. No sidecar is
+# added, so this workload has no Kubernetes 1.29 requirement.
+apiVersion: litestream.mytools.nakatanakatana.app/v1alpha1
+kind: Litestream
+metadata:
+  name: search-index
+spec:
+  injection:
+    targetContainer: app
+    volume: data
+  databases:
+    - name: app
+      path: /data/app.db
+      restore:
+        replicaRef:
+          name: app-db-source
+        # skip: start with an empty database if the file already exists
+        # locally (for example, after a Pod restart with a persistent
+        # volume). overwrite always restores over local state; fail refuses
+        # to start rather than risk either.
+        ifDatabaseExists: skip
+        # fail: refuse to start rather than run without the expected data.
+        # Prefer this over the default (skip) whenever losing the restore
+        # silently would be worse than not starting at all.
+        ifReplicaMissing: fail
+        integrityCheck: quick

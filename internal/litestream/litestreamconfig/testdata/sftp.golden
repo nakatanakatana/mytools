@@ -1,0 +1,8 @@
+dbs:
+    - path: /var/lib/app/app.db
+      replica:
+        type: sftp
+        path: /backups/app
+        host: backup.example.com:22
+        user: backup
+        password: ${LS_APP_DEST_SFTP_PASSWORD}

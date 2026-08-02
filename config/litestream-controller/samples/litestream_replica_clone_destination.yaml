@@ -1,0 +1,24 @@
+# Destination for the pull-request clone sample. This is intentionally a
+# separate Replica and path from app-db-destination, so the clone and the
+# regular replicate example cannot race on one writable destination.
+# Replace <number> with the pull request number before applying this sample.
+apiVersion: litestream.mytools.nakatanakatana.app/v1alpha1
+kind: LitestreamReplica
+metadata:
+  name: app-db-clone-destination
+spec:
+  replica:
+    type: s3
+    s3:
+      bucket: my-app-backups
+      path: clone-preview/pr-<number>
+      region: us-east-1
+      credentials:
+        accessKeyID:
+          secretKeyRef:
+            name: litestream-s3-credentials
+            key: access-key-id
+        secretAccessKey:
+          secretKeyRef:
+            name: litestream-s3-credentials
+            key: secret-access-key

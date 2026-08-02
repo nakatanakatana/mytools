@@ -1,0 +1,39 @@
+# Clones production data into a short-lived, per-pull-request preview
+# environment: restores once from the shared production source, then
+# replicates ongoing writes to a destination Replica. Before applying a PR
+# preview, apply litestream_replica_clone_destination.yaml after replacing
+# <number> with the pull request number. It is a separately named Replica with
+# a path scoped to this PR. One destination Replica must have only one writer,
+# so never point two PRs at app-db-clone-destination.
+#
+# clonePolicy defaults to resume-or-create: a PR preview redeployed with the
+# same PR number resumes its own scratch replica instead of re-cloning from
+# production, and no restore or replicate path here ever deletes existing
+# remote data. When the PR closes, this resource (and the ConfigMap it
+# renders) can simply be deleted; the scratch objects it wrote under
+# clone-preview/pr-<number> remain in the bucket until an operator removes
+# them. See README.md's "Uninstalling" section for that cleanup step —
+# replace <number> below with the actual pull request number for each
+# preview environment.
+apiVersion: litestream.mytools.nakatanakatana.app/v1alpha1
+kind: Litestream
+metadata:
+  name: app-db-pr-preview
+spec:
+  injection:
+    targetContainer: app
+    volume: data
+  databases:
+    - name: app
+      path: /data/app.db
+      clonePolicy: resume-or-create
+      restore:
+        replicaRef:
+          name: app-db-source
+        # This clone must never write back to production: fail rather than
+        # silently skip if the production replica ever disappears.
+        ifReplicaMissing: fail
+      replicate:
+        replicaRef:
+          name: app-db-clone-destination
+        syncInterval: 1s

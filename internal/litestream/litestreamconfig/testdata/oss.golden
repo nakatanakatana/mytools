@@ -1,0 +1,9 @@
+dbs:
+    - path: /var/lib/app/app.db
+      replica:
+        type: oss
+        bucket: destination-bucket
+        path: environments/pr-123/app
+        region: oss-cn-hangzhou
+        access-key-id: ${LS_APP_DEST_OSS_ACCESS_KEY_ID}
+        secret-access-key: ${LS_APP_DEST_OSS_ACCESS_KEY_SECRET}

@@ -1,0 +1,5 @@
+dbs:
+    - path: /var/lib/app/app.db
+      replica:
+        type: file
+        path: /mnt/backups/app

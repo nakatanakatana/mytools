@@ -1,0 +1,868 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: litestreamreplicas.litestream.mytools.nakatanakatana.app
+spec:
+  group: litestream.mytools.nakatanakatana.app
+  names:
+    kind: LitestreamReplica
+    listKind: LitestreamReplicaList
+    plural: litestreamreplicas
+    singular: litestreamreplica
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.replica.type
+      name: Type
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: LitestreamReplica is the schema for a shared remote Litestream
+          replica endpoint.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: LitestreamReplicaSpec defines one remote Litestream replica
+              endpoint.
+            properties:
+              replica:
+                description: |-
+                  ReplicaSpec is a tagged union of all supported Litestream replica backends.
+                  Exactly one backend pointer must be set and must match Type.
+                properties:
+                  azure:
+                    description: AzureReplicaSpec configures an Azure Blob Storage
+                      replica.
+                    properties:
+                      accountKey:
+                        description: AccountKey is optional when managed identity
+                          supplies credentials.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      accountName:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      container:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      endpoint:
+                        type: string
+                      path:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                    required:
+                    - accountName
+                    - container
+                    - path
+                    type: object
+                  file:
+                    description: FileReplicaSpec configures a filesystem replica.
+                    properties:
+                      path:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                    required:
+                    - path
+                    type: object
+                  gcs:
+                    description: GCSReplicaSpec configures a Google Cloud Storage
+                      replica.
+                    properties:
+                      bucket:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      path:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      serviceAccountJSON:
+                        description: ServiceAccountJSON is optional when workload
+                          identity supplies credentials.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                    required:
+                    - bucket
+                    - path
+                    type: object
+                  nats:
+                    description: NATSReplicaSpec configures a NATS JetStream object-store
+                      replica.
+                    properties:
+                      clientCert:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      clientKey:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      creds:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      jwt:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      maxReconnects:
+                        type: integer
+                      nkey:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      password:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      reconnectWait:
+                        type: string
+                      rootCAs:
+                        items:
+                          description: |-
+                            SecretReference identifies a Secret value without exposing that value to the
+                            controller or webhook.
+                          properties:
+                            secretKeyRef:
+                              description: SecretKeySelector selects a key of a Secret.
+                              properties:
+                                key:
+                                  description: The key of the secret to select from.  Must
+                                    be a valid secret key.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the Secret or its key
+                                    must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          required:
+                          - secretKeyRef
+                          type: object
+                        type: array
+                      seed:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      timeout:
+                        type: string
+                      token:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      url:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      username:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                    required:
+                    - url
+                    type: object
+                  oss:
+                    description: OSSReplicaSpec configures an Alibaba Cloud OSS replica.
+                    properties:
+                      accessKeyID:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      accessKeySecret:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      bucket:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      endpoint:
+                        type: string
+                      path:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      region:
+                        type: string
+                    required:
+                    - bucket
+                    - path
+                    type: object
+                  s3:
+                    description: S3ReplicaSpec configures an S3-compatible replica.
+                    properties:
+                      bucket:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      credentials:
+                        description: S3Credentials configures optional static S3 credentials.
+                        properties:
+                          accessKeyID:
+                            description: |-
+                              SecretReference identifies a Secret value without exposing that value to the
+                              controller or webhook.
+                            properties:
+                              secretKeyRef:
+                                description: SecretKeySelector selects a key of a
+                                  Secret.
+                                properties:
+                                  key:
+                                    description: The key of the secret to select from.  Must
+                                      be a valid secret key.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the Secret or its
+                                      key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                            required:
+                            - secretKeyRef
+                            type: object
+                          secretAccessKey:
+                            description: |-
+                              SecretReference identifies a Secret value without exposing that value to the
+                              controller or webhook.
+                            properties:
+                              secretKeyRef:
+                                description: SecretKeySelector selects a key of a
+                                  Secret.
+                                properties:
+                                  key:
+                                    description: The key of the secret to select from.  Must
+                                      be a valid secret key.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the Secret or its
+                                      key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                            required:
+                            - secretKeyRef
+                            type: object
+                        type: object
+                      endpoint:
+                        type: string
+                      forcePathStyle:
+                        type: boolean
+                      path:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      region:
+                        type: string
+                      skipVerify:
+                        type: boolean
+                    required:
+                    - bucket
+                    - path
+                    type: object
+                  sftp:
+                    description: SFTPReplicaSpec configures an SFTP replica.
+                    properties:
+                      concurrentWrites:
+                        type: boolean
+                      host:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      password:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      path:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      privateKey:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      user:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                    required:
+                    - host
+                    - path
+                    - user
+                    type: object
+                  type:
+                    description: ReplicaType identifies the storage backend represented
+                      by a ReplicaSpec.
+                    enum:
+                    - s3
+                    - gcs
+                    - azure
+                    - file
+                    - nats
+                    - oss
+                    - sftp
+                    - webdav
+                    type: string
+                  webdav:
+                    description: WebDAVReplicaSpec configures a WebDAV replica.
+                    properties:
+                      password:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                      path:
+                        type: string
+                      skipVerify:
+                        type: boolean
+                      url:
+                        minLength: 1
+                        pattern: ^.*[^[:space:]].*$
+                        type: string
+                      username:
+                        description: |-
+                          SecretReference identifies a Secret value without exposing that value to the
+                          controller or webhook.
+                        properties:
+                          secretKeyRef:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - secretKeyRef
+                        type: object
+                    required:
+                    - url
+                    type: object
+                required:
+                - type
+                type: object
+            required:
+            - replica
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

@@ -1,0 +1,40 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: litestream-controller
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - litestream.mytools.nakatanakatana.app
+  resources:
+  - litestreamreplicas
+  - litestreams
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - litestream.mytools.nakatanakatana.app
+  resources:
+  - litestreams/status
+  verbs:
+  - get
+  - patch
+  - update

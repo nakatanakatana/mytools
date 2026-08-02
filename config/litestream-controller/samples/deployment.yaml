@@ -1,0 +1,66 @@
+# Example application Deployment injected with the "app-db" Litestream
+# resource from litestream_v1alpha1_replicate.yaml. Apply that resource
+# first and wait for it to become Ready before creating Pods that reference
+# it — the webhook rejects Pods whose Litestream resource is not Ready.
+# Before creating the Deployment, label its namespace so the opt-in webhook
+# receives annotated Pods:
+# kubectl label namespace <namespace> litestream.mytools.nakatanakatana.app/injection=enabled
+#
+# replicas: 1 is required, not just a default: SQLite allows only one
+# writer, so a second replica writing /data/app.db would corrupt it, and
+# two replication sidecars would race each other to write the same replica
+# path. Scale this workload only by giving it its own database and its own
+# Litestream resource, never by raising replicas.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  labels:
+    app.kubernetes.io/name: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: app
+      annotations:
+        # Names the Litestream resource to inject. Required.
+        litestream.mytools.nakatanakatana.app/inject: app-db
+        # target-container and volume are optional here because this Pod
+        # has exactly one container with exactly one volume mount that
+        # contains every configured database path; the webhook resolves
+        # the target automatically. Set them explicitly whenever a Pod has
+        # more than one container or more than one candidate volume mount.
+        # litestream.mytools.nakatanakatana.app/target-container: app
+        # litestream.mytools.nakatanakatana.app/volume: data
+    spec:
+      # fsGroup lets the Litestream sidecar (which does not run as the
+      # application's user) read and write the same database files as the
+      # application container. It must match the Litestream resource's
+      # spec.injection.podSecurityContext.fsGroup, if that is set; the
+      # webhook rejects a mismatch rather than silently overriding either
+      # value.
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: app
+          image: example.com/my-app:1.0.0
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        # emptyDir is safe when the destination Replica in
+        # litestream_replica_destination.yaml has the data this Pod needs.
+        # Every database gets its own restore init container, including
+        # replicate mode, before the application container starts. Its default
+        # restore policy skips an existing local database and skips a missing
+        # destination replica; set an explicit restore policy on the
+        # Litestream binding when absence of source data must block startup.
+        # Use a PersistentVolumeClaim (see statefulset.yaml) to avoid
+        # depending on that replica round trip at all.
+        - name: data
+          emptyDir: {}

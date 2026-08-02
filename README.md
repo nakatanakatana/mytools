@@ -30,6 +30,9 @@ A Herdr plugin that rewrites tab labels with live tab information through the He
 ### 6. [ff](file:///home/tanaka/repos/github.com/nakatanakatana/mytools/cmd/ff/README.md)
 A feed filtering proxy server that allows filtering and modifying RSS/Atom feeds via URL query parameters.
 
+### 7. [litestream-controller](file:///home/tanaka/repos/github.com/nakatanakatana/mytools/cmd/litestream-controller/README.md)
+A Kubernetes controller and admission webhook that runs [Litestream](https://litestream.io) alongside your application Pods, restoring and continuously replicating SQLite databases without baking Litestream into your application's image.
+
 ## Development and Build
 
 This repository uses [aqua](https://aquaproj.github.io/) to manage development tools (Go, GolangCI-Lint, GoReleaser, etc.).
@@ -48,7 +51,18 @@ go build -o ./dist/ ./cmd/...
 ```
 
 ### Run Tests
+
+The integration tests use controller-runtime's envtest assets. Set
+`KUBEBUILDER_ASSETS` before running the test suite:
+
 ```bash
+envtest_version="$(go list -m -f '{{.Version}}' sigs.k8s.io/controller-runtime)"
+envtest_k8s_version="$(go list -m -f '{{.Version}}' k8s.io/api | sed -E 's/^v[0-9]+\.([0-9]+)\..*$/1.\1/')"
+export KUBEBUILDER_ASSETS="$(
+  go run sigs.k8s.io/controller-runtime/tools/setup-envtest@"${envtest_version}" \
+    use -p path "${envtest_k8s_version}"
+)"
+
 make test
 # or
 go test ./...
@@ -83,10 +97,12 @@ docker build --target nostr-relay -t nostr-relay .
 
 # For ff only
 docker build --target ff -t ff .
+
+# For litestream-controller only
+docker build --target litestream-controller -t litestream-controller .
 ```
 
 ### Build All Tools Image
 ```bash
 docker build --target mytools -t mytools .
 ```
-

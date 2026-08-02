@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: litestream-controller-serving-cert
+  namespace: system
+spec:
+  dnsNames:
+  - webhook-service.litestream-controller-system.svc
+  - webhook-service.litestream-controller-system.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: litestream-controller-selfsigned-issuer
+  secretName: webhook-server-cert

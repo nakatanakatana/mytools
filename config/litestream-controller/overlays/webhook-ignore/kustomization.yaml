@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Relaxes the Pod-injection webhook to fail open (failurePolicy: Ignore),
+# for clusters where a broken or unreachable webhook must never block Pod
+# creation. The default installation (config/litestream-controller/default) fails closed.
+resources:
+- ../../default
+
+patches:
+- path: patch.yaml
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration

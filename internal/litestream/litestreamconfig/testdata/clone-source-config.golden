@@ -1,0 +1,6 @@
+dbs:
+    - path: /var/lib/app/app.db
+      replica:
+        type: gs
+        bucket: destination-bucket
+        path: environments/base/app
