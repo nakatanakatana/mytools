@@ -8,7 +8,6 @@ require (
 	github.com/awnumar/memguard v0.23.0
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/coder/websocket v1.8.15
-	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/fasthttp/websocket v1.5.12
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gorilla/feeds v1.2.0
@@ -17,7 +16,6 @@ require (
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
 	golang.org/x/sync v0.22.0
-	gomodules.xyz/jsonpatch/v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
 	gotest.tools/v3 v3.5.2
 	k8s.io/api v0.36.1
@@ -43,6 +41,7 @@ require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
+	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -92,6 +91,7 @@ require (
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
+	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
