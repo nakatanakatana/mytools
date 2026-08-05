@@ -3,7 +3,7 @@ module github.com/nakatanakatana/mytools/cmd/litestream-vfs-wrapper/example/cons
 go 1.26.3
 
 require (
-	github.com/benbjohnson/litestream v0.5.11
+	github.com/benbjohnson/litestream v0.5.16
 	github.com/nakatanakatana/mytools v0.0.0
 	github.com/ncruces/go-sqlite3 v0.33.2
 )
@@ -33,7 +33,7 @@ require (
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/psanford/sqlite3vfs v0.0.0-20260519004904-f9180fa2acc9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/superfly/ltx v0.5.1 // indirect
+	github.com/superfly/ltx v0.5.2 // indirect
 	github.com/tetratelabs/wazero v1.11.0 // indirect
 	github.com/wasilibs/go-re2 v1.3.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
