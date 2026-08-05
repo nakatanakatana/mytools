@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	github.com/benbjohnson/litestream v0.5.16
 	github.com/nakatanakatana/mytools v0.0.0
-	github.com/ncruces/go-sqlite3 v0.33.2
+	github.com/ncruces/go-sqlite3 v0.35.3
 )
 
 require (
@@ -23,7 +23,7 @@ require (
 	github.com/markusmobius/go-dateparser v1.2.4 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/ncruces/go-sqlite3-wasm v1.0.4-0.20260329114232-2491c387476c // indirect
+	github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.23 // indirect

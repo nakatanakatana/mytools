@@ -14,7 +14,7 @@ require (
 	github.com/gorilla/feeds v1.2.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/mmcdole/gofeed v1.4.0
-	github.com/ncruces/go-sqlite3 v0.33.2
+	github.com/ncruces/go-sqlite3 v0.35.3
 	github.com/sqldef/sqldef/v3 v3.11.18
 	github.com/stretchr/testify v1.11.1
 	github.com/superfly/ltx v0.5.2
@@ -73,7 +73,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/ncruces/go-sqlite3-wasm v1.0.4-0.20260329114232-2491c387476c // indirect
+	github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.23 // indirect
