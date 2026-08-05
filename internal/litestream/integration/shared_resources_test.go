@@ -271,8 +271,10 @@ func assertLitestreamUnchangedFor(t *testing.T, ctx context.Context, namespace s
 			return
 		default:
 		}
+		reqCtx, reqCancel := context.WithTimeout(ctx, pollTimeout)
 		var current v1alpha1.Litestream
-		err := k8sClient.Get(observationCtx, types.NamespacedName{Namespace: namespace, Name: before.Name}, &current)
+		err := k8sClient.Get(reqCtx, types.NamespacedName{Namespace: namespace, Name: before.Name}, &current)
+		reqCancel()
 		if err != nil {
 			if observationCtx.Err() != nil {
 				return
