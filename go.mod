@@ -6,7 +6,7 @@ require (
 	fiatjaf.com/nostr v0.0.0-20260731140316-a8080728893f
 	github.com/arl/gitstatus v0.7.0
 	github.com/awnumar/memguard v0.23.0
-	github.com/benbjohnson/litestream v0.5.11
+	github.com/benbjohnson/litestream v0.5.16
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/coder/websocket v1.8.15
 	github.com/fasthttp/websocket v1.5.12
@@ -17,7 +17,7 @@ require (
 	github.com/ncruces/go-sqlite3 v0.33.2
 	github.com/sqldef/sqldef/v3 v3.11.18
 	github.com/stretchr/testify v1.11.1
-	github.com/superfly/ltx v0.5.1
+	github.com/superfly/ltx v0.5.2
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
 	golang.org/x/sync v0.22.0
