@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/benbjohnson/litestream v0.5.16
-	github.com/nakatanakatana/mytools v0.0.0
+	github.com/nakatanakatana/mytools v0.8.0
 	github.com/ncruces/go-sqlite3 v0.35.3
 )
 
