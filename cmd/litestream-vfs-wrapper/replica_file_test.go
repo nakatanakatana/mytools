@@ -67,6 +67,130 @@ func TestReplicaFileConcurrentReadAt(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshot(t *testing.T) {
+	tests := []struct {
+		name       string
+		addFiles   func(t *testing.T, client *replicaClientStub) []*ltx.FileInfo
+		wantPos    ltx.TXID
+		wantMaxL1  ltx.TXID
+		wantCommit uint32
+		wantPages  int
+	}{
+		{
+			name: "mixed level restore plan",
+			addFiles: func(t *testing.T, client *replicaClientStub) []*ltx.FileInfo {
+				baseData, baseInfo := encodeTestLTXRange(t, 1, 1, 2, 3, map[uint32][]byte{
+					1: sqliteHeaderPage(),
+					2: []byte("base page two"),
+					3: []byte("base page three"),
+				})
+				latestData, latestInfo := encodeTestLTXRange(t, 0, 3, 3, 4, map[uint32][]byte{
+					2: []byte("latest page two"),
+					4: []byte("latest page four"),
+				})
+				client.addFile(baseInfo, baseData)
+				client.addFile(latestInfo, latestData)
+				return []*ltx.FileInfo{baseInfo, latestInfo}
+			},
+			wantPos:    3,
+			wantMaxL1:  2,
+			wantCommit: 4,
+			wantPages:  4,
+		},
+		{
+			name: "level zero only leaves level one cursor empty",
+			addFiles: func(t *testing.T, client *replicaClientStub) []*ltx.FileInfo {
+				data, info := encodeTestLTXRange(t, 0, 1, 1, 2, map[uint32][]byte{
+					1: sqliteHeaderPage(),
+					2: []byte("page two"),
+				})
+				client.addFile(info, data)
+				return []*ltx.FileInfo{info}
+			},
+			wantPos:    1,
+			wantMaxL1:  0,
+			wantCommit: 2,
+			wantPages:  2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newReplicaClientStub()
+			infos := tt.addFiles(t, client)
+
+			f := &replicaFile{client: client}
+			snapshot, err := f.buildSnapshot(context.Background(), infos, testPageSize)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantPos, snapshot.pos.TXID)
+			require.Equal(t, tt.wantMaxL1, snapshot.maxTXID1)
+			require.Equal(t, tt.wantCommit, snapshot.commit)
+			require.Len(t, snapshot.index, tt.wantPages)
+		})
+	}
+}
+
+func TestBuildSnapshotRejectsMismatchedHeader(t *testing.T) {
+	tests := []struct {
+		name      string
+		pageSize  uint32
+		mutate    func(*ltx.FileInfo)
+		wantError string
+	}{
+		{
+			name:      "page size",
+			pageSize:  1024,
+			wantError: "page size mismatch",
+		},
+		{
+			name:     "transaction range",
+			pageSize: testPageSize,
+			mutate: func(info *ltx.FileInfo) {
+				info.MaxTXID = 2
+			},
+			wantError: "transaction range mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, info := encodeTestLTXWithPageSize(t, tt.pageSize, 0, 1, 1, 1, map[uint32][]byte{
+				1: sqliteHeaderPageForSize(tt.pageSize),
+			})
+			requestedInfo := *info
+			if tt.mutate != nil {
+				tt.mutate(&requestedInfo)
+			}
+			client := newReplicaClientStub()
+			client.addFile(&requestedInfo, data)
+
+			originalIndex := map[uint32]ltx.PageIndexElem{99: {Level: 9}}
+			f := &replicaFile{client: client, index: originalIndex, commit: 99}
+			_, err := f.buildSnapshot(context.Background(), []*ltx.FileInfo{&requestedInfo}, testPageSize)
+			require.ErrorContains(t, err, tt.wantError)
+			require.Equal(t, originalIndex, f.index)
+			require.Equal(t, uint32(99), f.commit)
+		})
+	}
+}
+
+func TestOpenReplicaFileInstallsSnapshotState(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("page two"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	require.Equal(t, ltx.TXID(1), f.pos.TXID)
+	require.Equal(t, ltx.TXID(0), f.maxTXID1)
+	require.Equal(t, uint32(2), f.commit)
+	require.Equal(t, f.pos, f.pollPos)
+	require.Equal(t, f.maxTXID1, f.pollMaxTXID1)
+	require.Equal(t, f.commit, f.pollCommit)
+}
+
 func openTestReplicaFile(t *testing.T) *replicaFile {
 	t.Helper()
 	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
@@ -88,16 +212,20 @@ func newReplicaClientStubFromPages(t *testing.T, pages map[uint32][]byte) *repli
 }
 
 func encodeTestLTX(t *testing.T, txid ltx.TXID, pages map[uint32][]byte) ([]byte, *ltx.FileInfo) {
+	return encodeTestLTXRange(t, 0, txid, txid, maxPageNumber(pages), pages)
+}
+
+func encodeTestLTXRange(t *testing.T, level int, minTXID, maxTXID ltx.TXID, commit uint32, pages map[uint32][]byte) ([]byte, *ltx.FileInfo) {
+	return encodeTestLTXWithPageSize(t, testPageSize, level, minTXID, maxTXID, commit, pages)
+}
+
+func encodeTestLTXWithPageSize(t *testing.T, pageSize uint32, level int, minTXID, maxTXID ltx.TXID, commit uint32, pages map[uint32][]byte) ([]byte, *ltx.FileInfo) {
 	t.Helper()
 	require.NotEmpty(t, pages)
 
 	pgnos := make([]uint32, 0, len(pages))
-	var maxPg uint32
 	for pgno := range pages {
 		pgnos = append(pgnos, pgno)
-		if pgno > maxPg {
-			maxPg = pgno
-		}
 	}
 	// Encode pages in ascending order.
 	for i := 0; i < len(pgnos); i++ {
@@ -113,36 +241,50 @@ func encodeTestLTX(t *testing.T, txid ltx.TXID, pages map[uint32][]byte) ([]byte
 	require.NoError(t, err)
 	hdr := ltx.Header{
 		Version:   ltx.Version,
-		PageSize:  testPageSize,
-		Commit:    maxPg,
-		MinTXID:   txid,
-		MaxTXID:   txid,
+		PageSize:  pageSize,
+		Commit:    commit,
+		MinTXID:   minTXID,
+		MaxTXID:   maxTXID,
 		Timestamp: time.Now().UnixMilli(),
 		Flags:     ltx.HeaderFlagNoChecksum,
 	}
 	require.NoError(t, enc.EncodeHeader(hdr))
 	for _, pgno := range pgnos {
-		page := make([]byte, testPageSize)
+		page := make([]byte, pageSize)
 		copy(page, pages[pgno])
 		require.NoError(t, enc.EncodePage(ltx.PageHeader{Pgno: pgno}, page))
 	}
 	require.NoError(t, enc.Close())
 
 	info := &ltx.FileInfo{
-		Level:     0,
-		MinTXID:   txid,
-		MaxTXID:   txid,
+		Level:     level,
+		MinTXID:   minTXID,
+		MaxTXID:   maxTXID,
 		Size:      int64(buf.Len()),
 		CreatedAt: time.Now().UTC(),
 	}
 	return buf.Bytes(), info
 }
 
+func maxPageNumber(pages map[uint32][]byte) uint32 {
+	var max uint32
+	for pgno := range pages {
+		if pgno > max {
+			max = pgno
+		}
+	}
+	return max
+}
+
 func sqliteHeaderPage() []byte {
-	page := make([]byte, testPageSize)
+	return sqliteHeaderPageForSize(testPageSize)
+}
+
+func sqliteHeaderPageForSize(pageSize uint32) []byte {
+	page := make([]byte, pageSize)
 	copy(page, "SQLite format 3\x00")
 	// Page size big-endian at offset 16.
-	page[16], page[17] = 0x10, 0x00 // 4096
+	page[16], page[17] = byte(pageSize>>8), byte(pageSize)
 	// Force journal mode bytes; VFS remasks these on read of page 1.
 	page[18], page[19] = 0x01, 0x01
 	// File change counter etc. left zero.

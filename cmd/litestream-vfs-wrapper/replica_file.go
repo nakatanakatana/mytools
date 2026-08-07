@@ -30,8 +30,29 @@ type replicaFile struct {
 	pageSize uint32
 	commit   uint32
 	index    map[uint32]ltx.PageIndexElem
-	cache    *lru.Cache[uint32, []byte]
-	lock     ncrucesvfs.LockLevel
+	pos      ltx.Pos
+	maxTXID1 ltx.TXID
+
+	pollPos      ltx.Pos
+	pollMaxTXID1 ltx.TXID
+	pollCommit   uint32
+	cache        *lru.Cache[uint32, []byte]
+	lock         ncrucesvfs.LockLevel
+}
+
+type replicaSnapshot struct {
+	index    map[uint32]ltx.PageIndexElem
+	commit   uint32
+	pos      ltx.Pos
+	maxTXID1 ltx.TXID
+}
+
+type replicaUpdate struct {
+	index    map[uint32]ltx.PageIndexElem
+	replace  bool
+	commit   uint32
+	pos      ltx.Pos
+	maxTXID1 ltx.TXID
 }
 
 func openReplicaFile(ctx context.Context, client litestream.ReplicaClient, name string, logger *slog.Logger, cacheSize int, pollInterval time.Duration) (*replicaFile, error) {
@@ -75,10 +96,18 @@ func openReplicaFile(ctx context.Context, client litestream.ReplicaClient, name 
 		index:    make(map[uint32]ltx.PageIndexElem),
 		cache:    cache,
 	}
-	if err := f.buildIndex(fileCtx, infos); err != nil {
+	snapshot, err := f.buildSnapshot(fileCtx, infos, pageSize)
+	if err != nil {
 		cancel()
 		return nil, err
 	}
+	f.index = snapshot.index
+	f.commit = snapshot.commit
+	f.pos = snapshot.pos
+	f.maxTXID1 = snapshot.maxTXID1
+	f.pollPos = snapshot.pos
+	f.pollMaxTXID1 = snapshot.maxTXID1
+	f.pollCommit = snapshot.commit
 	if pollInterval > 0 {
 		f.wg.Add(1)
 		go func() {
@@ -117,28 +146,35 @@ func isSupportedPageSize(pageSize uint32) bool {
 	}
 }
 
-func (f *replicaFile) buildIndex(ctx context.Context, infos []*ltx.FileInfo) error {
-	index := make(map[uint32]ltx.PageIndexElem)
-	var commit uint32
+func (f *replicaFile) buildSnapshot(ctx context.Context, infos []*ltx.FileInfo, pageSize uint32) (replicaSnapshot, error) {
+	snapshot := replicaSnapshot{index: make(map[uint32]ltx.PageIndexElem)}
 	for _, info := range infos {
 		idx, err := litestream.FetchPageIndex(ctx, f.client, info)
 		if err != nil {
-			return fmt.Errorf("fetch page index: %w", err)
-		}
-		for k, v := range idx {
-			index[k] = v
+			return replicaSnapshot{}, fmt.Errorf("fetch page index: %w", err)
 		}
 		hdr, err := litestream.FetchLTXHeader(ctx, f.client, info)
 		if err != nil {
-			return fmt.Errorf("fetch header: %w", err)
+			return replicaSnapshot{}, fmt.Errorf("fetch header: %w", err)
 		}
-		commit = hdr.Commit
+		if hdr.PageSize != pageSize {
+			return replicaSnapshot{}, fmt.Errorf("page size mismatch: want %d got %d", pageSize, hdr.PageSize)
+		}
+		if hdr.MinTXID != info.MinTXID || hdr.MaxTXID != info.MaxTXID {
+			return replicaSnapshot{}, fmt.Errorf("transaction range mismatch: file info %s-%s header %s-%s", info.MinTXID, info.MaxTXID, hdr.MinTXID, hdr.MaxTXID)
+		}
+		for pgno, elem := range idx {
+			snapshot.index[pgno] = elem
+		}
+		snapshot.commit = hdr.Commit
+		if info.MaxTXID > snapshot.pos.TXID {
+			snapshot.pos = info.Pos()
+		}
+		if info.Level == 1 && info.MaxTXID > snapshot.maxTXID1 {
+			snapshot.maxTXID1 = info.MaxTXID
+		}
 	}
-	f.mu.Lock()
-	f.index = index
-	f.commit = commit
-	f.mu.Unlock()
-	return nil
+	return snapshot, nil
 }
 
 func (f *replicaFile) Close() error {
