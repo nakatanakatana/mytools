@@ -33,11 +33,17 @@ type replicaFile struct {
 	pos      ltx.Pos
 	maxTXID1 ltx.TXID
 
-	pollPos      ltx.Pos
-	pollMaxTXID1 ltx.TXID
-	pollCommit   uint32
-	cache        *lru.Cache[uint32, []byte]
-	lock         ncrucesvfs.LockLevel
+	pollMu            sync.Mutex
+	pollPos           ltx.Pos
+	pollMaxTXID1      ltx.TXID
+	pollCommit        uint32
+	lastPollSuccess   time.Time
+	lastPollErr       error
+	pending           *replicaUpdate
+	visibleGeneration uint64
+
+	cache *lru.Cache[uint32, []byte]
+	lock  ncrucesvfs.LockLevel
 }
 
 type replicaSnapshot struct {
