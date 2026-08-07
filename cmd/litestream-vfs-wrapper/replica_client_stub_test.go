@@ -13,9 +13,12 @@ import (
 
 // replicaClientStub is an in-memory ReplicaClient for tests.
 type replicaClientStub struct {
-	mu    sync.Mutex
-	files []*ltx.FileInfo
-	data  map[string][]byte
+	mu            sync.Mutex
+	files         []*ltx.FileInfo
+	data          map[string][]byte
+	requests      int
+	active        int
+	blockLTXFiles chan struct{}
 }
 
 func newReplicaClientStub() *replicaClientStub {
@@ -29,8 +32,23 @@ func (c *replicaClientStub) Init(context.Context) error { return nil }
 func (c *replicaClientStub) SetLogger(*slog.Logger) {}
 
 func (c *replicaClientStub) LTXFiles(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
-	_ = ctx
 	_ = useMetadata
+	c.mu.Lock()
+	c.requests++
+	c.active++
+	block := c.blockLTXFiles
+	c.mu.Unlock()
+	defer func() { c.mu.Lock(); c.active--; c.mu.Unlock() }()
+	if block != nil && seek > 0 {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var out []*ltx.FileInfo
@@ -43,7 +61,18 @@ func (c *replicaClientStub) LTXFiles(ctx context.Context, level int, seek ltx.TX
 }
 
 func (c *replicaClientStub) OpenLTXFile(ctx context.Context, level int, minTXID, maxTXID ltx.TXID, offset, size int64) (io.ReadCloser, error) {
-	_ = ctx
+	c.mu.Lock()
+	c.requests++
+	c.active++
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.active--
+		c.mu.Unlock()
+	}()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	data, ok := c.data[c.makeKey(level, minTXID, maxTXID)]
@@ -58,6 +87,18 @@ func (c *replicaClientStub) OpenLTXFile(ctx context.Context, level int, minTXID,
 		slice = slice[:size]
 	}
 	return io.NopCloser(bytes.NewReader(slice)), nil
+}
+
+func (c *replicaClientStub) requestCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.requests
+}
+
+func (c *replicaClientStub) activeRequests() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.active
 }
 
 func (c *replicaClientStub) WriteLTXFile(context.Context, int, ltx.TXID, ltx.TXID, io.Reader) (*ltx.FileInfo, error) {

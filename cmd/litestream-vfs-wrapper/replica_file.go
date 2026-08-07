@@ -20,6 +20,11 @@ type replicaFile struct {
 	client litestream.ReplicaClient
 	name   string
 	logger *slog.Logger
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 
 	mu       sync.Mutex
 	pageSize uint32
@@ -29,7 +34,7 @@ type replicaFile struct {
 	lock     ncrucesvfs.LockLevel
 }
 
-func openReplicaFile(ctx context.Context, client litestream.ReplicaClient, name string, logger *slog.Logger, cacheSize int) (*replicaFile, error) {
+func openReplicaFile(ctx context.Context, client litestream.ReplicaClient, name string, logger *slog.Logger, cacheSize int, pollInterval time.Duration) (*replicaFile, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -59,16 +64,27 @@ func openReplicaFile(ctx context.Context, client litestream.ReplicaClient, name 
 		return nil, fmt.Errorf("create page cache: %w", err)
 	}
 
+	fileCtx, cancel := context.WithCancel(ctx)
 	f := &replicaFile{
 		client:   client,
 		name:     name,
 		logger:   logger.With("name", name),
+		ctx:      fileCtx,
+		cancel:   cancel,
 		pageSize: pageSize,
 		index:    make(map[uint32]ltx.PageIndexElem),
 		cache:    cache,
 	}
-	if err := f.buildIndex(ctx, infos); err != nil {
+	if err := f.buildIndex(fileCtx, infos); err != nil {
+		cancel()
 		return nil, err
+	}
+	if pollInterval > 0 {
+		f.wg.Add(1)
+		go func() {
+			defer f.wg.Done()
+			f.monitorReplicaClient(fileCtx, pollInterval)
+		}()
 	}
 	return f, nil
 }
@@ -125,7 +141,13 @@ func (f *replicaFile) buildIndex(ctx context.Context, infos []*ltx.FileInfo) err
 	return nil
 }
 
-func (f *replicaFile) Close() error { return nil }
+func (f *replicaFile) Close() error {
+	f.closeOnce.Do(func() {
+		f.cancel()
+		f.wg.Wait()
+	})
+	return nil
+}
 
 func (f *replicaFile) Size() (int64, error) {
 	f.mu.Lock()

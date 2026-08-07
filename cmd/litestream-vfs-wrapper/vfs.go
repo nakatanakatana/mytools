@@ -3,6 +3,7 @@ package litestreamvfs
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/benbjohnson/litestream"
 	"github.com/ncruces/go-sqlite3"
@@ -11,9 +12,10 @@ import (
 
 // VFS is a read-only ncruces SQLite VFS backed by a Litestream ReplicaClient.
 type VFS struct {
-	client    litestream.ReplicaClient
-	logger    *slog.Logger
-	CacheSize int
+	client       litestream.ReplicaClient
+	logger       *slog.Logger
+	CacheSize    int
+	PollInterval time.Duration
 }
 
 // New returns a VFS that serves database pages from client.
@@ -22,14 +24,19 @@ func New(client litestream.ReplicaClient, logger *slog.Logger) *VFS {
 		logger = slog.Default()
 	}
 	return &VFS{
-		client:    client,
-		logger:    logger,
-		CacheSize: DefaultCacheSize,
+		client:       client,
+		logger:       logger,
+		CacheSize:    DefaultCacheSize,
+		PollInterval: DefaultPollInterval,
 	}
 }
 
-// DefaultCacheSize is the default page-cache capacity in bytes.
-const DefaultCacheSize = 10 * 1024 * 1024
+const (
+	// DefaultCacheSize is the default page-cache capacity in bytes.
+	DefaultCacheSize = 10 * 1024 * 1024
+	// DefaultPollInterval is the default interval between replica polls.
+	DefaultPollInterval = time.Second
+)
 
 func (v *VFS) Open(name string, flags ncrucesvfs.OpenFlag) (ncrucesvfs.File, ncrucesvfs.OpenFlag, error) {
 	if requiresTempFile(flags) {
@@ -39,7 +46,7 @@ func (v *VFS) Open(name string, flags ncrucesvfs.OpenFlag) (ncrucesvfs.File, ncr
 		return nil, flags, sqlite3.CANTOPEN
 	}
 
-	f, err := openReplicaFile(context.Background(), v.client, name, v.logger, v.CacheSize)
+	f, err := openReplicaFile(context.Background(), v.client, name, v.logger, v.CacheSize, v.PollInterval)
 	if err != nil {
 		v.logger.Error("open replica file", "name", name, "error", err)
 		return nil, flags, sqlite3.CANTOPEN

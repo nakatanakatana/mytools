@@ -21,7 +21,7 @@ func TestReplicaFileReadsTheLatestLTXPage(t *testing.T) {
 		1: sqliteHeaderPage(),
 		2: []byte("updated page"),
 	})
-	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize)
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.Close() })
 
@@ -73,7 +73,7 @@ func openTestReplicaFile(t *testing.T) *replicaFile {
 		1: sqliteHeaderPage(),
 		2: []byte("updated page"),
 	})
-	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize)
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.Close() })
 	return f
