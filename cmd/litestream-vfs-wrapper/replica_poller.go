@@ -57,8 +57,13 @@ func (f *replicaFile) pollReplicaClient(ctx context.Context) error {
 		return fmt.Errorf("poll L1: %w", err)
 	}
 
+	gapBridged := l0.gapAt != 0 && l1.maxTXID+1 >= l0.gapAt
+	unbridgedGap := l0.gapAt != 0 && !gapBridged
+	// A bridged L0 gap must not rebuild from CalcRestorePlan: that would consume
+	// the gapped L0 files in the same poll. Apply L1 (optionally as replace) instead.
+	needRebuild := unbridgedGap || ((l0.replace || l1.replace) && !gapBridged)
+
 	var update replicaUpdate
-	needRebuild := l0.replace || l1.replace || (l0.gapAt != 0 && l1.maxTXID+1 < l0.gapAt)
 	if needRebuild {
 		update, err = f.rebuildLatest(ctx)
 		if err != nil {
@@ -67,10 +72,29 @@ func (f *replicaFile) pollReplicaClient(ctx context.Context) error {
 		}
 	} else {
 		update = mergePollLevelResults(pollPos, pollMaxTXID1, pollCommit, l0, l1)
+		if gapBridged && (l0.replace || l1.replace) {
+			update.replace = true
+		}
+		if isNoopPollUpdate(pollPos, pollMaxTXID1, pollCommit, update) {
+			superseded, detectErr := f.hasSupersedingSnapshot(ctx, pollPos.TXID)
+			if detectErr != nil {
+				f.recordPollFailure(detectErr)
+				return detectErr
+			}
+			if superseded {
+				update, err = f.rebuildLatest(ctx)
+				if err != nil {
+					f.recordPollFailure(err)
+					return err
+				}
+			}
+		}
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Replacement resets fetch cursors from the rebuilt plan; do not retain the
+	// abandoned plan's cursor. maxTXID1 stays 0 when the plan has no L1.
 	f.pollPos = update.pos
 	f.pollMaxTXID1 = update.maxTXID1
 	f.pollCommit = update.commit
@@ -78,6 +102,43 @@ func (f *replicaFile) pollReplicaClient(ctx context.Context) error {
 	f.lastPollSuccess = time.Now()
 	f.lastPollErr = nil
 	return nil
+}
+
+func isNoopPollUpdate(pollPos ltx.Pos, pollMaxTXID1 ltx.TXID, pollCommit uint32, update replicaUpdate) bool {
+	return !update.replace &&
+		len(update.index) == 0 &&
+		update.pos == pollPos &&
+		update.maxTXID1 == pollMaxTXID1 &&
+		update.commit == pollCommit
+}
+
+// hasSupersedingSnapshot reports whether a MinTXID==1 file extends past the
+// current poll tip. Forward seeks miss such replacements when older LTX files
+// were deleted and replaced by a new snapshot behind the seek cursor.
+func (f *replicaFile) hasSupersedingSnapshot(ctx context.Context, pollTXID ltx.TXID) (bool, error) {
+	for _, level := range []int{0, 1} {
+		itr, err := f.client.LTXFiles(ctx, level, 1, false)
+		if err != nil {
+			return false, fmt.Errorf("ltx files: %w", err)
+		}
+		for itr.Next() {
+			info := itr.Item()
+			if info.MinTXID == 1 && info.MaxTXID > pollTXID {
+				if err := itr.Close(); err != nil {
+					return false, fmt.Errorf("close ltx iterator: %w", err)
+				}
+				return true, nil
+			}
+		}
+		if err := itr.Err(); err != nil {
+			_ = itr.Close()
+			return false, fmt.Errorf("iterate ltx files: %w", err)
+		}
+		if err := itr.Close(); err != nil {
+			return false, fmt.Errorf("close ltx iterator: %w", err)
+		}
+	}
+	return false, nil
 }
 
 func mergePollLevelResults(pollPos ltx.Pos, pollMaxTXID1 ltx.TXID, pollCommit uint32, l0, l1 pollLevelResult) replicaUpdate {

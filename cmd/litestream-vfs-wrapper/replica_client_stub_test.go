@@ -161,6 +161,12 @@ func (c *replicaClientStub) OpenLTXFile(ctx context.Context, level int, minTXID,
 	if fn != nil {
 		return fn(ctx, level, minTXID, maxTXID, offset, size)
 	}
+	return c.openLTXFileData(level, minTXID, maxTXID, offset, size)
+}
+
+// openLTXFileData returns file bytes without consuming fault hooks. Hooks may
+// call it to serve one successful open before re-arming a failure.
+func (c *replicaClientStub) openLTXFileData(level int, minTXID, maxTXID ltx.TXID, offset, size int64) (io.ReadCloser, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	data, ok := c.data[c.makeKey(level, minTXID, maxTXID)]
