@@ -212,8 +212,19 @@ func (f *replicaFile) stageUpdateLocked(update replicaUpdate) {
 		return
 	}
 
+	f.applyUpdateLocked(update)
+}
+
+// applyUpdateLocked installs one coherent visible snapshot. Callers must hold f.mu.
+func (f *replicaFile) applyUpdateLocked(update replicaUpdate) {
 	if update.replace {
-		f.index = clonePageIndexMap(update.index)
+		index := clonePageIndexMap(update.index)
+		for pgno := range index {
+			if pgno > update.commit {
+				delete(index, pgno)
+			}
+		}
+		f.index = index
 		f.cache.Purge()
 	} else {
 		for pgno, elem := range update.index {

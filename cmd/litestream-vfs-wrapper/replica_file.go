@@ -201,21 +201,34 @@ func (f *replicaFile) ReadAt(p []byte, off int64) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	size, err := f.Size()
-	if err != nil {
-		return 0, err
-	}
+
+	f.mu.Lock()
+	generation := f.visibleGeneration
+	pageSize := int64(f.pageSize)
+	size := int64(f.commit) * pageSize
+	f.mu.Unlock()
+
 	if off >= size {
 		return 0, io.EOF
 	}
 
-	pageSize := int64(f.pageSize)
 	total := 0
 	for total < len(p) && off < size {
 		pgno := uint32(off/pageSize) + 1
 		pageOff := int(off % pageSize)
 		page, err := f.page(pgno)
 		if err != nil {
+			if total > 0 {
+				return total, err
+			}
+			return 0, err
+		}
+
+		f.mu.Lock()
+		changed := f.visibleGeneration != generation
+		f.mu.Unlock()
+		if changed {
+			err := ncrucesvfs.SystemError(fmt.Errorf("visible snapshot changed during read"), sqlite3.BUSY)
 			if total > 0 {
 				return total, err
 			}
@@ -307,6 +320,10 @@ func (f *replicaFile) Unlock(lock ncrucesvfs.LockLevel) error {
 		return fmt.Errorf("invalid unlock target")
 	}
 	f.lock = lock
+	if lock == ncrucesvfs.LOCK_NONE && f.pending != nil {
+		f.applyUpdateLocked(*f.pending)
+		f.pending = nil
+	}
 	return nil
 }
 

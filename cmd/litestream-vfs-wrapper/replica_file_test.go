@@ -191,6 +191,221 @@ func TestOpenReplicaFileInstallsSnapshotState(t *testing.T) {
 	require.Equal(t, f.commit, f.pollCommit)
 }
 
+func TestReplicaFileDefersPollWhileShared(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("page two v1"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	oldSize, err := f.Size()
+	require.NoError(t, err)
+	buf := make([]byte, len("page two v1"))
+	_, err = f.ReadAt(buf, int64(f.pageSize))
+	require.NoError(t, err)
+	require.Equal(t, "page two v1", string(buf))
+
+	require.NoError(t, f.Lock(ncrucesvfs.LOCK_SHARED))
+
+	data, info := encodeTestLTXRange(t, 0, 2, 2, 3, map[uint32][]byte{
+		2: []byte("page two v2"),
+		3: []byte("page three"),
+	})
+	client.addLTX(info, data)
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+
+	_, err = f.ReadAt(buf, int64(f.pageSize))
+	require.NoError(t, err)
+	require.Equal(t, "page two v1", string(buf))
+	size, err := f.Size()
+	require.NoError(t, err)
+	require.Equal(t, oldSize, size)
+	require.Equal(t, ltx.TXID(1), f.pos.TXID)
+	require.NotNil(t, f.pending)
+
+	require.NoError(t, f.Unlock(ncrucesvfs.LOCK_NONE))
+	require.Nil(t, f.pending)
+	require.Equal(t, ltx.TXID(2), f.pos.TXID)
+
+	buf = make([]byte, len("page two v2"))
+	_, err = f.ReadAt(buf, int64(f.pageSize))
+	require.NoError(t, err)
+	require.Equal(t, "page two v2", string(buf))
+	size, err = f.Size()
+	require.NoError(t, err)
+	require.Equal(t, int64(3)*int64(f.pageSize), size)
+}
+
+func TestReplicaFileAccumulatesMultiplePolls(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("page two v1"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	require.NoError(t, f.Lock(ncrucesvfs.LOCK_SHARED))
+
+	data2, info2 := encodeTestLTX(t, 2, map[uint32][]byte{
+		2: []byte("page two v2"),
+	})
+	client.addLTX(info2, data2)
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+
+	data3, info3 := encodeTestLTX(t, 3, map[uint32][]byte{
+		2: []byte("page two v3"),
+	})
+	client.addLTX(info3, data3)
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+
+	require.NotNil(t, f.pending)
+	require.Equal(t, ltx.TXID(3), f.pending.pos.TXID)
+	require.Equal(t, ltx.TXID(1), f.pos.TXID)
+
+	require.NoError(t, f.Unlock(ncrucesvfs.LOCK_NONE))
+	require.Nil(t, f.pending)
+	require.Equal(t, ltx.TXID(3), f.pos.TXID)
+
+	buf := make([]byte, len("page two v3"))
+	_, err = f.ReadAt(buf, int64(f.pageSize))
+	require.NoError(t, err)
+	require.Equal(t, "page two v3", string(buf))
+}
+
+func TestReplicaFileInvalidatesUpdatedPageOnly(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("page two v1"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	hdr := make([]byte, 16)
+	_, err = f.ReadAt(hdr, 0)
+	require.NoError(t, err)
+	page2 := make([]byte, len("page two v1"))
+	_, err = f.ReadAt(page2, int64(f.pageSize))
+	require.NoError(t, err)
+	require.True(t, f.cache.Contains(1))
+	require.True(t, f.cache.Contains(2))
+
+	require.NoError(t, f.Lock(ncrucesvfs.LOCK_SHARED))
+	data, info := encodeTestLTX(t, 2, map[uint32][]byte{
+		2: []byte("page two v2"),
+	})
+	client.addLTX(info, data)
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+	require.True(t, f.cache.Contains(1))
+	require.True(t, f.cache.Contains(2))
+
+	require.NoError(t, f.Unlock(ncrucesvfs.LOCK_NONE))
+	require.True(t, f.cache.Contains(1))
+	require.False(t, f.cache.Contains(2))
+
+	before := client.requestCount()
+	_, err = f.ReadAt(hdr, 0)
+	require.NoError(t, err)
+	require.Equal(t, before, client.requestCount())
+
+	page2 = make([]byte, len("page two v2"))
+	_, err = f.ReadAt(page2, int64(f.pageSize))
+	require.NoError(t, err)
+	require.Equal(t, "page two v2", string(page2))
+	require.Greater(t, client.requestCount(), before)
+}
+
+func TestReplicaFileReplacementPurgesCacheAndShrinks(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("page two"),
+		3: []byte("page three"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	require.Equal(t, uint32(3), f.commit)
+
+	for _, pgno := range []uint32{1, 2, 3} {
+		_, err = f.page(pgno)
+		require.NoError(t, err)
+	}
+	require.Equal(t, 3, f.cache.Len())
+
+	require.NoError(t, f.Lock(ncrucesvfs.LOCK_SHARED))
+	oldSize, err := f.Size()
+	require.NoError(t, err)
+	require.Equal(t, int64(3)*int64(f.pageSize), oldSize)
+
+	data, info := encodeTestLTXRange(t, 0, 2, 2, 1, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+	})
+	client.addLTX(info, data)
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+
+	size, err := f.Size()
+	require.NoError(t, err)
+	require.Equal(t, oldSize, size)
+	require.Equal(t, 3, f.cache.Len())
+	require.NotNil(t, f.pending)
+	require.True(t, f.pending.replace)
+
+	require.NoError(t, f.Unlock(ncrucesvfs.LOCK_NONE))
+	require.Nil(t, f.pending)
+	size, err = f.Size()
+	require.NoError(t, err)
+	require.Equal(t, int64(f.pageSize), size)
+	require.Equal(t, uint32(1), f.commit)
+	require.Equal(t, 0, f.cache.Len())
+	for pgno := range f.index {
+		require.LessOrEqual(t, pgno, f.commit)
+	}
+	_, ok := f.index[2]
+	require.False(t, ok)
+	_, ok = f.index[3]
+	require.False(t, ok)
+}
+
+func TestReplicaFileUnlockSharedDoesNotPublish(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("page two v1"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	require.NoError(t, f.Lock(ncrucesvfs.LOCK_SHARED))
+	data, info := encodeTestLTX(t, 2, map[uint32][]byte{
+		2: []byte("page two v2"),
+	})
+	client.addLTX(info, data)
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+	require.NotNil(t, f.pending)
+	require.Equal(t, ltx.TXID(1), f.pos.TXID)
+
+	require.NoError(t, f.Unlock(ncrucesvfs.LOCK_SHARED))
+	require.NotNil(t, f.pending)
+	require.Equal(t, ltx.TXID(1), f.pos.TXID)
+	require.Equal(t, ncrucesvfs.LOCK_SHARED, f.lock)
+
+	buf := make([]byte, len("page two v1"))
+	_, err = f.ReadAt(buf, int64(f.pageSize))
+	require.NoError(t, err)
+	require.Equal(t, "page two v1", string(buf))
+
+	require.NoError(t, f.Unlock(ncrucesvfs.LOCK_NONE))
+	require.Nil(t, f.pending)
+	require.Equal(t, ltx.TXID(2), f.pos.TXID)
+	buf = make([]byte, len("page two v2"))
+	_, err = f.ReadAt(buf, int64(f.pageSize))
+	require.NoError(t, err)
+	require.Equal(t, "page two v2", string(buf))
+}
+
 func openTestReplicaFile(t *testing.T) *replicaFile {
 	t.Helper()
 	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
