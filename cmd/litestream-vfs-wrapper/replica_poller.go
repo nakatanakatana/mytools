@@ -17,6 +17,9 @@ type pollLevelResult struct {
 	commit  uint32
 	gapAt   ltx.TXID
 	replace bool
+	// fromRoot is set when the latest index reset was caused by MinTXID==1.
+	// Only then is result.index a complete DB snapshot suitable for replace.
+	fromRoot bool
 }
 
 // monitorReplicaClient owns the cancellable polling lifecycle.
@@ -59,9 +62,12 @@ func (f *replicaFile) pollReplicaClient(ctx context.Context) error {
 
 	gapBridged := l0.gapAt != 0 && l1.maxTXID+1 >= l0.gapAt
 	unbridgedGap := l0.gapAt != 0 && !gapBridged
-	// A bridged L0 gap must not rebuild from CalcRestorePlan: that would consume
-	// the gapped L0 files in the same poll. Apply L1 (optionally as replace) instead.
-	needRebuild := unbridgedGap || ((l0.replace || l1.replace) && !gapBridged)
+	// Bridged L0 gaps must not rebuild when L1 is a complete root snapshot: CalcRestorePlan
+	// would consume gapped L0 in the same poll. Non-root commit shrinks are not complete
+	// snapshots (pollLevel index holds only that file's pages), so rebuild instead of
+	// forcing replace on a partial map.
+	safeBridgedReplace := gapBridged && (l0.replace || l1.replace) && isProvablyCompleteSnapshot(l0, l1)
+	needRebuild := unbridgedGap || ((l0.replace || l1.replace) && !safeBridgedReplace)
 
 	var update replicaUpdate
 	if needRebuild {
@@ -72,7 +78,7 @@ func (f *replicaFile) pollReplicaClient(ctx context.Context) error {
 		}
 	} else {
 		update = mergePollLevelResults(pollPos, pollMaxTXID1, pollCommit, l0, l1)
-		if gapBridged && (l0.replace || l1.replace) {
+		if safeBridgedReplace {
 			update.replace = true
 		}
 		if isNoopPollUpdate(pollPos, pollMaxTXID1, pollCommit, update) {
@@ -110,6 +116,19 @@ func isNoopPollUpdate(pollPos ltx.Pos, pollMaxTXID1 ltx.TXID, pollCommit uint32,
 		update.pos == pollPos &&
 		update.maxTXID1 == pollMaxTXID1 &&
 		update.commit == pollCommit
+}
+
+// isProvablyCompleteSnapshot reports whether a level replace produced a full DB
+// index (rooted at MinTXID==1). Commit-shrink resets without MinTXID==1 only
+// retain pages from that file and must not replace the visible index.
+func isProvablyCompleteSnapshot(l0, l1 pollLevelResult) bool {
+	if l1.replace {
+		return l1.fromRoot
+	}
+	if l0.replace {
+		return l0.fromRoot
+	}
+	return false
 }
 
 // hasSupersedingSnapshot reports whether a MinTXID==1 file extends past the
@@ -221,6 +240,7 @@ func (f *replicaFile) pollLevel(ctx context.Context, level int, previous ltx.TXI
 
 		if hdr.Commit < result.commit || hdr.MinTXID == 1 {
 			result.replace = true
+			result.fromRoot = hdr.MinTXID == 1
 			result.index = make(map[uint32]ltx.PageIndexElem)
 		}
 		result.commit = hdr.Commit

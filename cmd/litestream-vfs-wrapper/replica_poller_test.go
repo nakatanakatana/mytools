@@ -307,6 +307,68 @@ func TestReplicaPollL0Gap(t *testing.T) {
 	require.Equal(t, "page two v3", string(buf))
 }
 
+// Prior L1 is already applied, then a non-root L1 (MinTXID > 1) shrinks Commit while an
+// L0 gap is bridged. The L1 file only encodes changed pages; unchanged pages must remain
+// readable and truncated pages must disappear. The root L0Gap fixture misses this because
+// its L1 starts at MinTXID==1 and encodes every page.
+func TestReplicaPollL0GapNonRootL1Shrink(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("page two v1"),
+		3: []byte("page three v1"),
+		4: []byte("page four v1"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	require.Equal(t, uint32(4), f.commit)
+
+	l1Root, l1RootInfo := encodeTestLTXRange(t, 1, 1, 2, 4, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("page two v2"),
+		3: []byte("page three v1"),
+		4: []byte("page four v1"),
+	})
+	client.addLTX(l1RootInfo, l1Root)
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+	require.Equal(t, ltx.TXID(2), f.pollMaxTXID1)
+	require.Equal(t, ltx.TXID(2), f.pos.TXID)
+	require.Equal(t, uint32(4), f.commit)
+
+	l1Shrink, l1ShrinkInfo := encodeTestLTXRange(t, 1, 3, 3, 3, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+	})
+	client.addLTX(l1ShrinkInfo, l1Shrink)
+	l0Data, l0Info := encodeTestLTXRange(t, 0, 4, 4, 3, map[uint32][]byte{
+		2: []byte("page two v3"),
+	})
+	client.addLTX(l0Info, l0Data)
+
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+	require.Equal(t, uint32(3), f.commit)
+	require.GreaterOrEqual(t, f.pos.TXID, ltx.TXID(3))
+
+	_, ok := f.index[3]
+	require.True(t, ok, "unchanged page 3 must remain in the index")
+	_, ok = f.index[4]
+	require.False(t, ok, "truncated page 4 must be removed")
+
+	buf := make([]byte, len("page three v1"))
+	_, err = f.ReadAt(buf, int64(2*f.pageSize))
+	require.NoError(t, err)
+	require.Equal(t, "page three v1", string(buf))
+
+	buf = make([]byte, len("page two v2"))
+	_, err = f.ReadAt(buf, int64(f.pageSize))
+	require.NoError(t, err)
+	require.True(t, string(buf) == "page two v2" || string(buf) == "page two v3",
+		"page 2 must stay readable; got %q", string(buf))
+
+	size, err := f.Size()
+	require.NoError(t, err)
+	require.Equal(t, int64(3*f.pageSize), size)
+}
+
 func TestReplicaPollRestorePlanReplacement(t *testing.T) {
 	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
 		1: sqliteHeaderPage(),
