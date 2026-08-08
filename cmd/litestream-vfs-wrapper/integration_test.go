@@ -55,7 +55,7 @@ func TestSQLiteLiveFollowWithoutReopen(t *testing.T) {
 	require.Eventually(t, func() bool {
 		s, _, prepErr := db.Prepare("SELECT v FROM t")
 		require.NoError(t, prepErr)
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		return s.Step() && s.ColumnText(0) == "updated"
 	}, time.Second, 10*time.Millisecond)
 
@@ -119,7 +119,7 @@ func TestSQLiteTransactionSnapshotIsStable(t *testing.T) {
 	require.Eventually(t, func() bool {
 		s, _, prepErr := db.Prepare("SELECT v FROM t")
 		require.NoError(t, prepErr)
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		return s.Step() && s.ColumnText(0) == "updated"
 	}, time.Second, 10*time.Millisecond)
 }
