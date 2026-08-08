@@ -86,10 +86,13 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 	)
 
 	page1 := sqliteHeaderPage()
+	page1[28], page1[29], page1[30], page1[31] = 0, 0, 0, 3
 	page2 := bytes.Repeat([]byte{1}, testPageSize)
+	page3 := bytes.Repeat([]byte{1}, testPageSize)
 	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
 		1: page1,
 		2: page2,
+		3: page3,
 	})
 	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
 	require.NoError(t, err)
@@ -100,8 +103,10 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 		info *ltx.FileInfo
 	}, 0, versions-1)
 	for ver := 2; ver <= versions; ver++ {
+		fill := bytes.Repeat([]byte{byte(ver)}, testPageSize)
 		data, info := encodeTestLTX(t, ltx.TXID(ver), map[uint32][]byte{
-			2: bytes.Repeat([]byte{byte(ver)}, testPageSize),
+			2: fill,
+			3: bytes.Repeat([]byte{byte(ver)}, testPageSize),
 		})
 		updates = append(updates, struct {
 			data []byte
@@ -111,40 +116,66 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 
 	errCh := make(chan error, readers+1)
 	var wg sync.WaitGroup
+	var inShared atomic.Int32
+	var pollsOverlapped atomic.Int32
+	var seenOld, seenNew atomic.Bool
 
 	for i := 0; i < readers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			buf := make([]byte, testPageSize)
+			buf2 := make([]byte, testPageSize)
+			buf3 := make([]byte, testPageSize)
 			for n := 0; n < iters; n++ {
 				if lockErr := f.Lock(ncrucesvfs.LOCK_SHARED); lockErr != nil {
 					errCh <- lockErr
 					return
 				}
-				_, readErr := f.ReadAt(buf, int64(f.pageSize))
+				inShared.Add(1)
+				_, readErr2 := f.ReadAt(buf2, int64(f.pageSize))
+				_, readErr3 := f.ReadAt(buf3, int64(2)*int64(f.pageSize))
 				unlockErr := f.Unlock(ncrucesvfs.LOCK_NONE)
-				if readErr != nil {
-					if isBusySystemError(readErr) {
-						continue
-					}
-					errCh <- readErr
-					return
-				}
+				inShared.Add(-1)
 				if unlockErr != nil {
 					errCh <- unlockErr
 					return
 				}
-				v := buf[0]
-				if v < 1 || int(v) > versions {
-					errCh <- fmt.Errorf("unexpected version byte %d", v)
+				if readErr2 != nil {
+					if isBusySystemError(readErr2) {
+						continue
+					}
+					errCh <- readErr2
 					return
 				}
-				for _, b := range buf {
-					if b != v {
-						errCh <- fmt.Errorf("mixed page bytes: want all %d, saw %d", v, b)
-						return
+				if readErr3 != nil {
+					if isBusySystemError(readErr3) {
+						continue
 					}
+					errCh <- readErr3
+					return
+				}
+				v2, v3 := buf2[0], buf3[0]
+				if v2 < 1 || int(v2) > versions || v3 < 1 || int(v3) > versions {
+					errCh <- fmt.Errorf("unexpected version bytes %d/%d", v2, v3)
+					return
+				}
+				if err := uniformPage(buf2, v2); err != nil {
+					errCh <- err
+					return
+				}
+				if err := uniformPage(buf3, v3); err != nil {
+					errCh <- err
+					return
+				}
+				// lock is a level, not a refcount: another Unlock(LOCK_NONE) may
+				// publish between the two ReadAts. Retry that iteration.
+				if v2 != v3 {
+					continue
+				}
+				if v2 == 1 {
+					seenOld.Store(true)
+				} else {
+					seenNew.Store(true)
 				}
 			}
 		}()
@@ -155,9 +186,21 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 		defer wg.Done()
 		for _, u := range updates {
 			client.addLTX(u.info, u.data)
+			overlapped := false
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				if inShared.Load() > 0 {
+					overlapped = true
+					break
+				}
+				time.Sleep(50 * time.Microsecond)
+			}
 			if pollErr := f.pollReplicaClient(context.Background()); pollErr != nil {
 				errCh <- pollErr
 				return
+			}
+			if overlapped {
+				pollsOverlapped.Add(1)
 			}
 		}
 	}()
@@ -167,6 +210,47 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 	for err := range errCh {
 		require.NoError(t, err)
 	}
+	require.True(t, seenOld.Load(), "expected at least one consistent read of version 1")
+	require.True(t, seenNew.Load(), "expected at least one consistent read of a post-update version")
+	require.Greater(t, pollsOverlapped.Load(), int32(0), "expected pollReplicaClient to overlap a SHARED hold")
+
+	// Deterministic multi-page snapshot under one SHARED hold while poll runs.
+	const finalVer = versions + 1
+	require.NoError(t, f.Lock(ncrucesvfs.LOCK_SHARED))
+	assertUniformVersionPages(t, f, byte(versions), 2, 3)
+	finalFill := bytes.Repeat([]byte{byte(finalVer)}, testPageSize)
+	finalData, finalInfo := encodeTestLTX(t, ltx.TXID(finalVer), map[uint32][]byte{
+		2: finalFill,
+		3: bytes.Repeat([]byte{byte(finalVer)}, testPageSize),
+	})
+	client.addLTX(finalInfo, finalData)
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+	assertUniformVersionPages(t, f, byte(versions), 2, 3)
+	require.NoError(t, f.Unlock(ncrucesvfs.LOCK_NONE))
+	assertUniformVersionPages(t, f, byte(finalVer), 2, 3)
+}
+
+func assertUniformVersionPages(t *testing.T, f *replicaFile, want byte, pageA, pageB uint32) {
+	t.Helper()
+	bufA := make([]byte, testPageSize)
+	bufB := make([]byte, testPageSize)
+	_, err := f.ReadAt(bufA, int64(pageA-1)*int64(f.pageSize))
+	require.NoError(t, err)
+	_, err = f.ReadAt(bufB, int64(pageB-1)*int64(f.pageSize))
+	require.NoError(t, err)
+	require.NoError(t, uniformPage(bufA, want))
+	require.NoError(t, uniformPage(bufB, want))
+	require.Equal(t, want, bufA[0])
+	require.Equal(t, want, bufB[0])
+}
+
+func uniformPage(buf []byte, want byte) error {
+	for _, b := range buf {
+		if b != want {
+			return fmt.Errorf("mixed page bytes: want all %d, saw %d", want, b)
+		}
+	}
+	return nil
 }
 
 func TestBuildSnapshot(t *testing.T) {

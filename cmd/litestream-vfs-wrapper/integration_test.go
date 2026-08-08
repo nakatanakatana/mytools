@@ -54,18 +54,24 @@ func TestSQLiteLiveFollowWithoutReopen(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		s, _, prepErr := db.Prepare("SELECT v FROM t")
-		if prepErr != nil {
-			return false
-		}
+		require.NoError(t, prepErr)
 		defer s.Close()
 		return s.Step() && s.ColumnText(0) == "updated"
 	}, time.Second, 10*time.Millisecond)
 
 	require.NoError(t, db.Close())
 	require.Eventually(t, func() bool { return client.activeRequests() == 0 }, time.Second, 5*time.Millisecond)
-	calls := client.requestCount()
-	time.Sleep(30 * time.Millisecond)
-	require.Equal(t, calls, client.requestCount(), "poller must stop after db.Close")
+	baseline := client.requestCount()
+	var stableSamples int
+	require.Eventually(t, func() bool {
+		if client.requestCount() != baseline || client.activeRequests() != 0 {
+			stableSamples = 0
+			baseline = client.requestCount()
+			return false
+		}
+		stableSamples++
+		return stableSamples >= 3
+	}, time.Second, v.PollInterval)
 }
 
 func TestSQLiteTransactionSnapshotIsStable(t *testing.T) {
@@ -84,6 +90,7 @@ func TestSQLiteTransactionSnapshotIsStable(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, db.Close()) }()
 
+	tx := db.Begin()
 	stmt, _, err := db.Prepare("SELECT v FROM t")
 	require.NoError(t, err)
 	require.True(t, stmt.Step())
@@ -97,17 +104,21 @@ func TestSQLiteTransactionSnapshotIsStable(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return client.listCount(0, 2) > listsBefore
 	}, time.Second, 5*time.Millisecond)
-	// Hold the open statement across several more poll intervals.
-	time.Sleep(50 * time.Millisecond)
 
-	require.Equal(t, "ok", stmt.ColumnText(0))
+	// Second statement on the same open transaction re-reads through the VFS
+	// while SHARED is still held (ColumnText on the first stepped row would not).
+	stmt2, _, err := db.Prepare("SELECT v FROM t")
+	require.NoError(t, err)
+	require.True(t, stmt2.Step())
+	require.Equal(t, "ok", stmt2.ColumnText(0))
+	require.NoError(t, stmt2.Close())
+
 	require.NoError(t, stmt.Close())
+	require.NoError(t, tx.Commit())
 
 	require.Eventually(t, func() bool {
 		s, _, prepErr := db.Prepare("SELECT v FROM t")
-		if prepErr != nil {
-			return false
-		}
+		require.NoError(t, prepErr)
 		defer s.Close()
 		return s.Step() && s.ColumnText(0) == "updated"
 	}, time.Second, 10*time.Millisecond)
