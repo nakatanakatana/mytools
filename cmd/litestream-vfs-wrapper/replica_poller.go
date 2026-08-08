@@ -166,14 +166,15 @@ func mergePollLevelResults(pollPos ltx.Pos, pollMaxTXID1 ltx.TXID, pollCommit ui
 		index[pgno] = elem
 	}
 	for pgno, elem := range l1.index {
-		index[pgno] = elem
+		if existing, ok := index[pgno]; !ok || elem.MaxTXID >= existing.MaxTXID {
+			index[pgno] = elem
+		}
 	}
 
 	commit := pollCommit
-	if l0.maxTXID > pollPos.TXID || len(l0.index) > 0 {
+	if l0.maxTXID >= l1.maxTXID && (l0.maxTXID > pollPos.TXID || len(l0.index) > 0) {
 		commit = l0.commit
-	}
-	if l1.maxTXID > pollMaxTXID1 || len(l1.index) > 0 {
+	} else if l1.maxTXID > pollMaxTXID1 || len(l1.index) > 0 {
 		commit = l1.commit
 	}
 

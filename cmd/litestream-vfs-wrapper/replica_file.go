@@ -247,7 +247,9 @@ func (f *replicaFile) ReadAt(p []byte, off int64) (int, error) {
 		// Pretend to be in rollback-journal mode for SQLite readers.
 		if off == 0 && total == 0 && n >= 28 {
 			p[18], p[19] = 0x01, 0x01
-			_, _ = rand.Read(p[24:28])
+			if _, randErr := rand.Read(p[24:28]); randErr != nil {
+				return 0, fmt.Errorf("read change counter rand bytes: %w", randErr)
+			}
 		}
 
 		total += n

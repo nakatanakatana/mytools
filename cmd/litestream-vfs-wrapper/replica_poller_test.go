@@ -649,3 +649,29 @@ func clonePageIndex(src map[uint32]ltx.PageIndexElem) map[uint32]ltx.PageIndexEl
 	}
 	return dst
 }
+
+func TestMergePollLevelResults_Precedence(t *testing.T) {
+	pollPos := ltx.Pos{TXID: 2}
+	pollMaxTXID1 := ltx.TXID(2)
+	pollCommit := uint32(2)
+
+	l0Elem := ltx.PageIndexElem{MaxTXID: 6, Offset: 100, Size: 4096}
+	l1Elem := ltx.PageIndexElem{MaxTXID: 5, Offset: 200, Size: 4096}
+
+	l0 := pollLevelResult{
+		maxTXID: 6,
+		commit:  10,
+		index:   map[uint32]ltx.PageIndexElem{1: l0Elem},
+	}
+	l1 := pollLevelResult{
+		maxTXID: 5,
+		commit:  8,
+		index:   map[uint32]ltx.PageIndexElem{1: l1Elem},
+	}
+
+	update := mergePollLevelResults(pollPos, pollMaxTXID1, pollCommit, l0, l1)
+
+	require.Equal(t, uint32(10), update.commit, "commit should come from L0 which has higher MaxTXID")
+	require.Equal(t, l0Elem, update.index[1], "page index entry should come from L0 which has higher MaxTXID")
+}
+
