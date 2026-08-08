@@ -12,9 +12,11 @@ import (
 
 // VFS is a read-only ncruces SQLite VFS backed by a Litestream ReplicaClient.
 type VFS struct {
-	client       litestream.ReplicaClient
-	logger       *slog.Logger
-	CacheSize    int
+	client    litestream.ReplicaClient
+	logger    *slog.Logger
+	CacheSize int
+	// PollInterval is the interval between replica polls for each open main-database file.
+	// New sets it to DefaultPollInterval. PollInterval <= 0 disables live-follow after open.
 	PollInterval time.Duration
 }
 
