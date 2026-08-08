@@ -78,6 +78,97 @@ func TestReplicaFileConcurrentReadAt(t *testing.T) {
 	}
 }
 
+func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
+	const (
+		readers  = 8
+		versions = 20
+		iters    = 100
+	)
+
+	page1 := sqliteHeaderPage()
+	page2 := bytes.Repeat([]byte{1}, testPageSize)
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: page1,
+		2: page2,
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	updates := make([]struct {
+		data []byte
+		info *ltx.FileInfo
+	}, 0, versions-1)
+	for ver := 2; ver <= versions; ver++ {
+		data, info := encodeTestLTX(t, ltx.TXID(ver), map[uint32][]byte{
+			2: bytes.Repeat([]byte{byte(ver)}, testPageSize),
+		})
+		updates = append(updates, struct {
+			data []byte
+			info *ltx.FileInfo
+		}{data: data, info: info})
+	}
+
+	errCh := make(chan error, readers+1)
+	var wg sync.WaitGroup
+
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, testPageSize)
+			for n := 0; n < iters; n++ {
+				if lockErr := f.Lock(ncrucesvfs.LOCK_SHARED); lockErr != nil {
+					errCh <- lockErr
+					return
+				}
+				_, readErr := f.ReadAt(buf, int64(f.pageSize))
+				unlockErr := f.Unlock(ncrucesvfs.LOCK_NONE)
+				if readErr != nil {
+					if isBusySystemError(readErr) {
+						continue
+					}
+					errCh <- readErr
+					return
+				}
+				if unlockErr != nil {
+					errCh <- unlockErr
+					return
+				}
+				v := buf[0]
+				if v < 1 || int(v) > versions {
+					errCh <- fmt.Errorf("unexpected version byte %d", v)
+					return
+				}
+				for _, b := range buf {
+					if b != v {
+						errCh <- fmt.Errorf("mixed page bytes: want all %d, saw %d", v, b)
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, u := range updates {
+			client.addLTX(u.info, u.data)
+			if pollErr := f.pollReplicaClient(context.Background()); pollErr != nil {
+				errCh <- pollErr
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+}
+
 func TestBuildSnapshot(t *testing.T) {
 	tests := []struct {
 		name       string
