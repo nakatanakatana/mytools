@@ -3,9 +3,12 @@ package litestreamvfs
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +17,11 @@ import (
 	"github.com/ncruces/go-sqlite3"
 	ncrucesvfs "github.com/ncruces/go-sqlite3/vfs"
 	"github.com/superfly/ltx"
+)
+
+const (
+	pageFetchMaxAttempts    = 3
+	pageFetchRetryBaseDelay = 10 * time.Millisecond
 )
 
 type replicaFile struct {
@@ -216,7 +224,7 @@ func (f *replicaFile) ReadAt(p []byte, off int64) (int, error) {
 	for total < len(p) && off < size {
 		pgno := uint32(off/pageSize) + 1
 		pageOff := int(off % pageSize)
-		page, err := f.page(pgno)
+		page, err := f.page(pgno, generation)
 		if err != nil {
 			if total > 0 {
 				return total, err
@@ -251,8 +259,12 @@ func (f *replicaFile) ReadAt(p []byte, off int64) (int, error) {
 	return total, nil
 }
 
-func (f *replicaFile) page(pgno uint32) ([]byte, error) {
+func (f *replicaFile) page(pgno uint32, generation uint64) ([]byte, error) {
 	f.mu.Lock()
+	if generation != f.visibleGeneration {
+		f.mu.Unlock()
+		return nil, ncrucesvfs.SystemError(fmt.Errorf("visible snapshot changed"), sqlite3.BUSY)
+	}
 	if data, ok := f.cache.Get(pgno); ok {
 		f.mu.Unlock()
 		return data, nil
@@ -263,25 +275,77 @@ func (f *replicaFile) page(pgno uint32) ([]byte, error) {
 		return nil, fmt.Errorf("page not found: %d", pgno)
 	}
 
-	hdr, data, err := litestream.FetchPage(context.Background(), f.client, elem.Level, elem.MinTXID, elem.MaxTXID, elem.Offset, elem.Size)
+	data, err := f.fetchPageWithRetry(f.ctx, pgno, elem)
 	if err != nil {
-		return nil, fmt.Errorf("fetch page %d: %w", pgno, err)
-	}
-	if hdr.Pgno != pgno {
-		return nil, fmt.Errorf("page number mismatch: want %d got %d", pgno, hdr.Pgno)
-	}
-	if uint32(len(data)) != f.pageSize {
-		return nil, fmt.Errorf("page size mismatch: want %d got %d", f.pageSize, len(data))
+		return nil, err
 	}
 
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if generation != f.visibleGeneration {
+		return nil, ncrucesvfs.SystemError(fmt.Errorf("visible snapshot changed during page fetch"), sqlite3.BUSY)
+	}
+	if current, ok := f.index[pgno]; !ok || current != elem {
+		return nil, ncrucesvfs.SystemError(fmt.Errorf("page index changed during page fetch"), sqlite3.BUSY)
+	}
 	if cached, ok := f.cache.Get(pgno); ok {
-		f.mu.Unlock()
 		return cached, nil
 	}
 	f.cache.Add(pgno, data)
-	f.mu.Unlock()
 	return data, nil
+}
+
+func (f *replicaFile) fetchPageWithRetry(ctx context.Context, pgno uint32, elem ltx.PageIndexElem) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < pageFetchMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if attempt > 0 {
+			delay := pageFetchRetryBaseDelay << (attempt - 1)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		hdr, data, err := litestream.FetchPage(ctx, f.client, elem.Level, elem.MinTXID, elem.MaxTXID, elem.Offset, elem.Size)
+		if err != nil {
+			lastErr = err
+			if !isRetryablePageError(err) {
+				return nil, fmt.Errorf("fetch page %d: %w", pgno, err)
+			}
+			continue
+		}
+		if hdr.Pgno != pgno {
+			return nil, fmt.Errorf("page number mismatch: want %d got %d", pgno, hdr.Pgno)
+		}
+		if uint32(len(data)) != f.pageSize {
+			return nil, fmt.Errorf("page size mismatch: want %d got %d", f.pageSize, len(data))
+		}
+		return data, nil
+	}
+	return nil, ncrucesvfs.SystemError(fmt.Errorf("fetch page %d: %w", pgno, lastErr), sqlite3.BUSY)
+}
+
+func isRetryablePageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if strings.Contains(err.Error(), "unexpected EOF") {
+		return true
+	}
+	var temporary interface{ Temporary() bool }
+	return errors.As(err, &temporary) && temporary.Temporary()
 }
 
 func (f *replicaFile) WriteAt(p []byte, off int64) (int, error) {

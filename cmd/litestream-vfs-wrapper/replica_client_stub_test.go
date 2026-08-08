@@ -77,6 +77,25 @@ func TestReplicaClientStubOneShotFailures(t *testing.T) {
 	require.NoError(t, rc.Close())
 }
 
+func TestReplicaClientStubOpenLTXFilePreservesHookOnCanceledContext(t *testing.T) {
+	client := newReplicaClientStub()
+	info := &ltx.FileInfo{Level: 0, MinTXID: 1, MaxTXID: 1}
+	client.addLTX(info, []byte("data"))
+
+	openErr := fmt.Errorf("open failed")
+	client.OpenLTXFileFunc = func(context.Context, int, ltx.TXID, ltx.TXID, int64, int64) (io.ReadCloser, error) {
+		return nil, openErr
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.OpenLTXFile(ctx, 0, 1, 1, 0, 0)
+	require.ErrorIs(t, err, context.Canceled)
+
+	_, err = client.OpenLTXFile(context.Background(), 0, 1, 1, 0, 0)
+	require.ErrorIs(t, err, openErr)
+}
+
 // replicaClientStub is an in-memory ReplicaClient for tests.
 type replicaClientStub struct {
 	mu              sync.Mutex
@@ -147,17 +166,21 @@ func (c *replicaClientStub) OpenLTXFile(ctx context.Context, level int, minTXID,
 	c.mu.Lock()
 	c.requests++
 	c.active++
-	fn := c.OpenLTXFileFunc
-	c.OpenLTXFileFunc = nil
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		c.active--
 		c.mu.Unlock()
 	}()
+	// Do not consume one-shot hooks when the call is already canceled; Close and
+	// retry tests rely on the hook remaining available for a later attempt.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
+	fn := c.OpenLTXFileFunc
+	c.OpenLTXFileFunc = nil
+	c.mu.Unlock()
 	if fn != nil {
 		return fn(ctx, level, minTXID, maxTXID, offset, size)
 	}

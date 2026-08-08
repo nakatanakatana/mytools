@@ -381,7 +381,7 @@ func TestReplicaPollRestorePlanReplacement(t *testing.T) {
 	require.Equal(t, uint32(3), f.commit)
 
 	for _, pgno := range []uint32{1, 2, 3} {
-		_, err = f.page(pgno)
+		_, err = f.page(pgno, f.visibleGeneration)
 		require.NoError(t, err)
 	}
 

@@ -3,8 +3,12 @@ package litestreamvfs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +17,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/superfly/ltx"
 )
+
+type temporaryPageError struct {
+	msg string
+}
+
+func (e temporaryPageError) Error() string   { return e.msg }
+func (e temporaryPageError) Temporary() bool { return true }
 
 const testPageSize = 4096
 
@@ -330,7 +341,7 @@ func TestReplicaFileReplacementPurgesCacheAndShrinks(t *testing.T) {
 	require.Equal(t, uint32(3), f.commit)
 
 	for _, pgno := range []uint32{1, 2, 3} {
-		_, err = f.page(pgno)
+		_, err = f.page(pgno, f.visibleGeneration)
 		require.NoError(t, err)
 	}
 	require.Equal(t, 3, f.cache.Len())
@@ -404,6 +415,207 @@ func TestReplicaFileUnlockSharedDoesNotPublish(t *testing.T) {
 	_, err = f.ReadAt(buf, int64(f.pageSize))
 	require.NoError(t, err)
 	require.Equal(t, "page two v2", string(buf))
+}
+
+func TestReplicaFileRetriesPageFetch(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		failures  int
+		wantCalls int
+		wantOK    bool
+	}{
+		{name: "unexpected EOF once", err: io.ErrUnexpectedEOF, failures: 1, wantCalls: 2, wantOK: true},
+		{name: "deadline exceeded twice", err: context.DeadlineExceeded, failures: 2, wantCalls: 3, wantOK: true},
+		{name: "wrapped not exist once", err: fmt.Errorf("backend missing: %w", os.ErrNotExist), failures: 1, wantCalls: 2, wantOK: true},
+		{name: "temporary once", err: temporaryPageError{msg: "backend busy"}, failures: 1, wantCalls: 2, wantOK: true},
+		{name: "unexpected EOF message once", err: fmt.Errorf("s3: unexpected EOF"), failures: 1, wantCalls: 2, wantOK: true},
+		{name: "exhausts unexpected EOF", err: io.ErrUnexpectedEOF, failures: 10, wantCalls: 3, wantOK: false},
+		{name: "exhausts deadline", err: context.DeadlineExceeded, failures: 10, wantCalls: 3, wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+				1: sqliteHeaderPage(),
+				2: []byte("updated page"),
+			})
+			f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = f.Close() })
+
+			var opens atomic.Int32
+			var armFailingOpen func()
+			armFailingOpen = func() {
+				client.OpenLTXFileFunc = func(ctx context.Context, level int, minTXID, maxTXID ltx.TXID, offset, size int64) (io.ReadCloser, error) {
+					n := int(opens.Add(1))
+					if n <= tt.failures {
+						client.mu.Lock()
+						armFailingOpen()
+						client.mu.Unlock()
+						return nil, tt.err
+					}
+					return client.openLTXFileData(level, minTXID, maxTXID, offset, size)
+				}
+			}
+			armFailingOpen()
+
+			buf := make([]byte, len("updated page"))
+			_, err = f.ReadAt(buf, int64(f.pageSize))
+			require.Equal(t, tt.wantCalls, int(opens.Load()))
+			if tt.wantOK {
+				require.NoError(t, err)
+				require.Equal(t, "updated page", string(buf))
+				return
+			}
+			require.Error(t, err)
+			require.True(t, isBusySystemError(err), "want temporary/BUSY error, got %T %v", err, err)
+			require.False(t, f.cache.Contains(2))
+		})
+	}
+}
+
+func TestReplicaFileStopsRetryingPermanentPageError(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("updated page"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	permanent := fmt.Errorf("permanent backend failure")
+	var opens atomic.Int32
+	client.OpenLTXFileFunc = func(context.Context, int, ltx.TXID, ltx.TXID, int64, int64) (io.ReadCloser, error) {
+		opens.Add(1)
+		return nil, permanent
+	}
+
+	buf := make([]byte, len("updated page"))
+	_, err = f.ReadAt(buf, int64(f.pageSize))
+	require.Error(t, err)
+	require.ErrorContains(t, err, permanent.Error())
+	require.Equal(t, 1, int(opens.Load()))
+	require.False(t, isBusySystemError(err))
+}
+
+func TestReplicaFileCloseCancelsPageFetch(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("updated page"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+
+	entered := make(chan struct{})
+	var opens atomic.Int32
+	client.OpenLTXFileFunc = func(ctx context.Context, level int, minTXID, maxTXID ltx.TXID, offset, size int64) (io.ReadCloser, error) {
+		opens.Add(1)
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		buf := make([]byte, len("updated page"))
+		_, readErr := f.ReadAt(buf, int64(f.pageSize))
+		errCh <- readErr
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for page fetch to start")
+	}
+
+	require.NoError(t, f.Close())
+
+	select {
+	case readErr := <-errCh:
+		require.Error(t, readErr)
+		require.True(t, errors.Is(readErr, context.Canceled), "want context.Canceled, got %v", readErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for canceled ReadAt")
+	}
+	require.Equal(t, 1, int(opens.Load()), "canceled fetch must not retry")
+	require.Equal(t, 0, client.activeRequests())
+}
+
+func TestReplicaFileDoesNotCacheOldPageAfterPublish(t *testing.T) {
+	client := newReplicaClientStubFromPages(t, map[uint32][]byte{
+		1: sqliteHeaderPage(),
+		2: []byte("page two v1"),
+	})
+	f, err := openReplicaFile(context.Background(), client, "replica.db", testLogger(), DefaultCacheSize, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	client.OpenLTXFileFunc = func(ctx context.Context, level int, minTXID, maxTXID ltx.TXID, offset, size int64) (io.ReadCloser, error) {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return client.openLTXFileData(level, minTXID, maxTXID, offset, size)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		buf := make([]byte, len("page two v1"))
+		n, readErr := f.ReadAt(buf, int64(f.pageSize))
+		if readErr == nil && string(buf[:n]) == "page two v1" {
+			errCh <- fmt.Errorf("stale page bytes returned successfully")
+			return
+		}
+		errCh <- readErr
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for old page fetch")
+	}
+
+	data, info := encodeTestLTX(t, 2, map[uint32][]byte{
+		2: []byte("page two v2"),
+	})
+	client.addLTX(info, data)
+	require.NoError(t, f.pollReplicaClient(context.Background()))
+	require.Equal(t, ltx.TXID(2), f.pos.TXID)
+	require.False(t, f.cache.Contains(2))
+
+	close(release)
+
+	select {
+	case readErr := <-errCh:
+		require.Error(t, readErr)
+		require.True(t, isBusySystemError(readErr), "want temporary/BUSY after generation change, got %T %v", readErr, readErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stale ReadAt to finish")
+	}
+
+	require.False(t, f.cache.Contains(2), "stale page must not be cached")
+
+	buf := make([]byte, len("page two v2"))
+	_, err = f.ReadAt(buf, int64(f.pageSize))
+	require.NoError(t, err)
+	require.Equal(t, "page two v2", string(buf))
+}
+
+// isBusySystemError detects ncrucesvfs.SystemError(..., sqlite3.BUSY). The
+// concrete type is unexported, so match by package-qualified type name.
+func isBusySystemError(err error) bool {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if fmt.Sprintf("%T", e) == "vfs.sysError" {
+			return true
+		}
+	}
+	// Embedded cause unwrap may skip the sysError value when only the cause is exposed.
+	return fmt.Sprintf("%T", err) == "vfs.sysError"
 }
 
 func openTestReplicaFile(t *testing.T) *replicaFile {
