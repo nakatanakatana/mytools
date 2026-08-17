@@ -16,7 +16,7 @@ require (
 	github.com/mmcdole/gofeed v1.4.1
 	github.com/ncruces/go-sqlite3 v0.35.3
 	github.com/sqldef/sqldef/v3 v3.11.19
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.0
 	github.com/superfly/ltx v0.5.2
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
