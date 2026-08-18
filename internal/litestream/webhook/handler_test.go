@@ -32,6 +32,7 @@ func TestRegisterHandlersRegistersStableAdmissionPaths(t *testing.T) {
 		"/mutate-v1-pod",
 		"/validate-litestream",
 		"/validate-litestreamreplica",
+		"/validate-litestream-workload",
 	} {
 		t.Run(path, func(t *testing.T) {
 			_, pattern := server.WebhookMux().Handler(&http.Request{URL: &url.URL{Path: path}})

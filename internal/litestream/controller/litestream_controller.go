@@ -116,6 +116,7 @@ func resourceNameLabel(name string) string {
 // +kubebuilder:rbac:groups=litestream.mytools.nakatanakatana.app,resources=litestreams,verbs=get;list;watch
 // +kubebuilder:rbac:groups=litestream.mytools.nakatanakatana.app,resources=litestreams/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=litestream.mytools.nakatanakatana.app,resources=litestreamreplicas,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 

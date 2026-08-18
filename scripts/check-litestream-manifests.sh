@@ -81,6 +81,12 @@ mutating_webhook="$(awk '
   in_webhook && /^---$/ { exit }
 ' "${RENDERED_WEBHOOK_MANIFEST}")"
 
+validating_webhook="$(awk '
+  /^kind: ValidatingWebhookConfiguration$/ { in_webhook = 1 }
+  in_webhook { print }
+  in_webhook && /^---$/ { exit }
+' "${RENDERED_WEBHOOK_MANIFEST}")"
+
 required_lines=(
   'failurePolicy: Fail'
   'litestream.mytools.nakatanakatana.app/injection: enabled'
@@ -101,5 +107,23 @@ if ! perl -0ne "exit !(m{matchConditions:\\s*-\\s+expression:\\s*has\\(object\\.
   echo "error: rendered mutating webhook is missing the non-empty trimmed inject annotation match condition" >&2
   status=1
 fi
+
+workload_validating_webhook="$(perl -0ne '@items = split(/(?=^- admissionReviewVersions:)/m, $_); for $item (@items) { print $item if $item =~ /^  name: vlitestreamworkload\.litestream-controller\.mytools\.nakatanakatana\.app$/m; }' <<<"${validating_webhook}")"
+
+validating_required_lines=(
+	'name: vlitestreamworkload.litestream-controller.mytools.nakatanakatana.app'
+	'litestream.mytools.nakatanakatana.app/injection: enabled'
+	'kubernetes.io/metadata.name'
+	'litestream-controller-system'
+	'deployments/scale'
+	'statefulsets/scale'
+)
+
+for required_line in "${validating_required_lines[@]}"; do
+	if ! grep -Fq "${required_line}" <<<"${workload_validating_webhook}"; then
+		echo "error: rendered workload validating webhook is missing required setting: ${required_line}" >&2
+		status=1
+	fi
+done
 
 exit "${status}"

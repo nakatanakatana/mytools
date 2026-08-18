@@ -23,6 +23,7 @@ import (
 	"github.com/nakatanakatana/mytools/internal/litestream/resolver"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,6 +36,8 @@ type PodMutator struct {
 	Client       client.Reader
 	DefaultImage string
 }
+
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 
 // Mutate injects the databases of the annotated Litestream resource into
 // pod. Pods without the annotation are left alone. Every check runs against
@@ -72,6 +75,9 @@ func (m *PodMutator) Mutate(ctx context.Context, pod *corev1.Pod) error {
 	if err := verifyConfigMap(ctx, m.Client, resource, rendered); err != nil {
 		return err
 	}
+	if err := m.validateReplicationConflict(ctx, pod, resource); err != nil {
+		return err
+	}
 	target, err := ResolveTarget(pod, input)
 	if err != nil {
 		return err
@@ -88,6 +94,46 @@ func (m *PodMutator) Mutate(ctx context.Context, pod *corev1.Pod) error {
 
 	*pod = *injected
 	return nil
+}
+
+func (m *PodMutator) validateReplicationConflict(ctx context.Context, pod *corev1.Pod, resource *v1alpha1.Litestream) error {
+	if !litestreamReplicates(resource) {
+		return nil
+	}
+
+	pods := &corev1.PodList{}
+	if err := m.Client.List(ctx, pods, client.InNamespace(pod.Namespace)); err != nil {
+		return fmt.Errorf("cannot inject litestream: list Pods in namespace %q: %w", pod.Namespace, err)
+	}
+	for i := range pods.Items {
+		existing := &pods.Items[i]
+		if existing.Name == pod.Name || !podMayWrite(existing) {
+			continue
+		}
+		existingName := strings.TrimSpace(existing.Annotations[InjectAnnotation])
+		if existingName == "" {
+			continue
+		}
+		if existingName == resource.Name {
+			return fmt.Errorf("cannot inject litestream: existing Pod %q already uses Litestream %q with replication", existing.Name, resource.Name)
+		}
+
+		existingResource := &v1alpha1.Litestream{}
+		if err := m.Client.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: existingName}, existingResource); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("cannot inject litestream: get Litestream %q for existing Pod %q: %w", existingName, existing.Name, err)
+		}
+		if litestreamReplicates(existingResource) && shareReplicationDestination(resource, existingResource) {
+			return fmt.Errorf("cannot inject litestream: existing Pod %q already uses the same destination Replica and database path", existing.Name)
+		}
+	}
+	return nil
+}
+
+func podMayWrite(pod *corev1.Pod) bool {
+	return pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed
 }
 
 func verifyConfigMap(ctx context.Context, reader client.Reader, resource *v1alpha1.Litestream, rendered litestreamconfig.RenderedConfig) error {

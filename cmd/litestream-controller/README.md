@@ -12,7 +12,10 @@ or both — without baking Litestream into your application's image.
   and a replication sidecar into any Pod annotated with a reference to a
   `Ready` `Litestream` resource.
 - The validating webhooks reject invalid `Litestream` and `LitestreamReplica`
-  resources, and protect referenced Replicas from deletion.
+  resources, reject multi-Pod workloads that would run replicated Litestream
+  sidecars, and protect referenced Replicas from deletion. The Pod injection
+  webhook also rejects an active Pod that would reuse a replication destination
+  already used by another active Pod.
 
 Secret values (backend credentials) are never read by the controller or the
 webhook, never stored in a ConfigMap, and never appear in a `Litestream`
@@ -194,10 +197,17 @@ trimming whitespace, in namespaces labeled
 Pod-injection webhook. Unrelated Pods in labeled namespaces do not depend on
 this webhook being available. The generated `ValidatingWebhookConfiguration`
 also uses **`failurePolicy: Fail`** for `Litestream` CREATE and UPDATE
-requests. The controller namespace is explicitly excluded from Pod injection
-so the manager can recover if the webhook Service or its certificate is
-temporarily unavailable. Label a workload namespace before creating annotated
-Pods:
+requests. Its workload webhook covers Deployment, StatefulSet, and DaemonSet
+CREATE/UPDATE requests plus Deployment and StatefulSet `scale` subresources,
+and is patched with the same opt-in namespace selector as Pod injection. The
+controller namespace is excluded, so the manager can recover if the webhook
+Service or its certificate is temporarily unavailable. In an opted-in
+namespace, all Deployment, StatefulSet, and DaemonSet create, update, and
+scale requests depend on this webhook being available, even when the workload
+does not request Litestream injection; the handler allows unrelated workloads
+after inspecting them. The `webhook-ignore` overlay only changes Pod injection
+and does not make the single-writer validation fail-open. Label a workload
+namespace before creating annotated Pods:
 
 ```bash
 kubectl label namespace <workload-namespace> \
@@ -374,6 +384,19 @@ kubectl rollout restart deployment/app
 kubectl rollout restart statefulset/app
 ```
 
+If an existing replicating Deployment still uses the default
+`RollingUpdate`, first scale it to zero, change its strategy to `Recreate` (or
+set `rollingUpdate.maxSurge: 0`), and then scale it back to one. The workload
+webhook rejects an active unsafe rollout to prevent two replication sidecars
+from running concurrently. Use `kubectl scale` for this temporary replica-only
+change; applying a Deployment update before changing the strategy is rejected.
+
+When handing the destination Replica to another workload, keep the old
+workload at `replicas: 0` before creating or scaling up the new workload. A
+zero-replica workload is treated as inactive, so the new active workload can
+take over the destination. Once the new workload is active, scaling the old
+workload back up is rejected until the new workload is scaled down or removed.
+
 A plain `kubectl apply` to the `Litestream` resource is enough only when the
 change does not need to reach an existing Pod. A workload restart is required
 for every change that should use the latest Litestream configuration.
@@ -449,10 +472,27 @@ Every workload injected with Litestream must therefore run with
 **`replicas: 1`** — never scale it horizontally. Running two replicas that
 write the same database file risks database corruption. A destination
 `LitestreamReplica` must not have concurrent writers: two replication
-sidecars writing one Replica path race each other, and the controller and
-webhook do not detect or prevent it. Scale by database, not by replica count:
-give each independent workload its own database file and its own destination
-Replica path.
+sidecars writing one Replica path race each other. The workload validating
+webhook rejects annotated Deployments and StatefulSets with more than one
+replica, rejects annotated DaemonSets, and checks their `scale` subresources
+when the referenced Litestream resource configures replication. A Deployment
+using replication must also use `strategy.type: Recreate` or set
+`strategy.rollingUpdate.maxSurge: 0`; the default RollingUpdate can briefly
+run two Pods even when `replicas: 1`. A multi-Pod or active unsafe Deployment
+must reference an existing Litestream before the workload is created.
+The Pod injection webhook also checks active Pods, including bare Pods and
+workloads whose controller type is outside the workload webhook's scope. A
+destination is identified by the referenced Replica name and database path;
+different database paths may share one Replica backend. Updating a restore-only
+Litestream to enable replication is rejected when it would create multiple
+writers, including multiple existing workloads that reference the same
+destination through different Litestream resources. Give each independent
+workload its own database file and its own destination Replica path.
+
+These checks inspect the current API state and are best-effort for simultaneous
+admission requests: two creates that race before either object is persisted can
+both pass validation. Serialize hand-offs and workload creation when strict
+single-writer exclusivity is required.
 
 ## PR clone lifecycle
 
@@ -481,6 +521,12 @@ that means when a PR closes.
   include a backend that does not match `replica.type`, a `clonePolicy` without
   distinct source and destination Replica references, duplicate database paths,
   or conflicting GCS credentials.
+- **Deployment, StatefulSet, or DaemonSet rejected at creation or update**:
+  its Pod template requests a `Litestream` resource with replication, but the
+  workload can create multiple Pods, an unsafe rollout, or a different
+  workload already uses the same destination Replica and database path. Use
+  one active replica, a safe Deployment strategy, and a unique
+  Litestream/destination path per workload.
 - **Pod rejected at creation, "is not Ready"**: the referenced `Litestream`
   resource has not reported `status.conditions[Ready]=True` yet, or its
   `Ready` condition is stale relative to the resource's current generation.

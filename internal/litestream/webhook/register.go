@@ -16,7 +16,11 @@ func RegisterHandlers(server crwebhook.Server, reader client.Reader, scheme *run
 	)
 	server.Register(
 		"/validate-litestream",
-		&crwebhook.Admission{Handler: NewLitestreamValidator(scheme)},
+		&crwebhook.Admission{Handler: NewLitestreamValidator(reader, scheme)},
+	)
+	server.Register(
+		"/validate-litestream-workload",
+		&crwebhook.Admission{Handler: NewWorkloadValidator(reader, scheme)},
 	)
 	dependencyValidator := NewDependencyValidator(reader, scheme)
 	server.Register(

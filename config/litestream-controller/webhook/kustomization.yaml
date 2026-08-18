@@ -27,3 +27,23 @@ patches:
       value:
       - name: litestream-injection-request
         expression: has(object.metadata.annotations) && 'litestream.mytools.nakatanakatana.app/inject' in object.metadata.annotations && object.metadata.annotations['litestream.mytools.nakatanakatana.app/inject'].trim() != ''
+- target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
+  patch: |-
+    apiVersion: admissionregistration.k8s.io/v1
+    kind: ValidatingWebhookConfiguration
+    metadata:
+      name: validating-webhook-configuration
+    webhooks:
+    - name: vlitestreamworkload.litestream-controller.mytools.nakatanakatana.app
+      namespaceSelector:
+        matchLabels:
+          litestream.mytools.nakatanakatana.app/injection: enabled
+        matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+          - litestream-controller-system
