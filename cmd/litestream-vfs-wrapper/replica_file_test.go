@@ -82,7 +82,6 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 	const (
 		readers  = 8
 		versions = 20
-		iters    = 100
 	)
 
 	page1 := sqliteHeaderPage()
@@ -119,6 +118,11 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 	var inShared atomic.Int32
 	var pollsOverlapped atomic.Int32
 	var seenOld, seenNew atomic.Bool
+	oldSeen := make(chan struct{})
+	updatesDone := make(chan struct{})
+	var signalOld sync.Once
+	runCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	for i := 0; i < readers; i++ {
 		wg.Add(1)
@@ -126,7 +130,13 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 			defer wg.Done()
 			buf2 := make([]byte, testPageSize)
 			buf3 := make([]byte, testPageSize)
-			for n := 0; n < iters; n++ {
+			for {
+				select {
+				case <-runCtx.Done():
+					errCh <- runCtx.Err()
+					return
+				default:
+				}
 				if lockErr := f.Lock(ncrucesvfs.LOCK_SHARED); lockErr != nil {
 					errCh <- lockErr
 					return
@@ -174,8 +184,16 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 				}
 				if v2 == 1 {
 					seenOld.Store(true)
+					signalOld.Do(func() { close(oldSeen) })
 				} else {
 					seenNew.Store(true)
+				}
+				if seenNew.Load() {
+					select {
+					case <-updatesDone:
+						return
+					default:
+					}
 				}
 			}
 		}()
@@ -184,25 +202,34 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		select {
+		case <-oldSeen:
+		case <-runCtx.Done():
+			errCh <- runCtx.Err()
+			return
+		}
+		overlapped := false
+		for !overlapped {
+			select {
+			case <-runCtx.Done():
+				errCh <- runCtx.Err()
+				return
+			default:
+				overlapped = inShared.Load() > 0
+				if !overlapped {
+					time.Sleep(50 * time.Microsecond)
+				}
+			}
+		}
 		for _, u := range updates {
 			client.addLTX(u.info, u.data)
-			overlapped := false
-			deadline := time.Now().Add(2 * time.Second)
-			for time.Now().Before(deadline) {
-				if inShared.Load() > 0 {
-					overlapped = true
-					break
-				}
-				time.Sleep(50 * time.Microsecond)
-			}
 			if pollErr := f.pollReplicaClient(context.Background()); pollErr != nil {
 				errCh <- pollErr
 				return
 			}
-			if overlapped {
-				pollsOverlapped.Add(1)
-			}
 		}
+		pollsOverlapped.Add(1)
+		close(updatesDone)
 	}()
 
 	wg.Wait()
