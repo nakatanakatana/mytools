@@ -45,15 +45,22 @@ func (s *claimLostStore) RetryOutbox(ctx context.Context, id int64, token string
 
 func (f *publisherFake) Publish(context.Context, nostr.Event) error { f.calls++; return f.err }
 
-type blockingPublisher struct{}
+type blockingPublisher struct {
+	deadline    time.Time
+	hasDeadline bool
+	started     time.Time
+}
 
-func (blockingPublisher) Publish(ctx context.Context, _ nostr.Event) error {
+func (p *blockingPublisher) Publish(ctx context.Context, _ nostr.Event) error {
+	p.started = time.Now()
+	p.deadline, p.hasDeadline = ctx.Deadline()
 	<-ctx.Done()
 	return ctx.Err()
 }
 
 func TestDispatcherBoundsExternalDeliveryAttempt(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	s, closer, err := store.Open(ctx, filepath.Join(t.TempDir(), "timeout.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -64,14 +71,17 @@ func TestDispatcherBoundsExternalDeliveryAttempt(t *testing.T) {
 	if err := s.EnqueueOutbox(ctx, store.OutboxRequest{AggregateKey: e.PubKey.Hex(), Operation: store.OutboxPublishEvent, PubKey: e.PubKey.Hex(), Payload: e.String(), AvailableAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	d := Dispatcher{Store: s, Publisher: blockingPublisher{}, DeliveryTimeout: 20 * time.Millisecond, Now: func() time.Time { return now }}
-	started := time.Now()
+	publisher := &blockingPublisher{}
+	d := Dispatcher{Store: s, Publisher: publisher, DeliveryTimeout: 20 * time.Millisecond, Now: func() time.Time { return now }}
 	worked, err := d.DispatchOne(ctx)
 	if err != nil || !worked {
 		t.Fatalf("DispatchOne() = %v, %v", worked, err)
 	}
-	if time.Since(started) > 250*time.Millisecond {
-		t.Fatalf("delivery was not bounded: %s", time.Since(started))
+	if !publisher.hasDeadline {
+		t.Fatal("publisher context has no deadline")
+	}
+	if got := publisher.deadline.Sub(publisher.started); got <= 0 || got > 20*time.Millisecond {
+		t.Fatalf("publisher deadline = %s, want within 20ms", got)
 	}
 }
 
