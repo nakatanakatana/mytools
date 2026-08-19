@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -140,6 +141,44 @@ func TestLitestreamValidatorAllowsDifferentDatabasePathsOnSameReplica(t *testing
 	response := validator.Handle(t.Context(), litestreamAdmissionRequest(t, incomingResource, admissionv1.Create))
 
 	assert.Assert(t, response.Allowed, "%v", response.Result)
+}
+
+func TestLitestreamValidatorUsesAdmissionNamespace(t *testing.T) {
+	incomingResource := readyResource(t, v1alpha1.InjectionSpec{}, replicateDatabase("app"))
+	incomingResource.Name = "incoming-db"
+	incomingResource.Namespace = ""
+	incomingResource.Status.ConfigMapName = ""
+
+	scheme := runtime.NewScheme()
+	assert.NilError(t, appsv1.AddToScheme(scheme))
+	assert.NilError(t, v1alpha1.AddToScheme(scheme))
+	baseReader := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reader := &recordingListNamespaceReader{Reader: baseReader}
+	validator := NewLitestreamValidator(reader, scheme)
+	request := litestreamAdmissionRequest(t, incomingResource, admissionv1.Create)
+	request.Namespace = testNamespace
+
+	response := validator.Handle(t.Context(), request)
+
+	assert.Assert(t, response.Allowed, "%v", response.Result)
+	assert.Assert(t, len(reader.namespaces) > 0)
+	for _, namespace := range reader.namespaces {
+		assert.Equal(t, namespace, testNamespace)
+	}
+}
+
+type recordingListNamespaceReader struct {
+	client.Reader
+	namespaces []string
+}
+
+func (r *recordingListNamespaceReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	listOptions := client.ListOptions{}
+	for _, opt := range opts {
+		opt.ApplyToList(&listOptions)
+	}
+	r.namespaces = append(r.namespaces, listOptions.Namespace)
+	return r.Reader.List(ctx, list, opts...)
 }
 
 func newLitestreamValidator(t *testing.T, objects ...client.Object) *LitestreamValidator {

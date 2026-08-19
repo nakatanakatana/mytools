@@ -44,6 +44,10 @@ func (v *LitestreamValidator) Handle(ctx context.Context, req admission.Request)
 	if err := v.decoder.Decode(req, resource); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
+	// AdmissionRequest.Namespace is authoritative for namespaced resources.
+	// The object payload may omit metadata.namespace when the request was sent
+	// with a namespace selected in the request context.
+	resource.Namespace = req.Namespace
 	if errs := resource.Spec.Validate(); len(errs) > 0 {
 		return admission.Denied(errs.ToAggregate().Error())
 	}

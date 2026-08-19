@@ -392,7 +392,9 @@ from running concurrently. Use `kubectl scale` for this temporary replica-only
 change; applying a Deployment update before changing the strategy is rejected.
 
 When handing the destination Replica to another workload, keep the old
-workload at `replicas: 0` before creating or scaling up the new workload. A
+workload at `replicas: 0` and wait until its Pods have been deleted before
+creating or scaling up the new workload. A terminating Pod is still treated as
+active until deletion completes because it may continue writing. A
 zero-replica workload is treated as inactive, so the new active workload can
 take over the destination. Once the new workload is active, scaling the old
 workload back up is rejected until the new workload is scaled down or removed.
