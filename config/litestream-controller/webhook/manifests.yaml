@@ -73,3 +73,28 @@ webhooks:
     - litestreamreplicas
   sideEffects: None
   timeoutSeconds: 10
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-litestream-workload
+  failurePolicy: Fail
+  name: vlitestreamworkload.litestream-controller.mytools.nakatanakatana.app
+  rules:
+  - apiGroups:
+    - apps
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - deployments
+    - deployments/scale
+    - statefulsets
+    - statefulsets/scale
+    - daemonsets
+  sideEffects: None
+  timeoutSeconds: 10

@@ -7,6 +7,10 @@
 #
 # replicas: 1 is required for the same single-writer reason as
 # deployment.yaml: SQLite allows only one writer per database file.
+# The workload validating webhook rejects this StatefulSet when a replicating
+# Litestream is referenced and replicas is greater than one. Scaling through
+# the StatefulSet scale subresource is validated as well, and another active
+# workload may not share the same Litestream destination.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

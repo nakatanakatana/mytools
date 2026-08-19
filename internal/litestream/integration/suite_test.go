@@ -15,6 +15,7 @@ import (
 	"github.com/nakatanakatana/mytools/api/litestream/v1alpha1"
 	"github.com/nakatanakatana/mytools/internal/litestream/controller"
 	webhookpkg "github.com/nakatanakatana/mytools/internal/litestream/webhook"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -68,6 +69,9 @@ func runSuite(m *testing.M) (int, error) {
 	testScheme = runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(testScheme); err != nil {
 		return 0, fmt.Errorf("add client-go scheme: %w", err)
+	}
+	if err := autoscalingv1.AddToScheme(testScheme); err != nil {
+		return 0, fmt.Errorf("add autoscaling scheme: %w", err)
 	}
 	if err := v1alpha1.AddToScheme(testScheme); err != nil {
 		return 0, fmt.Errorf("add v1alpha1 scheme: %w", err)

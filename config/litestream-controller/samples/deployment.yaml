@@ -1,7 +1,8 @@
 # Example application Deployment injected with the "app-db" Litestream
-# resource from litestream_v1alpha1_replicate.yaml. Apply that resource
-# first and wait for it to become Ready before creating Pods that reference
-# it — the webhook rejects Pods whose Litestream resource is not Ready.
+# resource from litestream_v1alpha1_replicate.yaml. Apply that resource first
+# and wait for it to become Ready before creating workloads that reference it
+# — multi-Pod workload validation requires the Litestream resource to exist,
+# and Pod admission still rejects resources that are not Ready.
 # Before creating the Deployment, label its namespace so the opt-in webhook
 # receives annotated Pods:
 # kubectl label namespace <namespace> litestream.mytools.nakatanakatana.app/injection=enabled
@@ -11,6 +12,10 @@
 # two replication sidecars would race each other to write the same replica
 # path. Scale this workload only by giving it its own database and its own
 # Litestream resource, never by raising replicas.
+# The workload validating webhook rejects this Deployment when replicas is
+# greater than one, when its default RollingUpdate could create a surge Pod,
+# or when the referenced Litestream resource configures replication during an
+# unsafe update. Recreate avoids overlapping replication sidecars.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,6 +24,8 @@ metadata:
     app.kubernetes.io/name: app
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: app

@@ -87,6 +87,60 @@ func TestPodMutatorInjectsReplicationSidecar(t *testing.T) {
 		"replication must start after the database has been restored")
 }
 
+func TestPodMutatorRejectsExistingPodUsingSameDestinationAcrossDifferentLitestreams(t *testing.T) {
+	resource := readyResource(t, v1alpha1.InjectionSpec{}, replicateDatabase("app"))
+	existingResource := readyResource(t, v1alpha1.InjectionSpec{}, replicateDatabase("app"))
+	existingResource.Name = "existing-db"
+	existingResource.Status.ConfigMapName = ""
+	existingPod := targetPod()
+	existingPod.Name = "existing"
+	existingPod.Annotations[InjectAnnotation] = existingResource.Name
+
+	err := newMutator(t, resource, existingResource, existingPod).Mutate(t.Context(), targetPod())
+
+	assert.ErrorContains(t, err, "existing Pod")
+}
+
+func TestPodMutatorAllowsExistingPodUsingDifferentDatabasePathOnSameReplica(t *testing.T) {
+	resource := readyResource(t, v1alpha1.InjectionSpec{}, replicateDatabase("app"))
+	existingResource := readyResource(t, v1alpha1.InjectionSpec{}, replicateDatabase("app"))
+	existingResource.Name = "existing-db"
+	existingResource.Spec.Databases[0].Path = "/var/lib/app/other.db"
+	existingResource.Status.ConfigMapName = ""
+	existingPod := targetPod()
+	existingPod.Name = "existing"
+	existingPod.Annotations[InjectAnnotation] = existingResource.Name
+
+	err := newMutator(t, resource, existingResource, existingPod).Mutate(t.Context(), targetPod())
+
+	assert.NilError(t, err)
+}
+
+func TestPodMutatorRejectsExistingPodUsingSameLitestream(t *testing.T) {
+	resource := readyResource(t, v1alpha1.InjectionSpec{}, replicateDatabase("app"))
+	existingPod := targetPod()
+	existingPod.Name = "existing"
+
+	err := newMutator(t, resource, existingPod).Mutate(t.Context(), targetPod())
+
+	assert.ErrorContains(t, err, "already uses Litestream")
+}
+
+func TestPodMutatorIgnoresFinishedPodsWhenCheckingReplicationConflicts(t *testing.T) {
+	for _, phase := range []corev1.PodPhase{corev1.PodSucceeded, corev1.PodFailed} {
+		t.Run(string(phase), func(t *testing.T) {
+			resource := readyResource(t, v1alpha1.InjectionSpec{}, replicateDatabase("app"))
+			existingPod := targetPod()
+			existingPod.Name = "finished"
+			existingPod.Status.Phase = phase
+
+			err := newMutator(t, resource, existingPod).Mutate(t.Context(), targetPod())
+
+			assert.NilError(t, err)
+		})
+	}
+}
+
 func TestPodMutatorRunsRestoreBeforeUserInitContainers(t *testing.T) {
 	resource := readyResource(t, v1alpha1.InjectionSpec{}, replicateDatabase("app"))
 	pod := targetPod()
