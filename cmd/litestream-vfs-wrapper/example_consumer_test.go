@@ -19,7 +19,7 @@ func TestConsumerBuildsWithoutCGOAndReadsFileReplica(t *testing.T) {
 
 	bin := filepath.Join(t.TempDir(), "consumer")
 	build := exec.Command("go", "build", "-buildvcs=false", "-o", bin, ".")
-	build.Dir = filepath.Join("example", "consumer")
+	build.Dir = filepath.Join("..", "..", "example", "litestream-vfs-consumer")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, "consumer build failed: %s", out)
