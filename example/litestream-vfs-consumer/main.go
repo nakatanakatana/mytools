@@ -49,13 +49,17 @@ func run(ctx context.Context, stdout io.Writer, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	stmt, _, err := db.Prepare(*query)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
-	defer stmt.Close()
+	defer func() {
+		_ = stmt.Close()
+	}()
 
 	if !stmt.Step() {
 		if err := stmt.Err(); err != nil {

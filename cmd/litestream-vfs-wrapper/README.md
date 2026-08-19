@@ -46,11 +46,11 @@ CGO_ENABLED=0 go build ./cmd/litestream-vfs-wrapper/...
 go test -race ./cmd/litestream-vfs-wrapper/...
 ```
 
-The consumer verification example is available as a standalone module under `example/consumer`.
+The consumer verification example is available under `example/litestream-vfs-consumer` in the root module.
 It is not bundled into application binaries that import only `litestreamvfs`.
 
 ```bash
-cd cmd/litestream-vfs-wrapper/example/consumer
+cd example/litestream-vfs-consumer
 CGO_ENABLED=0 go build -o consumer .
 ./consumer -replica /path/to/replica -database app.db -query 'SELECT value FROM records'
 ```
