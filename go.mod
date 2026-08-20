@@ -13,7 +13,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gorilla/feeds v1.2.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
-	github.com/mmcdole/gofeed v1.4.1
+	github.com/mmcdole/gofeed v1.4.2
 	github.com/ncruces/go-sqlite3 v0.35.3
 	github.com/sqldef/sqldef/v3 v3.11.20
 	github.com/stretchr/testify v1.12.1
