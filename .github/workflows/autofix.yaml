@@ -21,14 +21,14 @@ jobs:
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.62.3
+      - name: Fix aqua-checksums.json
+        run: aqua upc -prune
       # NOTE: workground https://github.com/golang/go/issues/75031
       - id: parse-go-version
         run: echo "GO_VERSION=$(cat aqua.yaml | grep "golang/go" | cut -f2 -d'@')" >> $GITHUB_OUTPUT
       - run: go env -w GOTOOLCHAIN="${GO_VERSION}+auto"
         env:
           GO_VERSION: ${{ steps.parse-go-version.outputs.GO_VERSION }}
-      - name: Fix aqua-checksums.json
-        run: aqua upc -prune
       - name: Tidy Go modules
         run: go mod tidy
       - name: Run autofix.ci
