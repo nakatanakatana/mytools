@@ -6,7 +6,7 @@ require (
 	fiatjaf.com/nostr v0.0.0-20260830215426-220d2202425a
 	github.com/arl/gitstatus v0.7.0
 	github.com/awnumar/memguard v0.23.0
-	github.com/benbjohnson/litestream v0.5.16
+	github.com/benbjohnson/litestream v0.5.17
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/coder/websocket v1.8.15
 	github.com/fasthttp/websocket v1.5.12
