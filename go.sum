@@ -8,8 +8,8 @@ cloud.google.com/go/storage v1.36.0 h1:P0mOkAcaJxhCTvAkMhxMfrTKiNcub4YmmPBtlhAyT
 cloud.google.com/go/storage v1.36.0/go.mod h1:M6M/3V/D3KpzMTJyPOR/HU6n2Si5QdaXYEsng2xgOs8=
 fiatjaf.com/lib v0.3.7 h1:mXZOn7NrUcjSdy4oNvwQyAmes7Ueb+Zr5hjqMIe2dxI=
 fiatjaf.com/lib v0.3.7/go.mod h1:UlHaZvPHj25PtKLh9GjZkUHRmQ2xZ8Jkoa4VRaLeeQ8=
-fiatjaf.com/nostr v0.0.0-20260830215426-220d2202425a h1:g3M8QWSpv/kkvfDxAgRrk7j9b89vMf7zHqHx6eGuW/8=
-fiatjaf.com/nostr v0.0.0-20260830215426-220d2202425a/go.mod h1:b1EIUDnd133Ie8Pg8O/biaKdFyCMz28aD4n64g1GqvM=
+fiatjaf.com/nostr v0.0.0-20260902034142-316ef6591fa2 h1:w8nKifd91TaKbcjgQVqZrgGCSqZRBM56SOwdk+649Fo=
+fiatjaf.com/nostr v0.0.0-20260902034142-316ef6591fa2/go.mod h1:b1EIUDnd133Ie8Pg8O/biaKdFyCMz28aD4n64g1GqvM=
 github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.2 h1:Hr5FTipp7SL07o2FvoVOX9HRiRH3CR3Mj8pxqCcdD5A=
 github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.2/go.mod h1:QyVsSSN64v5TGltphKLQ2sQxe4OBQg0J1eKRcVBnfgE=
 github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.11.0 h1:MhRfI58HblXzCtWEZCO0feHs8LweePB3s90r7WaR1KU=
