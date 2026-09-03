@@ -75,10 +75,21 @@ func TestStartAuthorizationLogsPersistenceFailure(t *testing.T) {
 
 func TestCallbackNormalizesLocalAccountAndPersistsEncryptedToken(t *testing.T) {
 	client, store, forms := newOAuthTestClient(t, "alice", time.Now())
+	client.successRedirectURL = "https://dashboard.example/"
+	var notifiedAt, notifiedExpiry time.Time
+	client.onAuthorizationStatusChanged = func(at, expiry time.Time) {
+		notifiedAt, notifiedExpiry = at, expiry
+		if _, err := store.OAuthTokenByAccountDID(context.Background(), mastodonScope, mastodonScope.Account); err != nil {
+			t.Fatalf("notification before token persistence: %v", err)
+		}
+	}
 	state := startAuthorization(t, client)
 	response := callback(t, client, state, "authorization-secret")
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d body=%q", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Location"); got != "https://dashboard.example/?oauth=success" {
+		t.Fatalf("Location = %q", got)
 	}
 	if forms.token.Get("code_verifier") == "" || forms.token.Get("redirect_uri") != "https://bridge.example/oauth/mastodon/callback" {
 		t.Fatalf("token form = %#v", forms.token)
@@ -96,6 +107,9 @@ func TestCallbackNormalizesLocalAccountAndPersistsEncryptedToken(t *testing.T) {
 	}
 	if got.AccessToken != "access-secret" || got.RefreshToken != "refresh-secret" {
 		t.Fatalf("token = %#v", got)
+	}
+	if notifiedAt.IsZero() || !notifiedExpiry.After(notifiedAt) {
+		t.Fatalf("authorization notification = at %v expiry %v", notifiedAt, notifiedExpiry)
 	}
 }
 
@@ -192,6 +206,29 @@ func TestExpiredTokenRefreshesWithoutLeakingSecretsInErrors(t *testing.T) {
 	}
 	assertOAuthLogContains(t, logs.String(), "stage=token_refresh", "result=started", "result=failed")
 	assertOAuthLogExcludes(t, logs.String(), "access-secret", "refresh-secret", "refreshed-access", "client-secret")
+}
+
+func TestExpiredTokenRefreshNotifiesAuthorizationStatus(t *testing.T) {
+	now := time.Now()
+	client, _, _ := newOAuthTestClient(t, "alice", now)
+	state := startAuthorization(t, client)
+	if got := callback(t, client, state, "code"); got.Code != http.StatusSeeOther {
+		t.Fatalf("callback status = %d", got.Code)
+	}
+
+	var notifiedAt, notifiedExpiry time.Time
+	client.onAuthorizationStatusChanged = func(at, expiry time.Time) {
+		notifiedAt, notifiedExpiry = at, expiry
+	}
+	refreshAt := now.Add(2 * time.Hour)
+	client.now = func() time.Time { return refreshAt }
+	if _, err := client.Token(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if !notifiedAt.Equal(refreshAt) || !notifiedExpiry.Equal(refreshAt.Add(time.Hour)) {
+		t.Fatalf("authorization notification = at %v expiry %v, want at %v expiry %v", notifiedAt, notifiedExpiry, refreshAt, refreshAt.Add(time.Hour))
+	}
 }
 
 func TestOAuthRemoteErrorsRetainSafeDiagnosticsAndRedactRequestSecrets(t *testing.T) {

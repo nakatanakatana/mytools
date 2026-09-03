@@ -1,0 +1,122 @@
+:root {
+  --surface: #ffffff;
+  --surface-muted: #f4f6f8;
+  --text: #1b1f23;
+  --border: #c6cbd1;
+  --focus: #005fcc;
+  --status-ok: #176b3a;
+  --status-working: #005fcc;
+  --status-warning: #885b00;
+  --status-error: #b42318;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--surface-muted);
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+main {
+  width: min(100% - 2rem, 64rem);
+  margin: 0 auto;
+  padding: 2rem 0;
+}
+
+.page-header,
+.provider-card {
+  padding: 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.provider-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+}
+
+.provider-card dl {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.status-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.5rem 1rem;
+}
+
+.status-summary div,
+.provider-card dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.status-summary dd,
+.provider-card dd {
+  margin: 0;
+}
+
+form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+input,
+button {
+  font: inherit;
+}
+
+input,
+button {
+  padding: 0.5rem;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.status-ready {
+  color: var(--status-ok);
+}
+
+.status-working {
+  color: var(--status-working);
+}
+
+.status-warning {
+  color: var(--status-warning);
+}
+
+.status-error {
+  color: var(--status-error);
+}
+
+@media (max-width: 32rem) {
+  main {
+    width: min(100% - 1rem, 64rem);
+    padding: 1rem 0;
+  }
+
+  .page-header,
+  .provider-card {
+    padding: 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+  }
+}
