@@ -220,6 +220,7 @@ func setSharedEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("NOSTR_BRIDGE_HOST", "127.0.0.1")
 	t.Setenv("NOSTR_BRIDGE_PORT", "4321")
+	t.Setenv("NOSTR_BRIDGE_UI_URL", "https://dashboard.example")
 	t.Setenv("NOSTR_BRIDGE_DATABASE_PATH", "/tmp/nostr-bridge.db")
 	t.Setenv("NOSTR_BRIDGE_MASTER_SEED", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	t.Setenv("NOSTR_BRIDGE_RELAY_URL", "wss://relay.example")
@@ -474,6 +475,43 @@ func TestLoadConfigRejectsInvalidSharedSettings(t *testing.T) {
 				t.Fatalf("accepted %s=%q", tc.variable, tc.value)
 			}
 		})
+	}
+}
+
+func TestLoadConfigRejectsInvalidUIURL(t *testing.T) {
+	for _, value := range []string{"/private", "javascript:alert(1)", "https://user:pass@dashboard.example/", "https://dashboard.example/nostr-bridge"} {
+		t.Run(value, func(t *testing.T) {
+			setSharedEnv(t)
+			setBlueskyEnv(t)
+			t.Setenv("NOSTR_BRIDGE_UI_URL", value)
+			if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "NOSTR_BRIDGE_UI_URL") {
+				t.Fatalf("accepted NOSTR_BRIDGE_UI_URL=%q: %v", value, err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRequiresUIURL(t *testing.T) {
+	setSharedEnv(t)
+	setBlueskyEnv(t)
+	t.Setenv("NOSTR_BRIDGE_UI_URL", "")
+
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "NOSTR_BRIDGE_UI_URL") {
+		t.Fatalf("LoadConfig() error = %v, want NOSTR_BRIDGE_UI_URL", err)
+	}
+}
+
+func TestLoadConfigReadsUIURL(t *testing.T) {
+	setSharedEnv(t)
+	setBlueskyEnv(t)
+	t.Setenv("NOSTR_BRIDGE_UI_URL", "https://dashboard.example/?source=oauth")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Shared.UIURL != "https://dashboard.example/?source=oauth" {
+		t.Fatalf("UIURL = %q", cfg.Shared.UIURL)
 	}
 }
 

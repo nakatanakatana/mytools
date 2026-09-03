@@ -42,6 +42,18 @@ func TestServerAddress(t *testing.T) {
 	}
 }
 
+func TestHealthMastodonAuthorizationObserverUpdatesProvider(t *testing.T) {
+	health := NewHealth(HealthOptions{EnabledProviders: []string{"mastodon"}})
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	expiry := now.Add(time.Hour)
+	healthMastodonAuthorizationObserver{health: health}.AuthorizationStatusChanged(now, expiry)
+
+	got := health.providerSnapshot("mastodon")
+	if !got.AuthorizationAvailable || got.ReauthRequired || got.Degraded || got.AccessTokenExpired || !got.OAuthExpiry.Equal(expiry) {
+		t.Fatalf("Mastodon authorization health = %#v", got)
+	}
+}
+
 func TestRunStopsResourcesWhenContextEnds(t *testing.T) {
 	oldNewRuntimeResources := newRuntimeResources
 	t.Cleanup(func() { newRuntimeResources = oldNewRuntimeResources })
@@ -76,6 +88,84 @@ func TestRuntimeResourcesServeConfiguredOAuthRoutes(t *testing.T) {
 	}
 	if got := metadata["jwks_uri"]; got != "https://bridge.example/oauth/bluesky/jwks" {
 		t.Fatalf("jwks_uri = %v", got)
+	}
+}
+
+func TestRuntimeResourcesServeEmbeddedFrontend(t *testing.T) {
+	resources, err := newRuntimeResources(testRuntimeConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources) }()
+
+	recorder := httptest.NewRecorder()
+	resources.httpServer.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://dashboard.example/", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("frontend status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("frontend Content-Type = %q", recorder.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(recorder.Body.String(), "nostr-bridge") {
+		t.Fatalf("frontend body = %s", recorder.Body.String())
+	}
+}
+
+func TestRuntimeResourcesPreserveAPIRoutesWhenFrontendIsMounted(t *testing.T) {
+	resources, err := newRuntimeResources(testRuntimeConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources) }()
+
+	for _, path := range []string{"/api/status", "/oauth/bluesky/client-metadata.json"} {
+		t.Run(path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			resources.httpServer.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://dashboard.example"+path, nil))
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("GET %s status = %d, body = %s", path, recorder.Code, recorder.Body.String())
+			}
+			if strings.Contains(recorder.Header().Get("Content-Type"), "text/html") {
+				t.Fatalf("GET %s was handled by frontend: Content-Type = %q", path, recorder.Header().Get("Content-Type"))
+			}
+		})
+	}
+}
+
+func TestRuntimeResourcesServePrivateRoutesWithoutHostGate(t *testing.T) {
+	resources, err := newRuntimeResources(testRuntimeConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources) }()
+
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "frontend", method: http.MethodGet, path: "/"},
+		{name: "status", method: http.MethodGet, path: "/api/status"},
+		{name: "Bluesky OAuth start", method: http.MethodPost, path: "/oauth/bluesky/start", body: `{}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			public := httptest.NewRecorder()
+			publicRequest := httptest.NewRequest(test.method, "https://bridge.example"+test.path, strings.NewReader(test.body))
+			resources.httpServer.Handler.ServeHTTP(public, publicRequest)
+			if public.Code == http.StatusNotFound {
+				t.Fatalf("public %s was unexpectedly rejected: body = %s", test.path, public.Body.String())
+			}
+
+			private := httptest.NewRecorder()
+			privateRequest := httptest.NewRequest(test.method, "https://dashboard.example"+test.path, strings.NewReader(test.body))
+			resources.httpServer.Handler.ServeHTTP(private, privateRequest)
+			if private.Code == http.StatusNotFound {
+				t.Fatalf("private %s was rejected: body = %s", test.path, private.Body.String())
+			}
+		})
 	}
 }
 
@@ -143,6 +233,7 @@ func TestRuntimeOAuthCallbackPublishesAuthorizationHealthBeforeRedirect(t *testi
 
 	cfg := testRuntimeConfig(t)
 	cfg.Bluesky.OAuthAuthorizationServerURL = issuer.URL
+	cfg.Shared.UIURL = "https://dashboard.example/?source=oauth"
 	resources, err := newRuntimeResources(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +245,7 @@ func TestRuntimeOAuthCallbackPublishesAuthorizationHealthBeforeRedirect(t *testi
 		start,
 		httptest.NewRequest(
 			http.MethodPost,
-			"/oauth/bluesky/start",
+			"https://dashboard.example/oauth/bluesky/start",
 			strings.NewReader(`{"handle":"alice.test"}`),
 		),
 	)
@@ -175,6 +266,9 @@ func TestRuntimeOAuthCallbackPublishesAuthorizationHealthBeforeRedirect(t *testi
 	)
 	if callback.Code != http.StatusSeeOther {
 		t.Fatalf("OAuth callback = status %d body %s", callback.Code, callback.Body.String())
+	}
+	if got := callback.Header().Get("Location"); got != "https://dashboard.example/?oauth=success&source=oauth" {
+		t.Fatalf("OAuth callback Location = %q", got)
 	}
 
 	ready := httptest.NewRecorder()
@@ -458,6 +552,7 @@ func testRuntimeConfig(t *testing.T) Config {
 	return Config{
 		Shared: SharedConfig{
 			Host: "127.0.0.1", Port: "0", DatabasePath: t.TempDir() + "/bridge.db",
+			UIURL:      "https://dashboard.example",
 			MasterSeed: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", RelayURL: "wss://relay.example",
 			RelayManagementURL: "https://relay.example/manage", RelayCanonicalURL: "https://relay.example/manage",
 			RelayAdminPrivateKey: strings.Repeat("1", 64), OutboxLimit: 100, OutboxPollInterval: time.Millisecond,

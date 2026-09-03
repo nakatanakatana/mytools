@@ -88,6 +88,22 @@ type Health struct {
 	enabledProviders []string
 }
 
+type readinessSnapshot struct {
+	Now             time.Time
+	Metrics         HealthMetrics
+	Providers       map[string]ProviderHealthMetrics
+	ProviderReady   map[string]bool
+	DatabaseReady   bool
+	OAuthConnected  bool
+	JetstreamReady  bool
+	ProvidersReady  bool
+	OutboxReady     bool
+	OutboxCount     int64
+	OutboxAtLimit   bool
+	DispatcherReady bool
+	Ready           bool
+}
+
 // NewHealth creates a health reporter. Metrics are initially zero-valued until
 // the OAuth and Jetstream runtimes report their state.
 func NewHealth(options HealthOptions) *Health {
@@ -163,64 +179,86 @@ func (h *Health) Liveness(w http.ResponseWriter, _ *http.Request) {
 
 // Readiness reports whether durable storage, OAuth, and Jetstream are ready.
 func (h *Health) Readiness(w http.ResponseWriter, r *http.Request) {
-	metrics := h.snapshot()
-	outboxReady := true
-	if h.outboxCount != nil {
-		count, err := h.outboxCount(r.Context())
-		outboxReady = err == nil && h.outboxLimit > 0 && count < h.outboxLimit
-		metrics.OutboxCount, metrics.OutboxAtLimit = count, !outboxReady
-	}
-	now := h.now()
-	databaseReady := h.databaseCheck != nil && h.databaseCheck(r.Context()) == nil
-	oauthConnected := metrics.OAuthConnected && (metrics.OAuthExpiry.IsZero() || metrics.OAuthExpiry.After(now))
-	jetstreamReady := metrics.TargetDIDCount == 0 || metrics.JetstreamConnected
-	dispatcherReady := !h.requireDispatcher || metrics.DispatcherRunning
-	providersReady := true
-	providerAuthorizationsReady := true
+	snapshot := h.readinessSnapshot(r.Context())
 	providerStatus := map[string]any{}
+	for _, provider := range h.enabledProviders {
+		m := snapshot.Providers[provider]
+		providerStatus[provider] = map[string]any{
+			"authorization_available":    m.AuthorizationAvailable,
+			"reauth_required":            m.ReauthRequired,
+			"degraded":                   m.Degraded,
+			"access_token_expired":       m.AccessTokenExpired,
+			"maintenance_worker_running": m.MaintenanceWorkerRunning,
+			"bootstrapped":               m.Bootstrapped,
+			"stream_connected":           m.StreamConnected,
+			"target_count":               m.TargetCount,
+		}
+	}
+	status := http.StatusOK
+	if !snapshot.Ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeHealthJSON(w, status, map[string]any{
+		"ready":               snapshot.Ready,
+		"database":            snapshot.DatabaseReady,
+		"oauth_connected":     snapshot.OAuthConnected,
+		"jetstream_connected": snapshot.Metrics.JetstreamConnected,
+		"jetstream_required":  snapshot.Metrics.TargetDIDCount > 0,
+		"last_event_age_ms":   jetstreamAgeMilliseconds(snapshot.Now, snapshot.Metrics.LastJetstreamEvent),
+		"outbox_count":        snapshot.OutboxCount, "outbox_ready": snapshot.OutboxReady,
+		"dispatcher_running": snapshot.DispatcherReady,
+		"providers":          providerStatus,
+	})
+}
+
+func (h *Health) readinessSnapshot(ctx context.Context) readinessSnapshot {
+	metrics := h.snapshot()
+	snapshot := readinessSnapshot{
+		Metrics:         metrics,
+		Providers:       make(map[string]ProviderHealthMetrics, len(h.enabledProviders)),
+		ProviderReady:   make(map[string]bool, len(h.enabledProviders)),
+		OutboxReady:     true,
+		OutboxCount:     metrics.OutboxCount,
+		OutboxAtLimit:   metrics.OutboxAtLimit,
+		ProvidersReady:  true,
+		DispatcherReady: !h.requireDispatcher || metrics.DispatcherRunning,
+	}
+	if h.outboxCount != nil {
+		count, err := h.outboxCount(ctx)
+		snapshot.OutboxCount = count
+		snapshot.OutboxReady = err == nil && h.outboxLimit > 0 && count < h.outboxLimit
+		snapshot.OutboxAtLimit = err == nil && h.outboxLimit > 0 && count >= h.outboxLimit
+		snapshot.Metrics.OutboxCount = count
+		snapshot.Metrics.OutboxAtLimit = snapshot.OutboxAtLimit
+	}
+
+	now := h.now()
+	snapshot.Now = now
+	snapshot.DatabaseReady = h.databaseCheck != nil && h.databaseCheck(ctx) == nil
+	snapshot.OAuthConnected = metrics.OAuthConnected && (metrics.OAuthExpiry.IsZero() || metrics.OAuthExpiry.After(now))
+	snapshot.JetstreamReady = metrics.TargetDIDCount == 0 || metrics.JetstreamConnected
+	providerAuthorizationsReady := true
 	if len(h.enabledProviders) > 0 {
 		h.mu.RLock()
 		for _, provider := range h.enabledProviders {
 			m := h.providers[provider]
-			auth := m.AuthorizationAvailable && !m.ReauthRequired
+			snapshot.Providers[provider] = m
+			authorizationReady := m.AuthorizationAvailable && !m.ReauthRequired
 			if provider == "bluesky" {
-				auth = auth && m.MaintenanceWorkerRunning
+				authorizationReady = authorizationReady && m.MaintenanceWorkerRunning
 			} else {
-				auth = auth && (m.OAuthExpiry.IsZero() || m.OAuthExpiry.After(now))
+				authorizationReady = authorizationReady && (m.OAuthExpiry.IsZero() || m.OAuthExpiry.After(now))
 			}
-			ok := auth && m.Bootstrapped && (m.TargetCount == 0 || m.StreamConnected)
-			providerAuthorizationsReady = providerAuthorizationsReady && auth
-			providersReady = providersReady && ok
-			providerStatus[provider] = map[string]any{
-				"authorization_available":    m.AuthorizationAvailable,
-				"reauth_required":            m.ReauthRequired,
-				"degraded":                   m.Degraded,
-				"access_token_expired":       m.AccessTokenExpired,
-				"maintenance_worker_running": m.MaintenanceWorkerRunning,
-				"bootstrapped":               m.Bootstrapped,
-				"stream_connected":           m.StreamConnected,
-				"target_count":               m.TargetCount,
-			}
+			snapshot.ProviderReady[provider] = authorizationReady && m.Bootstrapped && (m.TargetCount == 0 || m.StreamConnected)
+			providerAuthorizationsReady = providerAuthorizationsReady && authorizationReady
+			snapshot.ProvidersReady = snapshot.ProvidersReady && snapshot.ProviderReady[provider]
 		}
 		h.mu.RUnlock()
-		oauthConnected, jetstreamReady = providerAuthorizationsReady, true
+		snapshot.OAuthConnected = providerAuthorizationsReady
+		snapshot.JetstreamReady = true
 	}
-	ready := databaseReady && oauthConnected && jetstreamReady && providersReady && outboxReady && dispatcherReady
-	status := http.StatusOK
-	if !ready {
-		status = http.StatusServiceUnavailable
-	}
-	writeHealthJSON(w, status, map[string]any{
-		"ready":               ready,
-		"database":            databaseReady,
-		"oauth_connected":     oauthConnected,
-		"jetstream_connected": metrics.JetstreamConnected,
-		"jetstream_required":  metrics.TargetDIDCount > 0,
-		"last_event_age_ms":   jetstreamAgeMilliseconds(now, metrics.LastJetstreamEvent),
-		"outbox_count":        metrics.OutboxCount, "outbox_ready": outboxReady,
-		"dispatcher_running": dispatcherReady,
-		"providers":          providerStatus,
-	})
+	snapshot.Ready = snapshot.DatabaseReady && snapshot.OAuthConnected && snapshot.JetstreamReady && snapshot.ProvidersReady && snapshot.OutboxReady && snapshot.DispatcherReady
+	return snapshot
 }
 
 func jetstreamAgeMilliseconds(now, lastEvent time.Time) int64 {

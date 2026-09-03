@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>nostr-bridge</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header class="page-header">
+        <h1>nostr-bridge</h1>
+        <p id="overall-status" aria-live="polite">同期状況を確認しています。</p>
+        <p id="oauth-callback-status" role="status" hidden></p>
+        <dl class="status-summary">
+          <div><dt>データベース</dt><dd id="database-status">未取得</dd></div>
+          <div><dt>OAuth</dt><dd id="oauth-status">未取得</dd></div>
+          <div><dt>Jetstream</dt><dd id="jetstream-status">未取得</dd></div>
+          <div><dt>ディスパッチャー</dt><dd id="dispatcher-status">未取得</dd></div>
+          <div><dt>送信待ち</dt><dd id="outbox-status">未取得</dd></div>
+          <div><dt>保留中の処理</dt><dd id="pending-work-status">未取得</dd></div>
+          <div><dt>最終 Jetstream イベント</dt><dd id="last-jetstream-event">未取得</dd></div>
+          <div><dt>最終同期時刻</dt><dd id="last-sync">未取得</dd></div>
+          <div><dt>最終リレー配信</dt><dd id="last-relay-delivery">未取得</dd></div>
+        </dl>
+      </header>
+
+      <section aria-labelledby="providers-heading">
+        <h2 id="providers-heading">プロバイダー</h2>
+        <div id="provider-list" class="provider-list"></div>
+        <p id="provider-empty-state" hidden>設定済みのプロバイダーはありません。</p>
+        <p id="status-error" class="status-error" role="alert" hidden></p>
+        <p id="action-error" class="status-error" role="alert" hidden></p>
+      </section>
+    </main>
+
+    <template id="provider-card-template">
+      <article class="provider-card">
+        <h3 data-provider-name></h3>
+        <p>状態: <span data-provider-status></span></p>
+        <dl>
+          <div><dt>対象数</dt><dd data-target-count></dd></div>
+          <div><dt>初期同期</dt><dd data-bootstrap-state></dd></div>
+          <div><dt>保留中の処理</dt><dd data-pending-work></dd></div>
+          <div><dt>ストリーム接続</dt><dd data-stream-state></dd></div>
+          <div><dt>最終イベント</dt><dd data-last-event></dd></div>
+          <div><dt>最終処理時刻</dt><dd data-last-reconciliation></dd></div>
+        </dl>
+        <form data-bluesky-oauth-form hidden>
+          <label>
+            Bluesky ハンドル
+            <input name="handle" autocomplete="username" required>
+          </label>
+          <button type="submit">セットアップを開始</button>
+        </form>
+        <button type="button" data-mastodon-oauth-start hidden>Mastodon のセットアップを開始</button>
+      </article>
+    </template>
+  </body>
+</html>

@@ -34,6 +34,7 @@ Shared and owner settings:
 | Variable | Description | Default |
 | --- | --- | --- |
 | `NOSTR_BRIDGE_HOST` / `NOSTR_BRIDGE_PORT` | HTTP bind address | `127.0.0.1` / `8080` |
+| `NOSTR_BRIDGE_UI_URL` | Private dashboard root URL used after OAuth callbacks; must be configured even when callbacks and dashboard share a host | (required) |
 | `NOSTR_BRIDGE_DATABASE_PATH` | SQLite database path (required) | |
 | `NOSTR_BRIDGE_MASTER_SEED` | Base64 encoding of exactly 32 random bytes (required) | |
 | `NOSTR_BRIDGE_RELAY_URL` | External relay `ws`/`wss` URL (required) | |
@@ -88,16 +89,46 @@ Mastodon is enabled when `NOSTR_BRIDGE_MASTODON_BASE_URL` is non-empty:
 | `NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_SECRET` | Mastodon application client secret | |
 | `NOSTR_BRIDGE_MASTODON_OAUTH_ENCRYPTION_KEY` | Base64 32-byte token/state encryption key | |
 
-## OAuth and network exposure
+## Private web UI, status, and network exposure
 
-Only public OAuth protocol callbacks/artifacts require external HTTPS access:
+`GET /` serves the embedded private dashboard. It polls `GET /api/status` on
+the same bridge origin; that endpoint returns a sanitized operational snapshot
+with overall readiness, database/dispatcher state, an outbox summary, and
+provider-level authorization, bootstrap, stream, target, pending-work, and
+timestamp fields. It does not return credentials, OAuth tokens or state,
+keys, cursors, target identities, outbox payloads, or raw errors.
+
+`ready: false` in a successful status response is a normal degraded-state
+report, not a failure of the status endpoint itself. Timestamp fields are
+`null` until the relevant event, delivery, sync, or reconciliation has first
+occurred. `target_count` and `pending_work` are current operational indicators;
+they are not a completed/total synchronization percentage.
+
+The dashboard starts the existing same-origin OAuth flows: Bluesky sends
+`POST /oauth/bluesky/start` with a JSON handle hint, and Mastodon sends
+`POST /oauth/mastodon/start` with no request body. Both successful callbacks
+redirect to `NOSTR_BRIDGE_UI_URL?oauth=success`. The value must be an absolute
+HTTP/HTTPS URL for the dashboard root; path prefixes are not supported. Public
+OAuth callback routes may use a different host. The UI URL controls the OAuth
+completion destination; it is not an access-control mechanism. Keep the
+dashboard, status, and OAuth-start routes behind the private network or ingress
+boundary, and expose only the callback, metadata, and JWKS routes needed by the
+providers. The dashboard displays a separate completion notice and keeps it
+visible while the first updated status is fetched.
+
+The dashboard is not a configuration editor. Provider credentials and
+instance, account, and list configuration remain environment variables read
+at process startup; changing them requires updating the environment and
+restarting the bridge.
+
+Keep `/`, `/api/status`, `/oauth/bluesky/start`, `/oauth/mastodon/start`,
+`/healthz`, `/readyz`, and `/metrics` private behind the existing network
+boundary. The embedded UI does not add authentication. Only public OAuth
+protocol callbacks/artifacts require external HTTPS access:
 `/oauth/bluesky/callback`, `/oauth/bluesky/client-metadata.json`,
-`/oauth/bluesky/jwks`, and `/oauth/mastodon/callback`. Ordinary UI and auth
-starts (`/oauth/bluesky/start` and `POST /oauth/mastodon/start`) may remain
-Tailscale-only. Do not expose health, metrics, or unrelated routes publicly.
-Allow outbound HTTPS to OAuth and provider APIs, outbound WebSockets to
-Bluesky Jetstream and Mastodon streaming, and relay protocol/management
-connections.
+`/oauth/bluesky/jwks`, and `/oauth/mastodon/callback`. Allow outbound HTTPS to
+OAuth and provider APIs, outbound WebSockets to Bluesky Jetstream and
+Mastodon streaming, and relay protocol/management connections.
 
 ### OAuth authorization
 

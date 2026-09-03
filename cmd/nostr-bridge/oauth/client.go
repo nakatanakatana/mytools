@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauthredirect"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/secretbox"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
@@ -41,27 +42,30 @@ type Options struct {
 	AuthorizationServerURL string
 	ClientID               string
 	RedirectURL            string
-	ClientSigningKey       *ecdsa.PrivateKey
-	EncryptionKey          []byte
-	Now                    func() time.Time
-	RefreshPeriod          time.Duration
-	Observer               ClientObserver
+	// SuccessRedirectURL is the private UI landing page after authorization.
+	SuccessRedirectURL string
+	ClientSigningKey   *ecdsa.PrivateKey
+	EncryptionKey      []byte
+	Now                func() time.Time
+	RefreshPeriod      time.Duration
+	Observer           ClientObserver
 }
 
 // Client starts and completes OAuth authorization flows.
 type Client struct {
-	scope            bridgestore.SourceScope
-	store            bridgestore.OAuthStore
-	httpClient       *http.Client
-	issuer           string
-	clientID         string
-	redirectURL      string
-	clientSigningKey *ecdsa.PrivateKey
-	box              secretbox.Box
-	now              func() time.Time
-	refreshPeriod    time.Duration
-	observer         ClientObserver
-	tokenMu          sync.Mutex
+	scope              bridgestore.SourceScope
+	store              bridgestore.OAuthStore
+	httpClient         *http.Client
+	issuer             string
+	clientID           string
+	redirectURL        string
+	successRedirectURL string
+	clientSigningKey   *ecdsa.PrivateKey
+	box                secretbox.Box
+	now                func() time.Time
+	refreshPeriod      time.Duration
+	observer           ClientObserver
+	tokenMu            sync.Mutex
 }
 
 type sessionPayload struct {
@@ -121,7 +125,7 @@ func NewClient(options Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{scope: options.Scope, store: options.Store, httpClient: options.HTTPClient, issuer: strings.TrimRight(options.AuthorizationServerURL, "/"), clientID: options.ClientID, redirectURL: options.RedirectURL, clientSigningKey: options.ClientSigningKey, box: box, now: options.Now, refreshPeriod: options.RefreshPeriod, observer: options.Observer}, nil
+	return &Client{scope: options.Scope, store: options.Store, httpClient: options.HTTPClient, issuer: strings.TrimRight(options.AuthorizationServerURL, "/"), clientID: options.ClientID, redirectURL: options.RedirectURL, successRedirectURL: options.SuccessRedirectURL, clientSigningKey: options.ClientSigningKey, box: box, now: options.Now, refreshPeriod: options.RefreshPeriod, observer: options.Observer}, nil
 }
 
 // StartAuthorization creates a stateful PAR request and returns the user-facing authorization URL.
@@ -196,7 +200,7 @@ func (c *Client) StartAuthorization(ctx context.Context, handle string) (string,
 	return authorize.String(), nil
 }
 
-// HandleCallback validates state, exchanges the code, encrypts the returned token payload, and redirects home.
+// HandleCallback validates state, exchanges the code, encrypts the returned token payload, and redirects to the UI.
 func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
@@ -302,7 +306,7 @@ func (c *Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		c.observer.AuthorizationStatusChanged(c.now(), status)
 	}
 	c.observeRefreshSucceeded(RefreshReasonAuthorizationCode)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, oauthredirect.SuccessURL(c.successRedirectURL), http.StatusSeeOther)
 }
 
 // TokenByAccountDID returns the persisted access token and its DPoP credential.

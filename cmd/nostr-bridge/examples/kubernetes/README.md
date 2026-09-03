@@ -42,12 +42,36 @@ public Bluesky protocol artifacts through environment-owned HTTPS routing:
 - `/oauth/bluesky/jwks`
 - `/oauth/mastodon/callback`
 
-Authorization starts and ordinary UI can remain Tailscale-only. Keep
-`/healthz`, `/readyz`, and `/metrics` private. The app needs outbound relay
-protocol/management access, HTTPS to both provider APIs and OAuth servers, and
-WebSocket streams to Bluesky Jetstream and Mastodon streaming. NetworkPolicy
-cannot usually constrain public hosts by DNS name, so tighten the example for
-your CNI and environment.
+Set the required `NOSTR_BRIDGE_UI_URL` to the absolute private dashboard root
+URL. It must not contain a path prefix. The public OAuth callback host may
+differ from the dashboard host; successful OAuth callbacks append
+`?oauth=success` to this URL before returning to the dashboard.
+
+The application does not authenticate requests or enforce this separation by
+Host header. Configure the public ingress to expose only the callback,
+metadata, and JWKS paths listed above; keep the dashboard, status, OAuth-start,
+health, readiness, and metrics paths private.
+
+Keep all other bridge routes private, including:
+
+- `/`
+- `/api/status`
+- `/oauth/bluesky/start`
+- `/oauth/mastodon/start`
+- `/healthz`
+- `/readyz`
+- `/metrics`
+
+The embedded UI does not add an authentication layer. Access control for the
+dashboard, status, setup, health, readiness, and metrics routes remains the
+responsibility of the existing Tailscale or ingress boundary. The UI and
+status endpoint return no provider credentials, OAuth secrets, tokens, state,
+keys, cursors, target identities, outbox payloads, or raw errors.
+
+The app needs outbound relay protocol/management access, HTTPS to both
+provider APIs and OAuth servers, and WebSocket streams to Bluesky Jetstream
+and Mastodon streaming. NetworkPolicy cannot usually constrain public hosts by
+DNS name, so tighten the example for your CNI and environment.
 
 Apply after customization:
 

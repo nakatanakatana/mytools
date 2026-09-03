@@ -15,6 +15,7 @@ import (
 type SharedConfig struct {
 	Host                 string        `env:"NOSTR_BRIDGE_HOST" envDefault:"127.0.0.1"`
 	Port                 string        `env:"NOSTR_BRIDGE_PORT" envDefault:"8080"`
+	UIURL                string        `env:"NOSTR_BRIDGE_UI_URL"`
 	DatabasePath         string        `env:"NOSTR_BRIDGE_DATABASE_PATH,required"`
 	MasterSeed           string        `env:"NOSTR_BRIDGE_MASTER_SEED,required"`
 	RelayURL             string        `env:"NOSTR_BRIDGE_RELAY_URL,required"`
@@ -90,6 +91,7 @@ type configVariable struct {
 var configVariables = []configVariable{
 	{name: "NOSTR_BRIDGE_HOST", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_PORT", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_UI_URL", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_DATABASE_PATH", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_MASTER_SEED", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_RELAY_URL", documentation: documentInReadmeAndDeployment},
@@ -156,6 +158,12 @@ func LoadConfig() (Config, error) {
 	}
 	if cfg.Owner.Picture != "" && !validEndpoint(cfg.Owner.Picture, "https") {
 		return Config{}, fmt.Errorf("NOSTR_BRIDGE_OWNER_PICTURE must be an absolute HTTPS URL")
+	}
+	if strings.TrimSpace(cfg.Shared.UIURL) == "" {
+		return Config{}, fmt.Errorf("NOSTR_BRIDGE_UI_URL must not be empty")
+	}
+	if !validUIURL(cfg.Shared.UIURL) {
+		return Config{}, fmt.Errorf("NOSTR_BRIDGE_UI_URL must be an absolute HTTP/HTTPS URL at the dashboard root")
 	}
 	if !cfg.Bluesky.Enabled() && !cfg.Mastodon.Enabled() {
 		return Config{}, fmt.Errorf("at least one provider must be enabled")
@@ -225,6 +233,14 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("NOSTR_BRIDGE_OUTBOX_POLL_INTERVAL must be positive")
 	}
 	return cfg, nil
+}
+
+func validUIURL(raw string) bool {
+	if !validEndpoint(raw, "http", "https") {
+		return false
+	}
+	u, err := url.Parse(raw)
+	return err == nil && (u.Path == "" || u.Path == "/")
 }
 
 func requireOAuthRoute(name, raw, route string) error {

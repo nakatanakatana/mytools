@@ -32,6 +32,7 @@ spec:
           env:
             - {name: NOSTR_BRIDGE_HOST, value: 0.0.0.0}
             - {name: NOSTR_BRIDGE_PORT, value: "8080"}
+            - {name: NOSTR_BRIDGE_UI_URL, value: https://REPLACE_WITH_PRIVATE_UI_HOST}
             - {name: NOSTR_BRIDGE_DATABASE_PATH, value: /var/lib/nostr-bridge/bridge.db}
             - {name: NOSTR_BRIDGE_RELAY_URL, value: REPLACE_WITH_RELAY_WS_URL}
             - {name: NOSTR_BRIDGE_RELAY_MANAGEMENT_URL, value: REPLACE_WITH_PRIVATE_RELAY_MANAGEMENT_URL}

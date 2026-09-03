@@ -41,6 +41,7 @@ jobs:
           aqua_version: v2.62.3
       - run: make check-sqlc
       - run: make check-litestream-manifests
+      - run: node --check cmd/nostr-bridge/web/static/app.js
       - run: golangci-lint run
 
   build:

@@ -22,6 +22,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauthredirect"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/secretbox"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 )
@@ -33,14 +34,21 @@ type OAuthOptions struct {
 	Store                                                 bridgestore.OAuthStore
 	HTTPClient                                            *http.Client
 	BaseURL, Account, ClientID, ClientSecret, RedirectURL string
-	EncryptionKey                                         []byte
-	Now                                                   func() time.Time
+	// SuccessRedirectURL is the private UI landing page after authorization.
+	SuccessRedirectURL string
+	// OnAuthorizationStatusChanged is called after a successful token and
+	// session persistence, immediately before the callback redirect.
+	OnAuthorizationStatusChanged func(at, expiry time.Time)
+	EncryptionKey                []byte
+	Now                          func() time.Time
 }
 type OAuthClient struct {
 	scope                                                 bridgestore.SourceScope
 	store                                                 bridgestore.OAuthStore
 	httpClient                                            *http.Client
 	baseURL, account, clientID, clientSecret, redirectURL string
+	successRedirectURL                                    string
+	onAuthorizationStatusChanged                          func(at, expiry time.Time)
 	box                                                   secretbox.Box
 	now                                                   func() time.Time
 }
@@ -188,7 +196,7 @@ func NewOAuthClient(o OAuthOptions) (*OAuthClient, error) {
 	if o.Scope.Provider != "mastodon" || o.Scope.Account != account {
 		return nil, errors.New("mastodon OAuth scope must exactly match the normalized configured account")
 	}
-	return &OAuthClient{scope: o.Scope, store: o.Store, httpClient: o.HTTPClient, baseURL: strings.TrimRight(o.BaseURL, "/"), account: account, clientID: o.ClientID, clientSecret: o.ClientSecret, redirectURL: o.RedirectURL, box: box, now: o.Now}, nil
+	return &OAuthClient{scope: o.Scope, store: o.Store, httpClient: o.HTTPClient, baseURL: strings.TrimRight(o.BaseURL, "/"), account: account, clientID: o.ClientID, clientSecret: o.ClientSecret, redirectURL: o.RedirectURL, successRedirectURL: o.SuccessRedirectURL, onAuthorizationStatusChanged: o.OnAuthorizationStatusChanged, box: box, now: o.Now}, nil
 }
 
 func (c *OAuthClient) StartAuthorization(ctx context.Context) (string, error) {
@@ -279,7 +287,9 @@ func (c *OAuthClient) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OAuth account does not match configured account", http.StatusForbidden)
 		return
 	}
-	if err := c.saveToken(r.Context(), tokens, c.account); err != nil {
+	now := c.now()
+	expiry := tokenExpiryAt(tokens, now)
+	if err := c.saveTokenAt(r.Context(), tokens, c.account, now); err != nil {
 		logOAuthFailure("token_persistence", err, state, code, tokens.AccessToken, tokens.RefreshToken)
 		http.Error(w, "OAuth token persistence failed", http.StatusInternalServerError)
 		return
@@ -289,8 +299,11 @@ func (c *OAuthClient) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OAuth session cleanup failed", http.StatusInternalServerError)
 		return
 	}
+	if c.onAuthorizationStatusChanged != nil {
+		c.onAuthorizationStatusChanged(now, expiry)
+	}
 	logOAuthResult("complete", "succeeded")
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, oauthredirect.SuccessURL(c.successRedirectURL), http.StatusSeeOther)
 }
 func (c *OAuthClient) exchange(ctx context.Context, form url.Values) (mastodonTokenResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/oauth/token", strings.NewReader(form.Encode()))
@@ -356,11 +369,15 @@ func (c *OAuthClient) verifyCredentials(ctx context.Context, access string) (str
 	}
 	return account.Acct, nil
 }
-func (c *OAuthClient) saveToken(ctx context.Context, t mastodonTokenResponse, id string) error {
-	expiry := time.Time{}
-	if t.ExpiresIn > 0 {
-		expiry = c.now().Add(time.Duration(t.ExpiresIn) * time.Second)
+func tokenExpiryAt(t mastodonTokenResponse, now time.Time) time.Time {
+	if t.ExpiresIn <= 0 {
+		return time.Time{}
 	}
+	return now.Add(time.Duration(t.ExpiresIn) * time.Second)
+}
+
+func (c *OAuthClient) saveTokenAt(ctx context.Context, t mastodonTokenResponse, id string, now time.Time) error {
+	expiry := tokenExpiryAt(t, now)
 	plain, err := json.Marshal(oauthTokenPayload{AccessToken: t.AccessToken, RefreshToken: t.RefreshToken, Scope: t.Scope, Expiry: expiry})
 	if err != nil {
 		return err
@@ -369,7 +386,7 @@ func (c *OAuthClient) saveToken(ctx context.Context, t mastodonTokenResponse, id
 	if err != nil {
 		return err
 	}
-	return c.store.SaveOAuthToken(ctx, c.scope, bridgestore.OAuthToken{AccountDID: id, EncryptedPayload: encrypted, UpdatedAt: c.now().Unix()})
+	return c.store.SaveOAuthToken(ctx, c.scope, bridgestore.OAuthToken{AccountDID: id, EncryptedPayload: encrypted, UpdatedAt: now.Unix()})
 }
 func (c *OAuthClient) Token(ctx context.Context) (Token, error) {
 	stored, err := c.store.OAuthTokenByAccountDID(ctx, c.scope, c.account)
@@ -399,13 +416,14 @@ func (c *OAuthClient) Token(ctx context.Context) (Token, error) {
 	if fresh.RefreshToken == "" {
 		fresh.RefreshToken = p.RefreshToken
 	}
-	if err := c.saveToken(ctx, fresh, c.account); err != nil {
+	now := c.now()
+	if err := c.saveTokenAt(ctx, fresh, c.account, now); err != nil {
 		logOAuthFailure("token_refresh_persistence", err, p.AccessToken, p.RefreshToken, fresh.AccessToken, fresh.RefreshToken, c.clientSecret)
 		return Token{}, errors.New("save refreshed Mastodon OAuth token")
 	}
-	expiry := time.Time{}
-	if fresh.ExpiresIn > 0 {
-		expiry = c.now().Add(time.Duration(fresh.ExpiresIn) * time.Second)
+	expiry := tokenExpiryAt(fresh, now)
+	if c.onAuthorizationStatusChanged != nil {
+		c.onAuthorizationStatusChanged(now, expiry)
 	}
 	logOAuthResult("token_refresh", "succeeded")
 	return Token{fresh.AccessToken, fresh.RefreshToken, fresh.Scope, expiry}, nil
