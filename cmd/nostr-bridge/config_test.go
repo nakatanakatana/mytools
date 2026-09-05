@@ -479,7 +479,7 @@ func TestLoadConfigRejectsInvalidSharedSettings(t *testing.T) {
 }
 
 func TestLoadConfigRejectsInvalidUIURL(t *testing.T) {
-	for _, value := range []string{"/private", "javascript:alert(1)", "https://user:pass@dashboard.example/", "https://dashboard.example/nostr-bridge"} {
+	for _, value := range []string{"   ", "/private", "javascript:alert(1)", "https://user:pass@dashboard.example/", "https://dashboard.example/nostr-bridge"} {
 		t.Run(value, func(t *testing.T) {
 			setSharedEnv(t)
 			setBlueskyEnv(t)
@@ -491,13 +491,17 @@ func TestLoadConfigRejectsInvalidUIURL(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRequiresUIURL(t *testing.T) {
+func TestLoadConfigAllowsMissingUIURL(t *testing.T) {
 	setSharedEnv(t)
 	setBlueskyEnv(t)
 	t.Setenv("NOSTR_BRIDGE_UI_URL", "")
 
-	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "NOSTR_BRIDGE_UI_URL") {
-		t.Fatalf("LoadConfig() error = %v, want NOSTR_BRIDGE_UI_URL", err)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v, want missing UI URL to be allowed", err)
+	}
+	if cfg.Shared.UIURL != "" {
+		t.Fatalf("UIURL = %q, want empty", cfg.Shared.UIURL)
 	}
 }
 

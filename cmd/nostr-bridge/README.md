@@ -34,7 +34,7 @@ Shared and owner settings:
 | Variable | Description | Default |
 | --- | --- | --- |
 | `NOSTR_BRIDGE_HOST` / `NOSTR_BRIDGE_PORT` | HTTP bind address | `127.0.0.1` / `8080` |
-| `NOSTR_BRIDGE_UI_URL` | Private dashboard root URL used after OAuth callbacks; must be configured even when callbacks and dashboard share a host | (required) |
+| `NOSTR_BRIDGE_UI_URL` | Optional private dashboard root URL used after OAuth callbacks; when unset, callbacks redirect to the same-origin `/` dashboard | (optional) |
 | `NOSTR_BRIDGE_DATABASE_PATH` | SQLite database path (required) | |
 | `NOSTR_BRIDGE_MASTER_SEED` | Base64 encoding of exactly 32 random bytes (required) | |
 | `NOSTR_BRIDGE_RELAY_URL` | External relay `ws`/`wss` URL (required) | |
@@ -107,10 +107,12 @@ they are not a completed/total synchronization percentage.
 The dashboard starts the existing same-origin OAuth flows: Bluesky sends
 `POST /oauth/bluesky/start` with a JSON handle hint, and Mastodon sends
 `POST /oauth/mastodon/start` with no request body. Both successful callbacks
-redirect to `NOSTR_BRIDGE_UI_URL?oauth=success`. The value must be an absolute
-HTTP/HTTPS URL for the dashboard root; path prefixes are not supported. Public
-OAuth callback routes may use a different host. The UI URL controls the OAuth
-completion destination; it is not an access-control mechanism. Keep the
+redirect to `NOSTR_BRIDGE_UI_URL?oauth=success` when configured, or to
+`/?oauth=success` when it is unset. When configured, the value must be an
+absolute HTTP/HTTPS URL for the dashboard root; path prefixes are not supported.
+Public OAuth callback routes may use a different host when
+`NOSTR_BRIDGE_UI_URL` is configured. The UI URL controls the OAuth completion
+destination; it is not an access-control mechanism. Keep the
 dashboard, status, and OAuth-start routes behind the private network or ingress
 boundary, and expose only the callback, metadata, and JWKS routes needed by the
 providers. The dashboard displays a separate completion notice and keeps it
