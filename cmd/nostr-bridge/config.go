@@ -159,10 +159,7 @@ func LoadConfig() (Config, error) {
 	if cfg.Owner.Picture != "" && !validEndpoint(cfg.Owner.Picture, "https") {
 		return Config{}, fmt.Errorf("NOSTR_BRIDGE_OWNER_PICTURE must be an absolute HTTPS URL")
 	}
-	if strings.TrimSpace(cfg.Shared.UIURL) == "" {
-		return Config{}, fmt.Errorf("NOSTR_BRIDGE_UI_URL must not be empty")
-	}
-	if !validUIURL(cfg.Shared.UIURL) {
+	if cfg.Shared.UIURL != "" && !validUIURL(cfg.Shared.UIURL) {
 		return Config{}, fmt.Errorf("NOSTR_BRIDGE_UI_URL must be an absolute HTTP/HTTPS URL at the dashboard root")
 	}
 	if !cfg.Bluesky.Enabled() && !cfg.Mastodon.Enabled() {

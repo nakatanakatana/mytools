@@ -42,10 +42,10 @@ public Bluesky protocol artifacts through environment-owned HTTPS routing:
 - `/oauth/bluesky/jwks`
 - `/oauth/mastodon/callback`
 
-Set the required `NOSTR_BRIDGE_UI_URL` to the absolute private dashboard root
-URL. It must not contain a path prefix. The public OAuth callback host may
-differ from the dashboard host; successful OAuth callbacks append
-`?oauth=success` to this URL before returning to the dashboard.
+Set `NOSTR_BRIDGE_UI_URL` to the absolute private dashboard root URL when the
+public OAuth callback host differs from the dashboard host. It is optional when
+both use the same host; in that case successful OAuth callbacks return to
+`/?oauth=success`. When set, the URL must not contain a path prefix.
 
 The application does not authenticate requests or enforce this separation by
 Host header. Configure the public ingress to expose only the callback,
