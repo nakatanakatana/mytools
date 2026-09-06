@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
 func TestHandlerServesEmbeddedShellAndAssets(t *testing.T) {
@@ -65,6 +67,74 @@ func TestHandlerReturnsNotFoundForMissingAsset(t *testing.T) {
 	}
 }
 
+func TestProviderCardTemplateLeavesProviderSetupControlsToCardCreation(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	document, err := html.Parse(strings.NewReader(recorder.Body.String()))
+	if err != nil {
+		t.Fatalf("parse shell: %v", err)
+	}
+	template := findElementByID(document, "provider-card-template")
+	if template == nil {
+		t.Fatal("provider card template was not served")
+	}
+	if findElementByAttribute(template, "data-provider-setup") == nil {
+		t.Fatal("provider card template does not contain a provider setup container")
+	}
+	if findElement(template, "form") != nil || findElement(template, "button") != nil || findElement(template, "input") != nil {
+		t.Fatal("provider card template contains controls that may be shown for the wrong provider")
+	}
+}
+
+func findElementByID(root *html.Node, id string) *html.Node {
+	return findElementByAttributeValue(root, "id", id)
+}
+
+func findElementByAttribute(root *html.Node, name string) *html.Node {
+	if root.Type == html.ElementNode {
+		for _, attribute := range root.Attr {
+			if attribute.Key == name {
+				return root
+			}
+		}
+	}
+	for child := root.FirstChild; child != nil; child = child.NextSibling {
+		if found := findElementByAttribute(child, name); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func findElementByAttributeValue(root *html.Node, name, value string) *html.Node {
+	if root.Type == html.ElementNode {
+		for _, attribute := range root.Attr {
+			if attribute.Key == name && attribute.Val == value {
+				return root
+			}
+		}
+	}
+	for child := root.FirstChild; child != nil; child = child.NextSibling {
+		if found := findElementByAttributeValue(child, name, value); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func findElement(root *html.Node, name string) *html.Node {
+	if root.Type == html.ElementNode && root.Data == name {
+		return root
+	}
+	for child := root.FirstChild; child != nil; child = child.NextSibling {
+		if found := findElement(child, name); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
 func TestClientAssetsReferenceStatusAndOAuthRoutes(t *testing.T) {
 	handler := Handler()
 
@@ -94,8 +164,11 @@ func TestClientAssetsReferenceStatusAndOAuthRoutes(t *testing.T) {
 				"clearActionError();",
 				"let oauthCallbackPending = false;",
 				"同期状況を更新しました。",
-				"oauthInFlight.bluesky = false;\n        syncOAuthControls();",
-				"oauthInFlight.mastodon = false;\n        syncOAuthControls();",
+				"oauthInFlight.bluesky = false;",
+				"oauthInFlight.mastodon = false;",
+				"function createBlueskySetup()",
+				"function createMastodonSetup()",
+				"const setup = card.querySelector(\"[data-provider-setup]\");",
 				"status.outbox?.ready === false",
 				"if (provider.access_token_expired === true)",
 				"if (provider.degraded === true)",

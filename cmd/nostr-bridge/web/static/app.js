@@ -124,8 +124,79 @@ function syncOAuthControls() {
 function createProviderCard(name) {
   const card = providerCardTemplate.content.firstElementChild.cloneNode(true);
   card.dataset.provider = name;
-  attachProviderActions(card, name);
+  const setup = card.querySelector("[data-provider-setup]");
+  if (name === "bluesky") setup.append(createBlueskySetup());
+  if (name === "mastodon") setup.append(createMastodonSetup());
   return card;
+}
+
+function createBlueskySetup() {
+  const form = document.createElement("form");
+  form.dataset.blueskyOauthForm = "";
+
+  const label = document.createElement("label");
+  label.append("Bluesky ハンドル");
+
+  const handleInput = document.createElement("input");
+  handleInput.name = "handle";
+  handleInput.autocomplete = "username";
+  handleInput.required = true;
+  label.append(handleInput);
+
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.textContent = "セットアップを開始";
+  form.append(label, button);
+
+  form.addEventListener("input", () => {
+    blueskyHandle = handleInput.value;
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (oauthInFlight.bluesky) return;
+
+    const handle = handleInput.value.trim();
+    if (!handle) {
+      showActionError("Bluesky ハンドルを入力してください。");
+      return;
+    }
+
+    clearActionError();
+    blueskyHandle = handle;
+    oauthInFlight.bluesky = true;
+    syncOAuthControls();
+    try {
+      await startBluesky(handle);
+    } catch (_error) {
+      oauthInFlight.bluesky = false;
+      syncOAuthControls();
+      showActionError("OAuth のセットアップを開始できません。しばらくしてから再試行します。");
+    }
+  });
+
+  return form;
+}
+
+function createMastodonSetup() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.mastodonOauthStart = "";
+  button.textContent = "Mastodon のセットアップを開始";
+  button.addEventListener("click", async () => {
+    if (oauthInFlight.mastodon) return;
+
+    clearActionError();
+    oauthInFlight.mastodon = true;
+    syncOAuthControls();
+    try {
+      await startMastodon();
+    } catch (_error) {
+      oauthInFlight.mastodon = false;
+      syncOAuthControls();
+      showActionError("OAuth のセットアップを開始できません。しばらくしてから再試行します。");
+    }
+  });
+  return button;
 }
 
 function updateProviderCard(card, name, provider) {
@@ -146,66 +217,9 @@ function updateProviderCard(card, name, provider) {
   if (name === "bluesky") {
     const form = card.querySelector("[data-bluesky-oauth-form]");
     const handleInput = form.elements.handle;
-    form.hidden = false;
     if (document.activeElement !== handleInput && handleInput.value !== blueskyHandle) {
       handleInput.value = blueskyHandle;
     }
-  }
-
-  if (name === "mastodon") {
-    const button = card.querySelector("[data-mastodon-oauth-start]");
-    button.hidden = false;
-    button.disabled = oauthInFlight.mastodon;
-  }
-}
-
-function attachProviderActions(card, name) {
-  if (name === "bluesky") {
-    const form = card.querySelector("[data-bluesky-oauth-form]");
-    const handleInput = form.elements.handle;
-    form.addEventListener("input", () => {
-      blueskyHandle = handleInput.value;
-    });
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (oauthInFlight.bluesky) return;
-
-      const handle = handleInput.value.trim();
-      if (!handle) {
-        showActionError("Bluesky ハンドルを入力してください。");
-        return;
-      }
-
-      clearActionError();
-      blueskyHandle = handle;
-      oauthInFlight.bluesky = true;
-      syncOAuthControls();
-      try {
-        await startBluesky(handle);
-      } catch (_error) {
-        oauthInFlight.bluesky = false;
-        syncOAuthControls();
-        showActionError("OAuth のセットアップを開始できません。しばらくしてから再試行します。");
-      }
-    });
-  }
-
-  if (name === "mastodon") {
-    const button = card.querySelector("[data-mastodon-oauth-start]");
-    button.addEventListener("click", async () => {
-      if (oauthInFlight.mastodon) return;
-
-      clearActionError();
-      oauthInFlight.mastodon = true;
-      syncOAuthControls();
-      try {
-        await startMastodon();
-      } catch (_error) {
-        oauthInFlight.mastodon = false;
-        syncOAuthControls();
-        showActionError("OAuth のセットアップを開始できません。しばらくしてから再試行します。");
-      }
-    });
   }
 }
 
