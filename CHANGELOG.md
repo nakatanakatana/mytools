@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.10.2](https://github.com/nakatanakatana/mytools/compare/v0.10.1...v0.10.2) - 2026-09-06
+
+### Maintenance & Others
+- chore(deps): update dependency goreleaser/goreleaser to v2.18.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/216
+- Scope nostr-bridge setup controls to each provider by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/218
+
 ## [v0.10.1](https://github.com/nakatanakatana/mytools/compare/v0.10.0...v0.10.1) - 2026-09-05
 
 ### Maintenance & Others
