@@ -47,14 +47,7 @@
           <div><dt>最終イベント</dt><dd data-last-event></dd></div>
           <div><dt>最終処理時刻</dt><dd data-last-reconciliation></dd></div>
         </dl>
-        <form data-bluesky-oauth-form hidden>
-          <label>
-            Bluesky ハンドル
-            <input name="handle" autocomplete="username" required>
-          </label>
-          <button type="submit">セットアップを開始</button>
-        </form>
-        <button type="button" data-mastodon-oauth-start hidden>Mastodon のセットアップを開始</button>
+        <div data-provider-setup></div>
       </article>
     </template>
   </body>
