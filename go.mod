@@ -20,7 +20,7 @@ require (
 	github.com/superfly/ltx v0.5.2
 	golang.org/x/crypto v0.56.0
 	golang.org/x/net v0.58.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 	gopkg.in/yaml.v3 v3.0.1
 	gotest.tools/v3 v3.5.2
 	k8s.io/api v0.37.0
