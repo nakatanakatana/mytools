@@ -17,7 +17,7 @@ require (
 	github.com/ncruces/go-sqlite3 v0.35.4
 	github.com/sqldef/sqldef/v3 v3.11.20
 	github.com/stretchr/testify v1.12.1
-	github.com/superfly/ltx v0.5.2
+	github.com/superfly/ltx v0.5.3
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sync v0.23.0
