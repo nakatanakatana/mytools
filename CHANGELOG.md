@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.10.3](https://github.com/nakatanakatana/mytools/compare/v0.10.2...v0.10.3) - 2026-09-13
+
+### Maintenance & Others
+- chore(deps): update dependency k1low/octocov to v0.77.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/219
+- fix(deps): update module golang.org/x/sync to v0.23.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/221
+- fix(deps): update module golang.org/x/crypto to v0.57.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/222
+- fix(deps): update module golang.org/x/net to v0.59.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/223
+- chore(deps): update dependency aquaproj/aqua-registry to v4.559.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/225
+- chore(deps): update dependency k1low/octocov to v0.78.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/226
+- fix(deps): update module github.com/superfly/ltx to v0.5.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/227
+- chore(deps): update dependency aquaproj/aqua-registry to v4.560.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/228
+- chore(deps): update golang:1.27 docker digest to f44f6e8 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/224
+- chore(deps): update dependency aquaproj/aqua-registry to v4.561.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/229
+
 ## [v0.10.2](https://github.com/nakatanakatana/mytools/compare/v0.10.1...v0.10.2) - 2026-09-06
 
 ### Maintenance & Others
