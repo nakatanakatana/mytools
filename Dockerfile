@@ -15,7 +15,7 @@ RUN go build -o /app/output ./cmd/...
 
 FROM ${BUILDER} AS builder-from
 
-FROM gcr.io/distroless/static@sha256:f2ea2709ac8db56323cbd7d014277f32cb572d9ea124b0076f7aafe5980678fe AS base
+FROM gcr.io/distroless/static@sha256:58133991db06659feaabe0f4e97a35cebf15ef4ea08f8a4c6d2ee5f75e4aa6a0 AS base
 COPY --from=builder-from /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # sarif-to-codequality image
