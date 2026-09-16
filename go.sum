@@ -287,8 +287,8 @@ github.com/savsgio/gotils v0.0.0-20240704082632-aef3928b8a38 h1:D0vL7YNisV2yqE55
 github.com/savsgio/gotils v0.0.0-20240704082632-aef3928b8a38/go.mod h1:sM7Mt7uEoCeFSCBM+qBrqvEo+/9vdmj19wzp3yzUhmg=
 github.com/spf13/pflag v1.0.10 h1:4EBh2KAYBwaONj6b2Ye1GiHfwjqyROoF4RwYO+vPwFk=
 github.com/spf13/pflag v1.0.10/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
-github.com/sqldef/sqldef/v3 v3.11.21 h1:PdbDYmpiJ9E2VMjafPzAT6G3yfv8Ig+HJRVYdeD54Rs=
-github.com/sqldef/sqldef/v3 v3.11.21/go.mod h1:AfaIMSrb/BQrncDMqVQPc8GwYIIMZAE2j1EZL7aLSgg=
+github.com/sqldef/sqldef/v3 v3.11.22 h1:FrNPwekJyUSAiG6L1vqTeNsSYXFG9OWhhpGRc4wUHwk=
+github.com/sqldef/sqldef/v3 v3.11.22/go.mod h1:AfaIMSrb/BQrncDMqVQPc8GwYIIMZAE2j1EZL7aLSgg=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.5.3 h1:jmXUvGomnU1o3W/V5h2VEradbpJDwGrzugQQvL0POH4=
 github.com/stretchr/objx v0.5.3/go.mod h1:rDQraq+vQZU7Fde9LOZLr8Tax6zZvy4kuNKF+QYS+U0=
