@@ -1,5 +1,41 @@
 # Changelog
 
+## [v0.10.3](https://github.com/nakatanakatana/mytools/compare/v0.10.2...v0.10.3) - 2026-09-19
+
+### Maintenance & Others
+- chore(deps): update dependency k1low/octocov to v0.77.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/219
+- fix(deps): update module golang.org/x/sync to v0.23.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/221
+- fix(deps): update module golang.org/x/crypto to v0.57.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/222
+- fix(deps): update module golang.org/x/net to v0.59.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/223
+- chore(deps): update dependency aquaproj/aqua-registry to v4.559.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/225
+- chore(deps): update dependency k1low/octocov to v0.78.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/226
+- fix(deps): update module github.com/superfly/ltx to v0.5.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/227
+- chore(deps): update dependency aquaproj/aqua-registry to v4.560.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/228
+- chore(deps): update golang:1.27 docker digest to f44f6e8 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/224
+- chore(deps): update dependency aquaproj/aqua-registry to v4.561.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/229
+- fix(deps): update module sigs.k8s.io/controller-runtime to v0.25.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/231
+- chore(deps): update dependency aquaproj/aqua-registry to v4.562.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/232
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.21 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/234
+- chore(deps): update dependency aquaproj/aqua to v2.63.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/236
+- chore(deps): update docker/build-push-action action to v7.4.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/237
+- chore(deps): update dependency aqua to v2.63.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/235
+- fix(deps): update module modernc.org/sqlite to v1.59.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/239
+- chore(deps): update docker/setup-buildx-action action to v4.4.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/238
+- chore(deps): update dependency aquaproj/aqua-registry to v4.563.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/240
+- chore(deps): update gcr.io/distroless/static docker digest to 5813399 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/230
+- fix(deps): update fiatjaf.com/nostr digest to 27e395a by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/233
+- chore(deps): update docker/setup-buildx-action action to v4.4.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/241
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.22 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/243
+- fix(deps): update module github.com/ncruces/go-sqlite3 to v0.35.5 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/242
+- chore(deps): update dependency aquaproj/aqua-registry to v4.564.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/244
+- chore(deps): update dependency goreleaser/goreleaser to v2.18.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/245
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.23 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/246
+- chore(deps): update dependency k1low/octocov to v0.79.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/249
+- chore(deps): update golang:1.27 docker digest to 1cfcdb1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/248
+- chore(deps): update dependency ubuntu to v26 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/247
+- chore(deps): update golang:1.27 docker digest to 3680233 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/250
+- ci: cache Go and Docker build outputs by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/251
+
 ## [v0.10.2](https://github.com/nakatanakatana/mytools/compare/v0.10.1...v0.10.2) - 2026-09-06
 
 ### Maintenance & Others
