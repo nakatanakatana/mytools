@@ -3,7 +3,7 @@ module github.com/nakatanakatana/mytools
 go 1.26.3
 
 require (
-	fiatjaf.com/nostr v0.0.0-20260916040958-27e395a0f6e7
+	fiatjaf.com/nostr v0.0.0-20260919022302-cf8167ebdb95
 	github.com/arl/gitstatus v0.7.0
 	github.com/awnumar/memguard v0.23.0
 	github.com/benbjohnson/litestream v0.5.17
