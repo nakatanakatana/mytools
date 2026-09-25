@@ -15,7 +15,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/mmcdole/gofeed v1.4.2
 	github.com/ncruces/go-sqlite3 v0.35.6
-	github.com/sqldef/sqldef/v3 v3.11.23
+	github.com/sqldef/sqldef/v3 v3.11.24
 	github.com/stretchr/testify v1.12.1
 	github.com/superfly/ltx v0.5.3
 	golang.org/x/crypto v0.57.0
