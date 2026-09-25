@@ -184,6 +184,9 @@ func buildEnvs(getenv func(string) string, lookPath func(string) (string, error)
 	if v := getenv("OP_VAULT"); v != "" {
 		envs = append(envs, fmt.Sprintf("OP_VAULT=%q", v))
 	}
+	if v := getenv("OP_ACCOUNT"); v != "" {
+		envs = append(envs, fmt.Sprintf("OP_ACCOUNT=%q", v))
+	}
 	if v := getenv("OP_BINARY"); v != "" {
 		resolved := v
 		if abs, err := lookPath(v); err == nil {

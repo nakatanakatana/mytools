@@ -53,6 +53,10 @@ type OnePasswordBackend struct {
 	binary string
 	vault  string
 
+	accountMu     sync.Mutex
+	account       string
+	detectAccount bool
+
 	opReadFlight singleflight.Group
 
 	// runCmd is used to execute external commands. Placed here to allow mocking in tests.
@@ -62,6 +66,7 @@ type OnePasswordBackend struct {
 type opConfig struct {
 	Vault    string `env:"OP_VAULT" envDefault:"wsl-keyring"`
 	OPBinary string `env:"OP_BINARY" envDefault:"op.exe"`
+	Account  string `env:"OP_ACCOUNT"`
 }
 
 // NewOnePasswordBackend creates a new OnePasswordBackend by parsing active configurations from environment variables.
@@ -71,8 +76,10 @@ func NewOnePasswordBackend() (*OnePasswordBackend, error) {
 		return nil, err
 	}
 	return &OnePasswordBackend{
-		binary: cfg.OPBinary,
-		vault:  cfg.Vault,
+		binary:        cfg.OPBinary,
+		vault:         cfg.Vault,
+		account:       cfg.Account,
+		detectAccount: cfg.Account == "",
 		runCmd: func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
 			if stdin != "" {
@@ -565,6 +572,38 @@ func (b *OnePasswordBackend) List(ctx context.Context) ([]*SecretItem, error) {
 }
 
 func (b *OnePasswordBackend) CheckAuth(ctx context.Context) error {
-	_, err := b.runOPNoVault(ctx, "whoami", "--format", "json")
+	args := []string{"whoami", "--format", "json"}
+	// With desktop app integration, whoami without --account always reports "not signed in".
+	if account := b.authAccount(ctx); account != "" {
+		args = append(args, "--account", account)
+	}
+	_, err := b.runOPNoVault(ctx, args...)
 	return err
+}
+
+func (b *OnePasswordBackend) authAccount(ctx context.Context) string {
+	b.accountMu.Lock()
+	defer b.accountMu.Unlock()
+	if b.account != "" || !b.detectAccount {
+		return b.account
+	}
+
+	out, err := b.runOPNoVault(ctx, "account", "list", "--format", "json")
+	if err != nil {
+		log.Printf("failed to list 1Password accounts: %v", err)
+		return ""
+	}
+	var accounts []struct {
+		AccountUUID string `json:"account_uuid"`
+	}
+	if err := json.Unmarshal(out, &accounts); err != nil {
+		log.Printf("failed to parse 1Password account list: %v", err)
+		return ""
+	}
+	if len(accounts) != 1 {
+		log.Printf("found %d 1Password accounts; set OP_ACCOUNT to select one for auth checks", len(accounts))
+		return ""
+	}
+	b.account = accounts[0].AccountUUID
+	return b.account
 }
