@@ -43,6 +43,18 @@ func TestBuildEnvs(t *testing.T) {
 			},
 		},
 		{
+			name: "OP_ACCOUNT set",
+			env: map[string]string{
+				"OP_ACCOUNT": "ACCOUNT1",
+			},
+			lookPath: func(s string) (string, error) {
+				return s, errors.New("not found")
+			},
+			want: []string{
+				`OP_ACCOUNT="ACCOUNT1"`,
+			},
+		},
+		{
 			name: "OP_BINARY set as command name and resolved successfully",
 			env: map[string]string{
 				"OP_BINARY": "op",

@@ -871,6 +871,116 @@ func TestOnePasswordBackend_CheckAuth_DoesNotCacheFailure(t *testing.T) {
 	}
 }
 
+func TestOnePasswordBackend_CheckAuth_UsesConfiguredAccount(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary:  "op.exe",
+		vault:   "test-vault",
+		account: "ACCOUNT1",
+	}
+
+	var calls []string
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return []byte(`{"user_uuid":"user"}`), nil
+	}
+
+	if err := b.CheckAuth(context.Background()); err != nil {
+		t.Fatalf("CheckAuth failed: %v", err)
+	}
+	want := []string{"whoami --format json --account ACCOUNT1"}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("op calls = %q, want %q", calls, want)
+	}
+}
+
+func TestOnePasswordBackend_CheckAuth_DetectsSingleAccountOnce(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary:        "op.exe",
+		vault:         "test-vault",
+		detectAccount: true,
+	}
+
+	var calls []string
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		argsStr := strings.Join(args, " ")
+		calls = append(calls, argsStr)
+		if strings.HasPrefix(argsStr, "account list") {
+			return []byte(`[{"url":"my.1password.com","account_uuid":"ACCOUNT1","user_uuid":"USER1"}]`), nil
+		}
+		return []byte(`{"user_uuid":"USER1"}`), nil
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := b.CheckAuth(context.Background()); err != nil {
+			t.Fatalf("CheckAuth %d failed: %v", i+1, err)
+		}
+	}
+	want := []string{
+		"account list --format json",
+		"whoami --format json --account ACCOUNT1",
+		"whoami --format json --account ACCOUNT1",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("op calls = %q, want %q", calls, want)
+	}
+}
+
+func TestOnePasswordBackend_CheckAuth_OmitsAccountWhenAmbiguous(t *testing.T) {
+	for name, accountList := range map[string]string{
+		"multiple accounts": `[{"account_uuid":"ACCOUNT1"},{"account_uuid":"ACCOUNT2"}]`,
+		"no accounts":       `[]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := &OnePasswordBackend{
+				binary:        "op.exe",
+				vault:         "test-vault",
+				detectAccount: true,
+			}
+
+			var whoamiArgs string
+			b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+				argsStr := strings.Join(args, " ")
+				if strings.HasPrefix(argsStr, "account list") {
+					return []byte(accountList), nil
+				}
+				whoamiArgs = argsStr
+				return []byte(`{"user_uuid":"user"}`), nil
+			}
+
+			if err := b.CheckAuth(context.Background()); err != nil {
+				t.Fatalf("CheckAuth failed: %v", err)
+			}
+			if whoamiArgs != "whoami --format json" {
+				t.Fatalf("whoami args = %q, want %q", whoamiArgs, "whoami --format json")
+			}
+		})
+	}
+}
+
+func TestNewOnePasswordBackend_ReadsOPAccount(t *testing.T) {
+	t.Setenv("OP_ACCOUNT", "ACCOUNT1")
+
+	b, err := NewOnePasswordBackend()
+	if err != nil {
+		t.Fatalf("NewOnePasswordBackend failed: %v", err)
+	}
+	if b.account != "ACCOUNT1" {
+		t.Fatalf("account = %q, want %q", b.account, "ACCOUNT1")
+	}
+}
+
+func TestNewOnePasswordBackend_DetectsAccountWhenOPAccountUnset(t *testing.T) {
+	t.Setenv("OP_ACCOUNT", "")
+
+	b, err := NewOnePasswordBackend()
+	if err != nil {
+		t.Fatalf("NewOnePasswordBackend failed: %v", err)
+	}
+	if !b.detectAccount {
+		t.Fatal("detectAccount = false, want true when OP_ACCOUNT is unset")
+	}
+}
+
 func TestOnePasswordBackend_runCmd_Stdin(t *testing.T) {
 	backend, err := NewOnePasswordBackend()
 	if err != nil {
