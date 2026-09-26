@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.11.1](https://github.com/nakatanakatana/mytools/compare/v0.11.0...v0.11.1) - 2026-09-26
+
+### Maintenance & Others
+- chore(deps): update dependency k1low/octocov to v0.82.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/267
+- chore(deps): update dependency k1low/octocov to v0.82.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/269
+- fix(deps): update fiatjaf.com/nostr digest to cf8167e by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/260
+
 ## [v0.11.0](https://github.com/nakatanakatana/mytools/compare/v0.10.2...v0.11.0) - 2026-09-25
 
 ### Maintenance & Others
