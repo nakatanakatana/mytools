@@ -140,7 +140,7 @@ jobs:
           )"
           echo "KUBEBUILDER_ASSETS=${assets}" >> "${GITHUB_ENV}"
       - run: go test ./... -v -coverprofile=coverage.out -covermode=atomic
-      - uses: moznion/cccc-action@4df3f72f581c87d0792ca89ef401c4ec8e85788b # v1
+      - uses: moznion/cccc-action@f766d74cf323cd9085c2c9263cebdf1ec1ebfb19 # v1
         with:
           version: ${{ env.CCCC_VERSION }}
       - run: go run ./scripts/gather-metrics.go
