@@ -181,7 +181,7 @@ func TestRuntimeCoordinatorRestartPreservesUnavailableProviderSnapshotAndList(t 
 		t.Fatalf("unavailable provider list removed: %v", err)
 	}
 	var latest nostr.Event
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		items, err := s.ClaimOutbox(ctx, time.Now().Add(time.Hour), time.Minute, 100)
 		if err != nil {
 			t.Fatal(err)
@@ -745,13 +745,13 @@ func TestOAuthMaintenanceLogsUseOnlyBoundedFields(t *testing.T) {
 			t.Fatalf("OAuth maintenance log contains secret %q: %q", secret, output)
 		}
 	}
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
 		const marker = "nostr-bridge OAuth maintenance: "
-		index := strings.Index(line, marker)
-		if index < 0 {
+		_, after, ok := strings.Cut(line, marker)
+		if !ok {
 			t.Fatalf("unexpected OAuth maintenance log line: %q", line)
 		}
-		fields := strings.Fields(line[index+len(marker):])
+		fields := strings.Fields(after)
 		if len(fields) != 5 {
 			t.Fatalf("OAuth maintenance log fields = %v, want five bounded fields", fields)
 		}

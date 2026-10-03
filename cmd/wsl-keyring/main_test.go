@@ -178,7 +178,7 @@ func TestWriteServiceFile(t *testing.T) {
 }
 
 func TestCollectionSearchItemsSignatureMatchesSecretServiceSpec(t *testing.T) {
-	method, ok := reflect.TypeOf(&CollectionObject{}).MethodByName("SearchItems")
+	method, ok := reflect.TypeFor[*CollectionObject]().MethodByName("SearchItems")
 	if !ok {
 		t.Fatal("CollectionObject.SearchItems method not found")
 	}
@@ -186,22 +186,22 @@ func TestCollectionSearchItemsSignatureMatchesSecretServiceSpec(t *testing.T) {
 	if got, want := method.Type.NumIn(), 2; got != want {
 		t.Fatalf("SearchItems NumIn = %d, want %d", got, want)
 	}
-	if got, want := method.Type.In(1), reflect.TypeOf(map[string]string{}); got != want {
+	if got, want := method.Type.In(1), reflect.TypeFor[map[string]string](); got != want {
 		t.Fatalf("SearchItems input = %v, want %v", got, want)
 	}
 	if got, want := method.Type.NumOut(), 2; got != want {
 		t.Fatalf("SearchItems NumOut = %d, want %d", got, want)
 	}
-	if got, want := method.Type.Out(0), reflect.TypeOf([]dbus.ObjectPath{}); got != want {
+	if got, want := method.Type.Out(0), reflect.TypeFor[[]dbus.ObjectPath](); got != want {
 		t.Fatalf("SearchItems first output = %v, want %v", got, want)
 	}
-	if got, want := method.Type.Out(1), reflect.TypeOf((*dbus.Error)(nil)); got != want {
+	if got, want := method.Type.Out(1), reflect.TypeFor[*dbus.Error](); got != want {
 		t.Fatalf("SearchItems second output = %v, want %v", got, want)
 	}
 }
 
 func TestServiceReadAliasSignatureMatchesSecretServiceSpec(t *testing.T) {
-	method, ok := reflect.TypeOf(&ServiceObject{}).MethodByName("ReadAlias")
+	method, ok := reflect.TypeFor[*ServiceObject]().MethodByName("ReadAlias")
 	if !ok {
 		t.Fatal("ServiceObject.ReadAlias method not found")
 	}
@@ -209,16 +209,16 @@ func TestServiceReadAliasSignatureMatchesSecretServiceSpec(t *testing.T) {
 	if got, want := method.Type.NumIn(), 2; got != want {
 		t.Fatalf("ReadAlias NumIn = %d, want %d", got, want)
 	}
-	if got, want := method.Type.In(1), reflect.TypeOf(""); got != want {
+	if got, want := method.Type.In(1), reflect.TypeFor[string](); got != want {
 		t.Fatalf("ReadAlias input = %v, want %v", got, want)
 	}
 	if got, want := method.Type.NumOut(), 2; got != want {
 		t.Fatalf("ReadAlias NumOut = %d, want %d", got, want)
 	}
-	if got, want := method.Type.Out(0), reflect.TypeOf(dbus.ObjectPath("")); got != want {
+	if got, want := method.Type.Out(0), reflect.TypeFor[dbus.ObjectPath](); got != want {
 		t.Fatalf("ReadAlias first output = %v, want %v", got, want)
 	}
-	if got, want := method.Type.Out(1), reflect.TypeOf((*dbus.Error)(nil)); got != want {
+	if got, want := method.Type.Out(1), reflect.TypeFor[*dbus.Error](); got != want {
 		t.Fatalf("ReadAlias second output = %v, want %v", got, want)
 	}
 }

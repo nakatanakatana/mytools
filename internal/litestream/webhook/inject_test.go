@@ -18,11 +18,11 @@ import (
 
 func TestInjectContainerSecurityContext(t *testing.T) {
 	secureDefaults := &corev1.SecurityContext{
-		RunAsUser:                ptr.To(int64(65532)),
-		RunAsGroup:               ptr.To(int64(65532)),
-		RunAsNonRoot:             ptr.To(true),
-		ReadOnlyRootFilesystem:   ptr.To(true),
-		AllowPrivilegeEscalation: ptr.To(false),
+		RunAsUser:                new(int64(65532)),
+		RunAsGroup:               new(int64(65532)),
+		RunAsNonRoot:             new(true),
+		ReadOnlyRootFilesystem:   new(true),
+		AllowPrivilegeEscalation: new(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
 
@@ -37,28 +37,28 @@ func TestInjectContainerSecurityContext(t *testing.T) {
 		},
 		{
 			name:     "keeps secure defaults alongside unrelated settings",
-			override: &corev1.SecurityContext{RunAsUser: ptr.To(int64(10001)), RunAsGroup: ptr.To(int64(2000))},
+			override: &corev1.SecurityContext{RunAsUser: new(int64(10001)), RunAsGroup: new(int64(2000))},
 			want: &corev1.SecurityContext{
-				RunAsUser:                ptr.To(int64(10001)),
-				RunAsGroup:               ptr.To(int64(2000)),
-				RunAsNonRoot:             ptr.To(true),
-				ReadOnlyRootFilesystem:   ptr.To(true),
-				AllowPrivilegeEscalation: ptr.To(false),
+				RunAsUser:                new(int64(10001)),
+				RunAsGroup:               new(int64(2000)),
+				RunAsNonRoot:             new(true),
+				ReadOnlyRootFilesystem:   new(true),
+				AllowPrivilegeEscalation: new(false),
 				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 			},
 		},
 		{
 			name: "preserves explicitly configured settings",
 			override: &corev1.SecurityContext{
-				ReadOnlyRootFilesystem: ptr.To(false),
+				ReadOnlyRootFilesystem: new(false),
 				Capabilities:           &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"CHOWN"}},
 			},
 			want: &corev1.SecurityContext{
-				RunAsUser:                ptr.To(int64(65532)),
-				RunAsGroup:               ptr.To(int64(65532)),
-				RunAsNonRoot:             ptr.To(true),
-				ReadOnlyRootFilesystem:   ptr.To(false),
-				AllowPrivilegeEscalation: ptr.To(false),
+				RunAsUser:                new(int64(65532)),
+				RunAsGroup:               new(int64(65532)),
+				RunAsNonRoot:             new(true),
+				ReadOnlyRootFilesystem:   new(false),
+				AllowPrivilegeEscalation: new(false),
 				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"CHOWN"}},
 			},
 		},
@@ -77,7 +77,7 @@ func TestInjectContainerSecurityContext(t *testing.T) {
 func TestBuildInjectionRejectsRootWithDefaultNonRoot(t *testing.T) {
 	input := litestreamconfig.Input{
 		Injection: v1alpha1.InjectionSpec{
-			ContainerSecurityContext: &corev1.SecurityContext{RunAsUser: ptr.To(int64(0))},
+			ContainerSecurityContext: &corev1.SecurityContext{RunAsUser: new(int64(0))},
 		},
 		Databases: []litestreamconfig.Database{{
 			Name: "app",
@@ -119,7 +119,7 @@ func TestCredentialStartupCheckFailsBeforeCommandWhenSecretIsMissing(t *testing.
 			SecretKeyRef: corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: "source-s3"},
 				Key:                  "access-key-id",
-				Optional:             ptr.To(true),
+				Optional:             new(true),
 			},
 		}},
 		"restore-app",
@@ -145,11 +145,11 @@ func TestInjectPodSecurityContext(t *testing.T) {
 		},
 		{
 			name:       "accepts the settings injection applies",
-			configured: &corev1.PodSecurityContext{FSGroup: ptr.To(int64(2000)), FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch)},
+			configured: &corev1.PodSecurityContext{FSGroup: new(int64(2000)), FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch)},
 		},
 		{
 			name:       "rejects settings that would apply to the whole Pod",
-			configured: &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+			configured: &corev1.PodSecurityContext{RunAsNonRoot: new(true), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
 			err:        "but also sets runAsNonRoot, seccompProfile",
 		},
 		{

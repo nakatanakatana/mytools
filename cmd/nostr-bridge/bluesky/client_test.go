@@ -420,15 +420,13 @@ func TestClientConcurrentGetDPoPNonceRace(t *testing.T) {
 	const goroutines = 10
 	errCh := make(chan error, goroutines)
 	var wg sync.WaitGroup
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range goroutines {
+		wg.Go(func() {
 			_, err := client.Profile(context.Background(), "did:plc:owner")
 			if err != nil {
 				errCh <- err
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errCh)
@@ -525,14 +523,14 @@ func TestClientPreventsStaleDPoPNonceOverwriteConcurrentHTTP(t *testing.T) {
 
 	req1Started := make(chan struct{})
 	req1Gate := make(chan struct{})
-	var requestCount int32
+	var requestCount atomic.Int32
 	var gateOnce sync.Once
 	closeGate := func() {
 		gateOnce.Do(func() { close(req1Gate) })
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := atomic.AddInt32(&requestCount, 1)
+		count := requestCount.Add(1)
 		if count == 1 {
 			close(req1Started)
 			<-req1Gate
@@ -561,11 +559,9 @@ func TestClientPreventsStaleDPoPNonceOverwriteConcurrentHTTP(t *testing.T) {
 
 	var wg sync.WaitGroup
 	// Req 1 (slow)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_, _ = client.Profile(context.Background(), "did:plc:owner")
-	}()
+	})
 
 	<-req1Started
 
@@ -622,11 +618,11 @@ func TestClientDPoPChallengeRetryStaleAndFailureNonce(t *testing.T) {
 		gateOnce.Do(func() { close(slowReqGate) })
 	}
 
-	var reqCount int32
+	var reqCount atomic.Int32
 	var retriedProofNonce string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := atomic.AddInt32(&reqCount, 1)
+		count := reqCount.Add(1)
 		switch count {
 		case 1:
 			// Slow req 1: receives 401 challenge after gate
@@ -663,11 +659,9 @@ func TestClientDPoPChallengeRetryStaleAndFailureNonce(t *testing.T) {
 
 	var slowErr error
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_, slowErr = client.Profile(context.Background(), "did:plc:owner")
-	}()
+	})
 
 	<-slowReqStarted
 
@@ -687,7 +681,7 @@ func TestClientDPoPChallengeRetryStaleAndFailureNonce(t *testing.T) {
 	}
 
 	// 2. Verify total request count was exactly 3 (no extra retries)
-	if count := atomic.LoadInt32(&reqCount); count != 3 {
+	if count := reqCount.Load(); count != 3 {
 		t.Fatalf("request count = %d, want 3", count)
 	}
 

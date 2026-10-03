@@ -20,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/events"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -192,7 +191,7 @@ func (r *LitestreamReconciler) reconcileConfigMap(
 		cm.Labels[LabelResourceUID] = string(resource.UID)
 		cm.Annotations[AnnotationResourceName] = resource.Name
 		cm.Data = rendered.Data
-		cm.Immutable = ptr.To(true)
+		cm.Immutable = new(true)
 		return controllerutil.SetControllerReference(resource, cm, r.Scheme, controllerutil.WithBlockOwnerDeletion(false))
 	})
 	return err

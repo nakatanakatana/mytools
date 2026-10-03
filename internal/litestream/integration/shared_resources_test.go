@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +14,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 )
 
 // TestSharedResourcesRenderAndPropagateChanges catches a controller that
@@ -293,7 +293,7 @@ func assertLitestreamUnchangedFor(t *testing.T, ctx context.Context, namespace s
 
 func replaceImmutableConfigMap(t *testing.T, ctx context.Context, original *corev1.ConfigMap, data map[string]string) {
 	t.Helper()
-	for attempt := 0; attempt < 10; attempt++ {
+	for range 10 {
 		deleteTarget := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: original.Name, Namespace: original.Namespace}}
 		err := k8sClient.Delete(ctx, deleteTarget)
 		if err != nil && !apierrors.IsNotFound(err) {
@@ -309,7 +309,7 @@ func replaceImmutableConfigMap(t *testing.T, ctx context.Context, original *core
 		replacement.DeletionGracePeriodSeconds = nil
 		replacement.ManagedFields = nil
 		replacement.Data = cloneConfigMapData(data)
-		replacement.Immutable = ptr.To(true)
+		replacement.Immutable = new(true)
 		err = k8sClient.Create(ctx, replacement)
 		if err == nil {
 			return
@@ -323,9 +323,7 @@ func replaceImmutableConfigMap(t *testing.T, ctx context.Context, original *core
 
 func cloneConfigMapData(data map[string]string) map[string]string {
 	clone := make(map[string]string, len(data))
-	for key, value := range data {
-		clone[key] = value
-	}
+	maps.Copy(clone, data)
 	return clone
 }
 

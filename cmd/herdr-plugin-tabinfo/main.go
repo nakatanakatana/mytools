@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,12 +114,7 @@ func (config rawTabDisplayConfig) resolved() tabDisplayConfig {
 }
 
 func (config tabDisplayConfig) hasItem(item displayItem) bool {
-	for _, configured := range config.Items {
-		if configured == item {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(config.Items, item)
 }
 
 func validateTabDisplayConfig(name string, config tabDisplayConfig) error {
@@ -148,9 +144,9 @@ type environmentDisplayConfig struct {
 }
 
 type apiRequest struct {
-	ID     string      `json:"id"`
-	Method string      `json:"method"`
-	Params interface{} `json:"params"`
+	ID     string `json:"id"`
+	Method string `json:"method"`
+	Params any    `json:"params"`
 }
 
 type apiResponse struct {
@@ -295,7 +291,7 @@ func dialHerdr(socketPath string) (*herdrClient, error) {
 	}, nil
 }
 
-func (c *herdrClient) request(method string, params interface{}, result interface{}) error {
+func (c *herdrClient) request(method string, params any, result any) error {
 	c.nextID++
 	id := fmt.Sprintf("%s-%d-%d", source, os.Getpid(), c.nextID)
 	request := apiRequest{
@@ -980,10 +976,7 @@ func normalizeLabel(label string) string {
 
 	suffix := cleaned[suffixStart:]
 	suffixRunes := []rune(suffix)
-	baseMax := maxLabel - len(suffixRunes) - 1
-	if baseMax < 1 {
-		baseMax = 1
-	}
+	baseMax := max(maxLabel-len(suffixRunes)-1, 1)
 	baseRunes := []rune(cleaned[:suffixStart])
 	if len(baseRunes) > baseMax {
 		baseRunes = baseRunes[:baseMax]

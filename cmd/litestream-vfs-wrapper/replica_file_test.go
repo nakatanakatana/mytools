@@ -54,11 +54,9 @@ func TestReplicaFileConcurrentReadAt(t *testing.T) {
 	const goroutines = 32
 	var wg sync.WaitGroup
 	errCh := make(chan error, goroutines)
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for n := 0; n < 200; n++ {
+	for range goroutines {
+		wg.Go(func() {
+			for range 200 {
 				buf := make([]byte, len("updated page"))
 				if _, err := f.ReadAt(buf, int64(f.pageSize)); err != nil {
 					errCh <- err
@@ -69,7 +67,7 @@ func TestReplicaFileConcurrentReadAt(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errCh)
@@ -124,10 +122,8 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 	runCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	for i := 0; i < readers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range readers {
+		wg.Go(func() {
 			buf2 := make([]byte, testPageSize)
 			buf3 := make([]byte, testPageSize)
 			for {
@@ -196,12 +192,10 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 					}
 				}
 			}
-		}()
+		})
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		select {
 		case <-oldSeen:
 		case <-runCtx.Done():
@@ -230,7 +224,7 @@ func TestReplicaFileConcurrentLockReadUnlockWithPoll(t *testing.T) {
 		}
 		pollsOverlapped.Add(1)
 		close(updatesDone)
-	}()
+	})
 
 	wg.Wait()
 	close(errCh)

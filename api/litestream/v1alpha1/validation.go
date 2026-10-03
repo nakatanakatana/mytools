@@ -133,7 +133,7 @@ func validateImageRegistry(registry string) error {
 	if host == "localhost" || net.ParseIP(host) != nil {
 		return nil
 	}
-	for _, component := range strings.Split(host, ".") {
+	for component := range strings.SplitSeq(host, ".") {
 		if !imageRegistryComponentPattern.MatchString(component) {
 			return fmt.Errorf("registry host %q is invalid", host)
 		}

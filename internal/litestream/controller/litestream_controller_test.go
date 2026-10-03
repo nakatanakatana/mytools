@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/events"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -265,7 +264,7 @@ func TestReconcileRetainsAllOwnedConfigMapRevisionsWithoutPods(t *testing.T) {
 		Kind:       "Litestream",
 		Name:       cr.Name,
 		UID:        cr.UID,
-		Controller: ptr.To(true),
+		Controller: new(true),
 	}
 	stale := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Name: staleName, Namespace: cr.Namespace,
@@ -298,7 +297,7 @@ func TestReconcilePreservesConfigMapRevisionReferencedByPod(t *testing.T) {
 		Kind:       "Litestream",
 		Name:       cr.Name,
 		UID:        cr.UID,
-		Controller: ptr.To(true),
+		Controller: new(true),
 	}
 	stale := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Name: staleName, Namespace: cr.Namespace,

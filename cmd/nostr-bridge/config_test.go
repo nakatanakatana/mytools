@@ -16,8 +16,8 @@ func validateConfigVariableCatalog(configType reflect.Type, catalog []configVari
 	tagNames := make(map[string]int)
 	var collect func(reflect.Type)
 	collect = func(current reflect.Type) {
-		for i := 0; i < current.NumField(); i++ {
-			field := current.Field(i)
+		for field := range current.Fields() {
+			field := field
 			tag := field.Tag.Get("env")
 			if tag != "" {
 				name, _, _ := strings.Cut(tag, ",")
@@ -62,7 +62,7 @@ func validateConfigVariableCatalog(configType reflect.Type, catalog []configVari
 }
 
 func TestConfigVariableCatalogMatchesEnvTags(t *testing.T) {
-	if err := validateConfigVariableCatalog(reflect.TypeOf(Config{}), configVariables); err != nil {
+	if err := validateConfigVariableCatalog(reflect.TypeFor[Config](), configVariables); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -75,7 +75,7 @@ func TestConfigVariableCatalogDetectsTagMismatch(t *testing.T) {
 		}
 	}
 	catalog := []configVariable{{name: "PRESENT"}, {name: "EXTRA"}}
-	err := validateConfigVariableCatalog(reflect.TypeOf(syntheticConfig{}), catalog)
+	err := validateConfigVariableCatalog(reflect.TypeFor[syntheticConfig](), catalog)
 	if err == nil || !strings.Contains(err.Error(), "missing MISSING") || !strings.Contains(err.Error(), "extra EXTRA") {
 		t.Fatalf("err = %v", err)
 	}
@@ -110,7 +110,7 @@ func TestDocumentedConfigurationMatchesConfig(t *testing.T) {
 }
 
 func readmeDocumentsDefault(contents, name, defaultValue string) bool {
-	for _, line := range strings.Split(contents, "\n") {
+	for line := range strings.SplitSeq(contents, "\n") {
 		cells := strings.Split(line, "|")
 		if len(cells) == 5 &&
 			strings.TrimSpace(cells[1]) == "`"+name+"`" &&
@@ -122,7 +122,7 @@ func readmeDocumentsDefault(contents, name, defaultValue string) bool {
 }
 
 func deploymentDocumentsEnvValue(contents, name, value string) bool {
-	for _, line := range strings.Split(contents, "\n") {
+	for line := range strings.SplitSeq(contents, "\n") {
 		entry := strings.TrimSpace(line)
 		if !strings.HasPrefix(entry, "- {") || !strings.HasSuffix(entry, "}") {
 			continue

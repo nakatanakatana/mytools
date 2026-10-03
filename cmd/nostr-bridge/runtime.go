@@ -153,12 +153,10 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 	coordinator := bridgeowner.New(bridgeowner.Options{MasterSeed: seed, OwnerID: cfg.Owner.ID, OwnerName: cfg.Owner.Name, OwnerAbout: cfg.Owner.About, OwnerPicture: cfg.Owner.Picture, Store: store, OutboxLimit: int64(cfg.Shared.OutboxLimit), EnabledScopes: enabledProviderScopes(cfg)})
 	var wg sync.WaitGroup
 	if cfg.Bluesky.Enabled() && oauthClient != nil {
-		wg.Add(1)
-		go func() { defer wg.Done(); r.runBluesky(ctx, cfg, seed, store, oauthClient, health, coordinator) }()
+		wg.Go(func() { ; r.runBluesky(ctx, cfg, seed, store, oauthClient, health, coordinator) })
 	}
 	if cfg.Mastodon.Enabled() && mastodonOAuth != nil {
-		wg.Add(1)
-		go func() { defer wg.Done(); r.runMastodon(ctx, cfg, seed, store, mastodonOAuth, health, coordinator) }()
+		wg.Go(func() { ; r.runMastodon(ctx, cfg, seed, store, mastodonOAuth, health, coordinator) })
 	}
 	wg.Wait()
 }

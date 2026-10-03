@@ -1133,7 +1133,7 @@ func TestUpsertSubscriptionWithLimit_Concurrent(t *testing.T) {
 	)
 
 	wg.Add(totalGoroutines)
-	for i := 0; i < totalGoroutines; i++ {
+	for i := range totalGoroutines {
 		go func(idx int) {
 			defer wg.Done()
 			sub := StoredSubscription{

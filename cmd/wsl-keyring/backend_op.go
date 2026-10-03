@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"net/url"
 	"os/exec"
 	"sort"
@@ -195,7 +196,6 @@ func (b *OnePasswordBackend) LoadMetadata(ctx context.Context) ([]*SecretItem, e
 	items := make([]*SecretItem, 0, len(list))
 
 	for _, listItem := range list {
-		listItem := listItem
 		if item, ok := metadataFromOPListItem(listItem); ok {
 			mu.Lock()
 			items = append(items, item)
@@ -313,9 +313,7 @@ func (b *OnePasswordBackend) getMetadataOnly(ctx context.Context, id string) (*S
 		} else if field.ID == "attributes" || field.Label == "attributes" {
 			var attrs map[string]string
 			if err := json.Unmarshal([]byte(field.Value), &attrs); err == nil {
-				for k, v := range attrs {
-					item.Attributes[k] = v
-				}
+				maps.Copy(item.Attributes, attrs)
 			} else {
 				if values, err := url.ParseQuery(field.Value); err == nil {
 					for k, vs := range values {
@@ -374,9 +372,7 @@ func (b *OnePasswordBackend) Get(ctx context.Context, id string) (*SecretItem, e
 		} else if field.ID == "attributes" || field.Label == "attributes" {
 			var attrs map[string]string
 			if err := json.Unmarshal([]byte(field.Value), &attrs); err == nil {
-				for k, v := range attrs {
-					item.Attributes[k] = v
-				}
+				maps.Copy(item.Attributes, attrs)
 			} else {
 				if values, err := url.ParseQuery(field.Value); err == nil {
 					for k, vs := range values {
