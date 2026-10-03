@@ -1,5 +1,28 @@
 # Changelog
 
+## [v0.12.0](https://github.com/nakatanakatana/mytools/compare/v0.11.0...v0.12.0) - 2026-10-03
+
+### Maintenance & Others
+- chore(deps): update dependency k1low/octocov to v0.82.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/267
+- chore(deps): update dependency k1low/octocov to v0.82.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/269
+- fix(deps): update fiatjaf.com/nostr digest to cf8167e by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/260
+- chore(deps): update dependency k1low/octocov to v0.83.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/270
+- chore(deps): update dependency aquaproj/aqua-registry to v4.568.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/271
+- chore(deps): update dependency k1low/octocov to v0.83.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/274
+- fix(deps): update module modernc.org/sqlite to v1.60.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/275
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.25 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/276
+- fix(deps): update module modernc.org/sqlite to v1.60.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/278
+- chore(deps): update moznion/cccc-action digest to f766d74 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/272
+- fix(deps): update fiatjaf.com/nostr digest to 58e4c71 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/273
+- chore(deps): update songmu/tagpr digest to 967f2ab by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/277
+- chore(deps): update dependency aquaproj/aqua-registry to v4.569.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/279
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.26 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/281
+- chore(deps): update dependency aquaproj/aqua-registry to v4.570.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/283
+- fix(deps): update module sigs.k8s.io/controller-runtime to v0.25.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/282
+- chore(deps): update dependency aquaproj/aqua-registry to v4.571.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/285
+- feat(nostr-bridge): add web push notifications for operational alerts and re-auth by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/284
+- chore(deps): update golang:1.27 docker digest to e0174e5 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/280
+
 ## [v0.11.0](https://github.com/nakatanakatana/mytools/compare/v0.10.2...v0.11.0) - 2026-09-25
 
 ### Maintenance & Others
