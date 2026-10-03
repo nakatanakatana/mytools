@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -90,10 +92,7 @@ func openReplicaFile(ctx context.Context, client litestream.ReplicaClient, name 
 		return nil, err
 	}
 
-	entries := cacheSize / int(pageSize)
-	if entries < 1 {
-		entries = 1
-	}
+	entries := max(cacheSize/int(pageSize), 1)
 	cache, err := lru.New[uint32, []byte](entries)
 	if err != nil {
 		return nil, fmt.Errorf("create page cache: %w", err)
@@ -123,19 +122,17 @@ func openReplicaFile(ctx context.Context, client litestream.ReplicaClient, name 
 	f.pollMaxTXID1 = snapshot.maxTXID1
 	f.pollCommit = snapshot.commit
 	if pollInterval > 0 {
-		f.wg.Add(1)
-		go func() {
-			defer f.wg.Done()
+		f.wg.Go(func() {
 			f.monitorReplicaClient(fileCtx, pollInterval)
-		}()
+		})
 	}
 	return f, nil
 }
 
 func detectPageSize(ctx context.Context, client litestream.ReplicaClient, infos []*ltx.FileInfo) (uint32, error) {
 	var lastErr error
-	for i := len(infos) - 1; i >= 0; i-- {
-		hdr, err := litestream.FetchLTXHeader(ctx, client, infos[i])
+	for _, info := range slices.Backward(infos) {
+		hdr, err := litestream.FetchLTXHeader(ctx, client, info)
 		if err != nil {
 			lastErr = err
 			continue
@@ -177,9 +174,7 @@ func (f *replicaFile) buildSnapshot(ctx context.Context, infos []*ltx.FileInfo, 
 		if hdr.MinTXID != info.MinTXID || hdr.MaxTXID != info.MaxTXID {
 			return replicaSnapshot{}, fmt.Errorf("transaction range mismatch: file info %s-%s header %s-%s", info.MinTXID, info.MaxTXID, hdr.MinTXID, hdr.MaxTXID)
 		}
-		for pgno, elem := range idx {
-			snapshot.index[pgno] = elem
-		}
+		maps.Copy(snapshot.index, idx)
 		snapshot.commit = hdr.Commit
 		if info.MaxTXID > snapshot.pos.TXID {
 			snapshot.pos = info.Pos()
@@ -299,7 +294,7 @@ func (f *replicaFile) page(pgno uint32, generation uint64) ([]byte, error) {
 
 func (f *replicaFile) fetchPageWithRetry(ctx context.Context, pgno uint32, elem ltx.PageIndexElem) ([]byte, error) {
 	var lastErr error
-	for attempt := 0; attempt < pageFetchMaxAttempts; attempt++ {
+	for attempt := range pageFetchMaxAttempts {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

@@ -49,11 +49,11 @@ func TestBuildVAPIDHeader(t *testing.T) {
 	parts := strings.Split(strings.TrimPrefix(headerVal, "vapid "), ", ")
 	var token, kPub string
 	for _, part := range parts {
-		if strings.HasPrefix(part, "t=") {
-			token = strings.TrimPrefix(part, "t=")
+		if after, ok := strings.CutPrefix(part, "t="); ok {
+			token = after
 		}
-		if strings.HasPrefix(part, "k=") {
-			kPub = strings.TrimPrefix(part, "k=")
+		if after, ok := strings.CutPrefix(part, "k="); ok {
+			kPub = after
 		}
 	}
 	if token == "" || kPub != keys.PublicKey {

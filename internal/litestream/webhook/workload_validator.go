@@ -69,8 +69,7 @@ func (v *WorkloadValidator) Handle(ctx context.Context, req admission.Request) a
 
 	workload, err := v.decodeWorkload(ctx, req)
 	if err != nil {
-		var readerErr *workloadReaderError
-		if errors.As(err, &readerErr) {
+		if readerErr, ok := errors.AsType[*workloadReaderError](err); ok {
 			return admission.Errored(http.StatusInternalServerError, readerErr)
 		}
 		return admission.Errored(http.StatusBadRequest, err)

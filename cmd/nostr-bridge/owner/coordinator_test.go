@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -246,8 +247,8 @@ func (s *recordingStore) latestKind(t *testing.T, kind nostr.Kind) nostr.Event {
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(s.requests) - 1; i >= 0; i-- {
-		for _, req := range s.requests[i].Events {
+	for _, v := range slices.Backward(s.requests) {
+		for _, req := range v.Events {
 			var e nostr.Event
 			if e.UnmarshalJSON([]byte(req.Event.Payload)) == nil && e.Kind == kind {
 				return e

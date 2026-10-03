@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -312,10 +313,5 @@ func validEndpoint(raw string, schemes ...string) bool {
 	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return false
 	}
-	for _, scheme := range schemes {
-		if u.Scheme == scheme {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(schemes, u.Scheme)
 }

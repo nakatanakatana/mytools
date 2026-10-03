@@ -912,7 +912,7 @@ func (c *concurrentTrackingPushClient) Send(ctx context.Context, sub webpush.Sub
 func TestNotificationWorker_MaxConcurrentPushes(t *testing.T) {
 	const numSubs = 12
 	var subs []store.StoredSubscription
-	for i := 0; i < numSubs; i++ {
+	for i := range numSubs {
 		subs = append(subs, makeTestSubscription(fmt.Sprintf("https://push.example.com/sub-%d", i)))
 	}
 	st := &mockStore{subscriptions: subs}

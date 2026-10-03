@@ -55,12 +55,12 @@ func TestFullIntegration(t *testing.T) {
 	}
 
 	// Check JSON Body
-	var body map[string]interface{}
+	var body map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Failed to decode body: %v", err)
 	}
 
-	names, ok := body["names"].(map[string]interface{})
+	names, ok := body["names"].(map[string]any)
 	if !ok {
 		t.Fatal("Response missing 'names' object")
 	}
@@ -69,12 +69,12 @@ func TestFullIntegration(t *testing.T) {
 		t.Errorf("Expected integration->hexpubkey, got %v", names["integration"])
 	}
 
-	relays, ok := body["relays"].(map[string]interface{})
+	relays, ok := body["relays"].(map[string]any)
 	if !ok {
 		t.Fatal("Response missing 'relays' object")
 	}
 
-	relayList, ok := relays["hexpubkey"].([]interface{})
+	relayList, ok := relays["hexpubkey"].([]any)
 	if !ok || len(relayList) != 1 || relayList[0] != "wss://relay.test" {
 		t.Errorf("Expected relay wss://relay.test, got %v", relays["hexpubkey"])
 	}

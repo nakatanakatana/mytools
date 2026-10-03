@@ -110,8 +110,7 @@ func TestPublisherClassifiesPublisherAllowlistDrift(t *testing.T) {
 	})
 	defer server.Close()
 	err := (&WebSocketPublisher{RelayURL: publisherURL(server.URL)}).Publish(context.Background(), event)
-	var drift *PublisherNotAllowedError
-	if !errors.As(err, &drift) {
+	if _, ok := errors.AsType[*PublisherNotAllowedError](err); !ok {
 		t.Fatalf("Publish() error = %T %v", err, err)
 	}
 }
@@ -126,8 +125,7 @@ func TestPublisherDoesNotClassifyOtherRestrictedReasonsAsPublisherDrift(t *testi
 			})
 			defer server.Close()
 			err := (&WebSocketPublisher{RelayURL: publisherURL(server.URL)}).Publish(context.Background(), event)
-			var drift *PublisherNotAllowedError
-			if errors.As(err, &drift) {
+			if _, ok := errors.AsType[*PublisherNotAllowedError](err); ok {
 				t.Fatalf("reason %q classified as drift", reason)
 			}
 		})

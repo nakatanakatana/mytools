@@ -458,14 +458,12 @@ func TestOnePasswordBackend_CheckAuth_CoalescesConcurrentWhoamiReadCommands(t *t
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			if err := b.CheckAuth(context.Background()); err != nil {
 				errs <- err
 			}
-		}()
+		})
 	}
 
 	close(start)
@@ -535,9 +533,7 @@ func TestOnePasswordBackend_Get_CoalescesConcurrentIdenticalReadCommands(t *test
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			item, err := b.Get(context.Background(), "same-id")
 			if err != nil {
@@ -547,7 +543,7 @@ func TestOnePasswordBackend_Get_CoalescesConcurrentIdenticalReadCommands(t *test
 			if item.ID != "same-id" || string(item.Secret) != "secret" {
 				errs <- fmt.Errorf("unexpected item: %+v", item)
 			}
-		}()
+		})
 	}
 
 	close(start)
@@ -661,11 +657,9 @@ func TestOnePasswordBackend_Save_DoesNotCoalesceWriteCommands(t *testing.T) {
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errs <- b.Save(context.Background(), copySecretItem(item))
-		}()
+		})
 	}
 
 	select {
@@ -740,18 +734,14 @@ func TestOnePasswordBackend_CheckAuth_DoesNotBlockGet(t *testing.T) {
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-start
 		if err := b.CheckAuth(context.Background()); err != nil {
 			errs <- err
 		}
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-start
 		item, err := b.Get(context.Background(), "id1")
 		if err != nil {
@@ -761,7 +751,7 @@ func TestOnePasswordBackend_CheckAuth_DoesNotBlockGet(t *testing.T) {
 		if item.ID != "id1" || string(item.Secret) != "secret" {
 			errs <- fmt.Errorf("unexpected item: %+v", item)
 		}
-	}()
+	})
 
 	close(start)
 	select {
@@ -910,7 +900,7 @@ func TestOnePasswordBackend_CheckAuth_DetectsSingleAccountOnce(t *testing.T) {
 		return []byte(`{"user_uuid":"USER1"}`), nil
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := b.CheckAuth(context.Background()); err != nil {
 			t.Fatalf("CheckAuth %d failed: %v", i+1, err)
 		}

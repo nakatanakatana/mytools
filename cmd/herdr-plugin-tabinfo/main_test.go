@@ -13,15 +13,16 @@ import (
 	"github.com/arl/gitstatus"
 )
 
+//go:fix inline
 func ptrString(v string) *string {
-	return &v
+	return new(v)
 }
 
 func TestProcessDisplayUsesDirectChildOfShell(t *testing.T) {
 	result := paneProcessInfoResult{ProcessInfo: paneProcessInfo{ForegroundProcesses: []foregroundProcess{
 		{Name: "zsh"},
-		{Name: "go", Cmdline: ptrString("go test ./...")},
-		{Name: "tabinfo.test", Cmdline: ptrString("/tmp/tabinfo.test")},
+		{Name: "go", Cmdline: new("go test ./...")},
+		{Name: "tabinfo.test", Cmdline: new("/tmp/tabinfo.test")},
 	}}}
 	if got := processNameFromProcessInfo(result, "zsh"); got != "go" {
 		t.Fatalf("processNameFromProcessInfo() = %q, want go", got)
@@ -37,9 +38,9 @@ func TestProcessDisplayUsesNonShellProcessWhenOnlyOneExists(t *testing.T) {
 			ForegroundProcesses: []foregroundProcess{
 				{
 					Name:    "nvim",
-					Cmdline: ptrString("nvim main.go"),
+					Cmdline: new("nvim main.go"),
 					Argv:    []string{"nvim", "main.go"},
-					Argv0:   ptrString("nvim"),
+					Argv0:   new("nvim"),
 				},
 			},
 		},
@@ -301,7 +302,7 @@ func TestProcessFullFromProcessInfoUsesFallbacks(t *testing.T) {
 	got := processFullFromProcessInfo(paneProcessInfoResult{
 		ProcessInfo: paneProcessInfo{
 			ForegroundProcesses: []foregroundProcess{
-				{Name: "go", Cmdline: ptrString("go test ./...")},
+				{Name: "go", Cmdline: new("go test ./...")},
 			},
 		},
 	}, "")
@@ -539,7 +540,7 @@ func TestHerdrClientOpensConnectionPerRequest(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			conn, err := listener.Accept()
 			if err != nil {
 				return

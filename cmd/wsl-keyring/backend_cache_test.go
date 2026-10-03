@@ -182,10 +182,8 @@ func TestCachedBackend_Search_CoalescesConcurrentMetadataLoads(t *testing.T) {
 	start := make(chan struct{})
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			<-start
 			matches, err := backend.Search(context.Background(), map[string]string{"service": "github"})
 			if err != nil {
@@ -195,7 +193,7 @@ func TestCachedBackend_Search_CoalescesConcurrentMetadataLoads(t *testing.T) {
 			if len(matches) != 1 || matches[0].ID != "id1" {
 				errs <- fmt.Errorf("unexpected matches: %+v", matches)
 			}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

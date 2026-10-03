@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 )
 
@@ -142,9 +143,7 @@ func (b *InMemoryBackend) LoadMetadata(ctx context.Context) ([]*SecretItem, erro
 
 func copyAttributes(src map[string]string) map[string]string {
 	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
+	maps.Copy(dst, src)
 	return dst
 }
 
