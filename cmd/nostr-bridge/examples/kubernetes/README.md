@@ -56,6 +56,9 @@ Keep all other bridge routes private, including:
 
 - `/`
 - `/api/status`
+- `/api/push/vapid-public-key`
+- `/api/push/subscribe`
+- `/api/push/unsubscribe`
 - `/oauth/bluesky/start`
 - `/oauth/mastodon/start`
 - `/healthz`

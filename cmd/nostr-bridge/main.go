@@ -20,11 +20,13 @@ import (
 
 	"fiatjaf.com/nostr"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/mastodon"
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/notification"
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/outbox"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/relayclient"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 	bridgeweb "github.com/nakatanakatana/mytools/cmd/nostr-bridge/web"
+	"github.com/nakatanakatana/mytools/internal/webpush"
 )
 
 func main() {
@@ -93,6 +95,8 @@ type runtimeResources struct {
 	dispatcherDone       <-chan struct{}
 	oauthMaintenance     shutdownWorker
 	oauthMaintenanceDone <-chan struct{}
+	notification         shutdownWorker
+	notificationDone     <-chan struct{}
 	database             databaseCloser
 }
 
@@ -174,17 +178,54 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		}
 		return runtimeResources{}, closeRuntimeConstructionFailure(err, resources)
 	}
+	vapidCtx, cancelVAPID := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelVAPID()
+	resolvedKeys, subject, err := resolveVAPIDKeys(vapidCtx, cfg.Notification, bridgeStore)
+	if err != nil {
+		resources := runtimeResources{
+			jetstream:  runtime,
+			dispatcher: dispatchWorker,
+			database:   trackedDatabase,
+		}
+		if oauthMaintenance != nil {
+			resources.oauthMaintenance = oauthMaintenance
+			resources.oauthMaintenanceDone = oauthMaintenance.Done()
+		}
+		return runtimeResources{}, closeRuntimeConstructionFailure(err, resources)
+	}
+	webpushClient := webpush.NewClient(webpush.ClientOptions{
+		VAPIDKeys: resolvedKeys,
+		Subject:   subject,
+	})
+	notifWorker := notification.NewWorker(notification.WorkerOptions{
+		Store:      bridgeStore,
+		PushClient: webpushClient,
+		SnapshotProvider: func(ctx context.Context) (notification.Snapshot, error) {
+			snap := health.readinessSnapshot(ctx)
+			return healthSnapshotToNotificationSnapshot(snap), nil
+		},
+		RemindInterval:     cfg.Notification.RemindInterval,
+		EvaluationInterval: cfg.Notification.EvaluationInterval,
+	})
+	notificationWorker := startWorker(func(ctx context.Context) error {
+		return notifWorker.Run(ctx)
+	})
 	mux := http.NewServeMux()
 	RegisterOAuthRoutes(mux, client, mastodonOAuth)
 	RegisterHealthRoutes(mux, health)
 	RegisterStatusRoutes(mux, health)
+	RegisterPushRoutes(mux, bridgeStore, func() string {
+		return resolvedKeys.PublicKey
+	})
 	mux.Handle("/", bridgeweb.Handler())
 	resources := runtimeResources{
-		httpServer:     &http.Server{Addr: ServerAddress(cfg), Handler: mux},
-		jetstream:      runtime,
-		dispatcher:     dispatchWorker,
-		dispatcherDone: dispatchWorker.Done(),
-		database:       trackedDatabase,
+		httpServer:       &http.Server{Addr: ServerAddress(cfg), Handler: mux},
+		jetstream:        runtime,
+		dispatcher:       dispatchWorker,
+		dispatcherDone:   dispatchWorker.Done(),
+		notification:     notificationWorker,
+		notificationDone: notificationWorker.Done(),
+		database:         trackedDatabase,
 	}
 	if oauthMaintenance != nil {
 		resources.oauthMaintenance = oauthMaintenance
@@ -409,6 +450,8 @@ func Run(ctx context.Context, cfg Config) error {
 			return runtimeWorkerStopped(ctx, resources, "dispatcher", resources.dispatcher)
 		case <-resources.oauthMaintenanceDone:
 			return runtimeWorkerStopped(ctx, resources, "OAuth maintenance", resources.oauthMaintenance)
+		case <-resources.notificationDone:
+			return runtimeWorkerStopped(ctx, resources, "notification", resources.notification)
 		}
 	}
 
@@ -440,6 +483,7 @@ func closeRuntimeResources(resources runtimeResources) error {
 		resources.jetstream,
 		resources.dispatcher,
 		resources.oauthMaintenance,
+		resources.notification,
 	} {
 		if worker != nil {
 			worker.Cancel()
@@ -459,6 +503,7 @@ func closeRuntimeResources(resources runtimeResources) error {
 		{"stop Jetstream", resources.jetstream},
 		{"stop dispatcher", resources.dispatcher},
 		{"stop OAuth maintenance", resources.oauthMaintenance},
+		{"stop notification", resources.notification},
 	} {
 		if item.worker != nil {
 			if err := item.worker.Wait(ctx); err != nil {

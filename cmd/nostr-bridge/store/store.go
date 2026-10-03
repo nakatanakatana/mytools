@@ -193,3 +193,37 @@ type DurableStore interface {
 	OAuthStore
 	OutboxStore
 }
+
+// StoredVAPIDKeys persists VAPID key pairs.
+type StoredVAPIDKeys struct {
+	PrivateKey string
+	PublicKey  string
+	Subject    string
+	CreatedAt  time.Time
+}
+
+// StoredSubscription persists client PushSubscription details.
+type StoredSubscription struct {
+	Endpoint  string
+	P256dh    string
+	Auth      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// ErrMaxSubscriptionsReached is returned when inserting a new subscription exceeds the maximum limit.
+var ErrMaxSubscriptionsReached = errors.New("webpush: max subscriptions reached")
+
+type NotificationStore interface {
+	GetVAPIDKeys(ctx context.Context) (*StoredVAPIDKeys, error)
+	SaveVAPIDKeys(ctx context.Context, keys StoredVAPIDKeys) error
+	SaveVAPIDKeysIfAbsent(ctx context.Context, keys StoredVAPIDKeys) error
+	UpsertSubscriptionWithLimit(ctx context.Context, sub StoredSubscription, maxLimit int) error
+	DeleteSubscription(ctx context.Context, endpoint string) error
+	ListSubscriptions(ctx context.Context) ([]StoredSubscription, error)
+}
+
+type Store interface {
+	DurableStore
+	NotificationStore
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -14,6 +15,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -875,5 +878,298 @@ func TestSQLiteStoreSeparatesSourceStateByScope(t *testing.T) {
 	}
 	if got, _ := s.EventMappingBySourceURI(ctx, SourceRef{Scope: bOther, URI: "same"}); got.NostrEventID != "15" {
 		t.Fatalf("other account mapping = %#v", got)
+	}
+}
+
+func TestVAPIDKeysAndSubscriptions(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, dbCloser, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = dbCloser.Close() }()
+
+	// 1. GetVAPIDKeys on empty DB returns nil, nil
+	keys, err := store.GetVAPIDKeys(ctx)
+	if err != nil {
+		t.Fatalf("GetVAPIDKeys on empty DB: %v", err)
+	}
+	if keys != nil {
+		t.Fatalf("expected nil keys on empty DB, got %+v", keys)
+	}
+
+	// 2. SaveVAPIDKeys saves keys and subsequent GetVAPIDKeys returns matching keys
+	now := time.Now().UTC().Truncate(time.Second)
+	initialKeys := StoredVAPIDKeys{
+		PrivateKey: "priv-key-data",
+		PublicKey:  "pub-key-data",
+		Subject:    "mailto:test@example.com",
+		CreatedAt:  now,
+	}
+	if err := store.SaveVAPIDKeys(ctx, initialKeys); err != nil {
+		t.Fatalf("SaveVAPIDKeys: %v", err)
+	}
+
+	retrievedKeys, err := store.GetVAPIDKeys(ctx)
+	if err != nil {
+		t.Fatalf("GetVAPIDKeys: %v", err)
+	}
+	if retrievedKeys == nil {
+		t.Fatal("expected non-nil retrieved keys")
+	}
+	if retrievedKeys.PrivateKey != initialKeys.PrivateKey ||
+		retrievedKeys.PublicKey != initialKeys.PublicKey ||
+		retrievedKeys.Subject != initialKeys.Subject ||
+		!retrievedKeys.CreatedAt.Equal(initialKeys.CreatedAt) {
+		t.Fatalf("mismatched retrieved keys: got %+v, want %+v", retrievedKeys, initialKeys)
+	}
+
+	// 3. SaveVAPIDKeys updates keys on subsequent call
+	updatedKeys := StoredVAPIDKeys{
+		PrivateKey: "priv-key-data-2",
+		PublicKey:  "pub-key-data-2",
+		Subject:    "mailto:updated@example.com",
+		CreatedAt:  now.Add(time.Minute),
+	}
+	if err := store.SaveVAPIDKeys(ctx, updatedKeys); err != nil {
+		t.Fatalf("SaveVAPIDKeys update: %v", err)
+	}
+	retrievedUpdated, err := store.GetVAPIDKeys(ctx)
+	if err != nil {
+		t.Fatalf("GetVAPIDKeys after update: %v", err)
+	}
+	if retrievedUpdated == nil {
+		t.Fatal("expected non-nil updated keys")
+	}
+	if retrievedUpdated.PrivateKey != updatedKeys.PrivateKey ||
+		retrievedUpdated.PublicKey != updatedKeys.PublicKey ||
+		retrievedUpdated.Subject != updatedKeys.Subject ||
+		!retrievedUpdated.CreatedAt.Equal(initialKeys.CreatedAt) {
+		t.Fatalf("mismatched updated keys: got %+v, want CreatedAt=%v", retrievedUpdated, initialKeys.CreatedAt)
+	}
+	if err := store.SaveVAPIDKeysIfAbsent(ctx, initialKeys); err != nil {
+		t.Fatalf("SaveVAPIDKeysIfAbsent: %v", err)
+	}
+	retrievedAfterIfAbsent, err := store.GetVAPIDKeys(ctx)
+	if err != nil {
+		t.Fatalf("GetVAPIDKeys after SaveVAPIDKeysIfAbsent: %v", err)
+	}
+	if retrievedAfterIfAbsent.PrivateKey != updatedKeys.PrivateKey || retrievedAfterIfAbsent.PublicKey != updatedKeys.PublicKey {
+		t.Fatalf("SaveVAPIDKeysIfAbsent replaced existing keys: got %+v, want %+v", retrievedAfterIfAbsent, updatedKeys)
+	}
+
+	// 4. ListSubscriptions on empty DB returns empty slice
+	subs, err := store.ListSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("ListSubscriptions on empty DB: %v", err)
+	}
+	if subs == nil || len(subs) != 0 {
+		t.Fatalf("expected empty slice subscriptions, got %+v", subs)
+	}
+
+	// 5. UpsertSubscription inserts new subscription
+	sub1 := StoredSubscription{
+		Endpoint:  "https://push.example.com/sub1",
+		P256dh:    "p256dh-key-1",
+		Auth:      "auth-secret-1",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.UpsertSubscriptionWithLimit(ctx, sub1, 0); err != nil {
+		t.Fatalf("UpsertSubscription: %v", err)
+	}
+
+	// 6. UpsertSubscription updates existing subscription (e.g. auth updated)
+	sub1Updated := sub1
+	sub1Updated.Auth = "auth-secret-1-updated"
+	sub1Updated.UpdatedAt = now.Add(time.Minute)
+	if err := store.UpsertSubscriptionWithLimit(ctx, sub1Updated, 0); err != nil {
+		t.Fatalf("UpsertSubscription update: %v", err)
+	}
+
+	subs, err = store.ListSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("ListSubscriptions: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subscription, got %d", len(subs))
+	}
+	if subs[0].Auth != "auth-secret-1-updated" || !subs[0].UpdatedAt.Equal(sub1Updated.UpdatedAt) {
+		t.Fatalf("expected updated subscription, got %+v", subs[0])
+	}
+
+	// 7. ListSubscriptions returns all saved subscriptions
+	sub2 := StoredSubscription{
+		Endpoint:  "https://push.example.com/sub2",
+		P256dh:    "p256dh-key-2",
+		Auth:      "auth-secret-2",
+		CreatedAt: now.Add(2 * time.Minute),
+		UpdatedAt: now.Add(2 * time.Minute),
+	}
+	if err := store.UpsertSubscriptionWithLimit(ctx, sub2, 0); err != nil {
+		t.Fatalf("UpsertSubscription sub2: %v", err)
+	}
+
+	subs, err = store.ListSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("ListSubscriptions: %v", err)
+	}
+	if len(subs) != 2 {
+		t.Fatalf("expected 2 subscriptions, got %d", len(subs))
+	}
+
+	// 8. DeleteSubscription deletes subscription by endpoint
+	if err := store.DeleteSubscription(ctx, sub1.Endpoint); err != nil {
+		t.Fatalf("DeleteSubscription sub1: %v", err)
+	}
+	subs, err = store.ListSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("ListSubscriptions after delete: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subscription after delete, got %d", len(subs))
+	}
+	if subs[0].Endpoint != sub2.Endpoint {
+		t.Fatalf("expected remaining subscription to be sub2, got %+v", subs[0])
+	}
+
+	if err := store.DeleteSubscription(ctx, sub2.Endpoint); err != nil {
+		t.Fatalf("DeleteSubscription sub2: %v", err)
+	}
+	subs, err = store.ListSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("ListSubscriptions after delete all: %v", err)
+	}
+	if len(subs) != 0 {
+		t.Fatalf("expected 0 subscriptions after delete all, got %d", len(subs))
+	}
+
+	// 9. VAPID key rotation preserves initial CreatedAt
+	initialCreated := now
+	keysInitial := StoredVAPIDKeys{
+		PrivateKey: "priv-1",
+		PublicKey:  "pub-1",
+		Subject:    "mailto:admin1@example.com",
+		CreatedAt:  initialCreated,
+	}
+	if err := store.SaveVAPIDKeys(ctx, keysInitial); err != nil {
+		t.Fatalf("SaveVAPIDKeys initial: %v", err)
+	}
+
+	rotatedCreated := now.Add(24 * time.Hour)
+	keysRotated := StoredVAPIDKeys{
+		PrivateKey: "priv-2",
+		PublicKey:  "pub-2",
+		Subject:    "mailto:admin2@example.com",
+		CreatedAt:  rotatedCreated,
+	}
+	if err := store.SaveVAPIDKeys(ctx, keysRotated); err != nil {
+		t.Fatalf("SaveVAPIDKeys rotation: %v", err)
+	}
+
+	loadedKeys, err := store.GetVAPIDKeys(ctx)
+	if err != nil {
+		t.Fatalf("GetVAPIDKeys after rotation: %v", err)
+	}
+	if loadedKeys.PublicKey != "pub-2" || loadedKeys.Subject != "mailto:admin2@example.com" {
+		t.Fatalf("unexpected rotated keys: %+v", loadedKeys)
+	}
+	if !loadedKeys.CreatedAt.Equal(initialCreated) {
+		t.Fatalf("expected CreatedAt %v to be preserved across rotation, got %v", initialCreated, loadedKeys.CreatedAt)
+	}
+
+	// 10. UpsertSubscriptionWithLimit enforces cap for new endpoints but allows updates
+	limitSub1 := StoredSubscription{
+		Endpoint:  "https://push.example.com/limit-1",
+		P256dh:    "p1",
+		Auth:      "a1",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.UpsertSubscriptionWithLimit(ctx, limitSub1, 1); err != nil {
+		t.Fatalf("UpsertSubscriptionWithLimit initial under limit: %v", err)
+	}
+
+	limitSub2 := StoredSubscription{
+		Endpoint:  "https://push.example.com/limit-2",
+		P256dh:    "p2",
+		Auth:      "a2",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.UpsertSubscriptionWithLimit(ctx, limitSub2, 1); !errors.Is(err, ErrMaxSubscriptionsReached) {
+		t.Fatalf("expected ErrMaxSubscriptionsReached, got %v", err)
+	}
+
+	// Existing endpoint can still be updated even when at limit
+	limitSub1Updated := limitSub1
+	limitSub1Updated.Auth = "a1-updated"
+	if err := store.UpsertSubscriptionWithLimit(ctx, limitSub1Updated, 1); err != nil {
+		t.Fatalf("expected update to succeed at limit, got %v", err)
+	}
+}
+
+func TestUpsertSubscriptionWithLimit_Concurrent(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "concurrent_test.db")
+	store, closer, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	const (
+		totalGoroutines = 12
+		maxLimit        = 4
+	)
+
+	var (
+		wg           sync.WaitGroup
+		successCount atomic.Int32
+		limitCount   atomic.Int32
+		otherErrors  atomic.Int32
+		now          = time.Now().UTC()
+	)
+
+	wg.Add(totalGoroutines)
+	for i := 0; i < totalGoroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			sub := StoredSubscription{
+				Endpoint:  fmt.Sprintf("https://push.example.com/concurrent-%d", idx),
+				P256dh:    fmt.Sprintf("p256dh-%d", idx),
+				Auth:      fmt.Sprintf("auth-%d", idx),
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			err := store.UpsertSubscriptionWithLimit(ctx, sub, maxLimit)
+			if err == nil {
+				successCount.Add(1)
+			} else if errors.Is(err, ErrMaxSubscriptionsReached) {
+				limitCount.Add(1)
+			} else {
+				otherErrors.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if other := otherErrors.Load(); other > 0 {
+		t.Errorf("encountered %d unexpected errors during concurrent subscribe", other)
+	}
+	if got := successCount.Load(); got != int32(maxLimit) {
+		t.Errorf("successCount = %d, want %d", got, maxLimit)
+	}
+	if got := limitCount.Load(); got != int32(totalGoroutines-maxLimit) {
+		t.Errorf("limitCount = %d, want %d", got, totalGoroutines-maxLimit)
+	}
+
+	subs, err := store.ListSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("ListSubscriptions: %v", err)
+	}
+	if len(subs) != maxLimit {
+		t.Errorf("total subscriptions in store = %d, want %d", len(subs), maxLimit)
 	}
 }
