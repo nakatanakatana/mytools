@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/mmcdole/gofeed"
 	"gotest.tools/v3/assert"
@@ -278,7 +279,7 @@ func TestCreateFilterWithInvalidDate(t *testing.T) {
 
 			ctx := context.Background()
 
-			f := CreateFilter("updated_at.from", "2021-07-07T12:00:00+09:00", filtersMap)
+			f := CreateFilter("updated_at.from", layout, filtersMap)
 			assert.Equal(t, true, f(ctx, testItem))
 		})
 	}
@@ -298,4 +299,39 @@ func TestCreateFilterWithTimezone(t *testing.T) {
 
 	f = CreateFilter("updated_at.from", "2021-07-11T10:00:00+09:00", filtersMap)
 	assert.Equal(t, false, f(ctx, testItem))
+}
+
+func TestCreateFilterLatest(t *testing.T) {
+	t.Parallel()
+
+	filtersMap := CreateFiltersMap(nil, nil)
+	ctx := context.Background()
+
+	oldItem := createTestItem() // 2021 dates (older than 7 days)
+	now := time.Now().UTC()
+	recentUpdated := now.Add(-1 * time.Hour)
+	recentPublished := now.Add(-2 * time.Hour)
+	newItem := &gofeed.Item{
+		UpdatedParsed:   &recentUpdated,
+		PublishedParsed: &recentPublished,
+	}
+	nilDatesItem := &gofeed.Item{}
+
+	for _, key := range []string{"updated_at.latest", "published_at.latest", "latest"} {
+		t.Run(key+"_old", func(t *testing.T) {
+			t.Parallel()
+			f := CreateFilter(key, "", filtersMap)
+			assert.Equal(t, false, f(ctx, oldItem))
+		})
+		t.Run(key+"_new", func(t *testing.T) {
+			t.Parallel()
+			f := CreateFilter(key, "", filtersMap)
+			assert.Equal(t, true, f(ctx, newItem))
+		})
+		t.Run(key+"_nil", func(t *testing.T) {
+			t.Parallel()
+			f := CreateFilter(key, "", filtersMap)
+			assert.Equal(t, true, f(ctx, nilDatesItem))
+		})
+	}
 }

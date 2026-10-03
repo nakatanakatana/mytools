@@ -367,7 +367,5 @@ func (f *replicaFile) recordPollFailure(err error) {
 }
 
 func clonePageIndexMap(src map[uint32]ltx.PageIndexElem) map[uint32]ltx.PageIndexElem {
-	dst := make(map[uint32]ltx.PageIndexElem, len(src))
-	maps.Copy(dst, src)
-	return dst
+	return maps.Clone(src)
 }

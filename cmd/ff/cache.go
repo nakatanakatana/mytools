@@ -109,8 +109,9 @@ func (c *CacheMiddleware) generateAndCacheResponse(
 		return
 	}
 
-	// Serve the cached file
-	c.serveFileWithCharset(w, r, cacheKey)
+	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+	w.WriteHeader(responseRecorder.statusCode)
+	_, _ = w.Write(responseRecorder.body)
 }
 
 func (c *CacheMiddleware) GetCacheKey(params url.Values) string {

@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/url"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -487,11 +488,7 @@ func (b *OnePasswordBackend) findMatchingOPItem(ctx context.Context, attributes 
 
 func buildOPMetadataTags(attributes map[string]string) []string {
 	tags := []string{opBaseTag, opMetaTag}
-	keys := make([]string, 0, len(attributes))
-	for key := range attributes {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(attributes))
 
 	for _, key := range keys {
 		encodedKey := base64.RawURLEncoding.EncodeToString([]byte(key))

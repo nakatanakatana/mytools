@@ -55,14 +55,7 @@ func GenerateDHKeypair() (*DHKeypair, error) {
 
 // BigIntToBytes converts a big.Int to a 128-byte (1024-bit) big-endian byte slice.
 func BigIntToBytes(n *big.Int) []byte {
-	b := n.Bytes()
-	if len(b) >= 128 {
-		return b[len(b)-128:]
-	}
-	// Left-pad with zeros to 128 bytes
-	padded := make([]byte, 128)
-	copy(padded[128-len(b):], b)
-	return padded
+	return n.FillBytes(make([]byte, 128))
 }
 
 // ComputeSharedSecret computes the DH shared secret from the client's public key

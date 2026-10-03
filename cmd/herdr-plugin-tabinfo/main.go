@@ -166,12 +166,9 @@ type sessionSnapshotResult struct {
 }
 
 type sessionSnapshot struct {
-	Tabs    []tabInfo        `json:"tabs"`
-	Panes   []paneInfo       `json:"panes"`
-	Layouts []paneLayout     `json:"layouts"`
-	Extra   json.RawMessage  `json:"-"`
-	Raw     *json.RawMessage `json:"-"`
-	Unknown map[string]any   `json:"-"`
+	Tabs    []tabInfo    `json:"tabs"`
+	Panes   []paneInfo   `json:"panes"`
+	Layouts []paneLayout `json:"layouts"`
 }
 
 type tabInfo struct {

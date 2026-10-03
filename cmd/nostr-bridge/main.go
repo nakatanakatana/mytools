@@ -105,7 +105,7 @@ type databaseCloser interface {
 }
 
 // newRuntimeResources is a seam for constructing the process-lifetime integrations.
-var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
+var newRuntimeResources = func(cfg Config) (res runtimeResources, retErr error) {
 	if seed, err := base64.StdEncoding.DecodeString(cfg.Shared.MasterSeed); err != nil {
 		return runtimeResources{}, fmt.Errorf("decode bridge master seed: %w", err)
 	} else if len(seed) != 32 {
@@ -115,6 +115,14 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 	if err != nil {
 		return runtimeResources{}, err
 	}
+	var resources runtimeResources
+	resources.database = newTrackedDatabaseCloser(database)
+	defer func() {
+		if retErr != nil {
+			retErr = closeRuntimeConstructionFailure(retErr, resources)
+		}
+	}()
+
 	health := NewHealth(HealthOptions{
 		DatabaseCheck: func(ctx context.Context) error {
 			pinger, ok := database.(interface{ PingContext(context.Context) error })
@@ -132,27 +140,22 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		healthMastodonAuthorizationObserver{health: health}.AuthorizationStatusChanged,
 	)
 	if err != nil {
-		_ = database.Close()
 		return runtimeResources{}, err
 	}
 	managementURL, err := url.Parse(cfg.Shared.RelayManagementURL)
 	if err != nil {
-		_ = database.Close()
 		return runtimeResources{}, err
 	}
 	canonicalURL, err := url.Parse(cfg.Shared.RelayCanonicalURL)
 	if err != nil {
-		_ = database.Close()
 		return runtimeResources{}, err
 	}
 	adminKey, err := nostr.SecretKeyFromHex(cfg.Shared.RelayAdminPrivateKey)
 	if err != nil {
-		_ = database.Close()
 		return runtimeResources{}, err
 	}
 	managementClient, err := relayclient.NewHTTPManagementClient(managementURL, canonicalURL, adminKey)
 	if err != nil {
-		_ = database.Close()
 		return runtimeResources{}, err
 	}
 	dispatcher := &outbox.Dispatcher{Store: bridgeStore, Management: managementClient, Publisher: &relayclient.WebSocketPublisher{RelayURL: cfg.Shared.RelayURL}, PollInterval: cfg.Shared.OutboxPollInterval, Observer: healthRelayObserver{health}}
@@ -161,37 +164,26 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		defer health.Update(func(m *HealthMetrics) { m.DispatcherRunning = false })
 		return dispatcher.Run(ctx)
 	})
-	var oauthMaintenance *workerCloser
+	resources.dispatcher = dispatchWorker
+	resources.dispatcherDone = dispatchWorker.Done()
+
 	if client != nil {
-		oauthMaintenance = startBlueskyOAuthMaintenance(cfg.Bluesky, client, health)
+		oauthMaintenance := startBlueskyOAuthMaintenance(cfg.Bluesky, client, health)
+		resources.oauthMaintenance = oauthMaintenance
+		resources.oauthMaintenanceDone = oauthMaintenance.Done()
 	}
-	trackedDatabase := newTrackedDatabaseCloser(database)
+
 	runtime, err := newRuntimeSync(cfg, bridgeStore, client, mastodonOAuth, health)
 	if err != nil {
-		resources := runtimeResources{
-			dispatcher: dispatchWorker,
-			database:   trackedDatabase,
-		}
-		if oauthMaintenance != nil {
-			resources.oauthMaintenance = oauthMaintenance
-			resources.oauthMaintenanceDone = oauthMaintenance.Done()
-		}
-		return runtimeResources{}, closeRuntimeConstructionFailure(err, resources)
+		return runtimeResources{}, err
 	}
+	resources.jetstream = runtime
+
 	vapidCtx, cancelVAPID := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelVAPID()
 	resolvedKeys, subject, err := resolveVAPIDKeys(vapidCtx, cfg.Notification, bridgeStore)
 	if err != nil {
-		resources := runtimeResources{
-			jetstream:  runtime,
-			dispatcher: dispatchWorker,
-			database:   trackedDatabase,
-		}
-		if oauthMaintenance != nil {
-			resources.oauthMaintenance = oauthMaintenance
-			resources.oauthMaintenanceDone = oauthMaintenance.Done()
-		}
-		return runtimeResources{}, closeRuntimeConstructionFailure(err, resources)
+		return runtimeResources{}, err
 	}
 	webpushClient := webpush.NewClient(webpush.ClientOptions{
 		VAPIDKeys: resolvedKeys,
@@ -210,6 +202,9 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 	notificationWorker := startWorker(func(ctx context.Context) error {
 		return notifWorker.Run(ctx)
 	})
+	resources.notification = notificationWorker
+	resources.notificationDone = notificationWorker.Done()
+
 	mux := http.NewServeMux()
 	RegisterOAuthRoutes(mux, client, mastodonOAuth)
 	RegisterHealthRoutes(mux, health)
@@ -218,19 +213,8 @@ var newRuntimeResources = func(cfg Config) (runtimeResources, error) {
 		return resolvedKeys.PublicKey
 	})
 	mux.Handle("/", bridgeweb.Handler())
-	resources := runtimeResources{
-		httpServer:       &http.Server{Addr: ServerAddress(cfg), Handler: mux},
-		jetstream:        runtime,
-		dispatcher:       dispatchWorker,
-		dispatcherDone:   dispatchWorker.Done(),
-		notification:     notificationWorker,
-		notificationDone: notificationWorker.Done(),
-		database:         trackedDatabase,
-	}
-	if oauthMaintenance != nil {
-		resources.oauthMaintenance = oauthMaintenance
-		resources.oauthMaintenanceDone = oauthMaintenance.Done()
-	}
+	resources.httpServer = &http.Server{Addr: ServerAddress(cfg), Handler: mux}
+
 	return resources, nil
 }
 
