@@ -22,7 +22,7 @@ func TestHandlerServesEmbeddedShellAndAssets(t *testing.T) {
 			name:            "shell",
 			path:            "/",
 			wantContentType: "text/html",
-			wantBody:        []string{"nostr-bridge", "provider-list", "初期同期", "id=\"oauth-callback-status\"", "id=\"status-error\"", "id=\"action-error\""},
+			wantBody:        []string{"nostr-bridge", "provider-list", "初期同期", "id=\"oauth-callback-status\"", "id=\"status-error\"", "id=\"action-error\"", "id=\"notification-controls\"", "id=\"notification-status\"", "id=\"notification-toggle-btn\""},
 		},
 		{
 			name:            "javascript",
@@ -34,7 +34,7 @@ func TestHandlerServesEmbeddedShellAndAssets(t *testing.T) {
 			name:            "stylesheet",
 			path:            "/styles.css",
 			wantContentType: "text/css",
-			wantBody:        []string{".status-ready"},
+			wantBody:        []string{".status-ready", ".notification-controls"},
 		},
 	}
 
@@ -55,6 +55,30 @@ func TestHandlerServesEmbeddedShellAndAssets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHandlerServesServiceWorker(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/sw.js", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /sw.js status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if contentType := recorder.Header().Get("Content-Type"); !strings.Contains(contentType, "javascript") {
+		t.Fatalf("GET /sw.js Content-Type = %q, want to contain %q", contentType, "javascript")
+	}
+	body := recorder.Body.String()
+	hasPush := strings.Contains(body, "addEventListener('push'") || strings.Contains(body, `addEventListener("push"`)
+	if !hasPush {
+		t.Fatalf("GET /sw.js body does not register push listener: %s", body)
+	}
+	hasClick := strings.Contains(body, "addEventListener('notificationclick'") || strings.Contains(body, `addEventListener("notificationclick"`)
+	if !hasClick {
+		t.Fatalf("GET /sw.js body does not register notificationclick listener: %s", body)
+	}
+	if !strings.Contains(body, "self.location.origin") {
+		t.Fatalf("GET /sw.js body does not validate origin: %s", body)
 	}
 }
 
@@ -172,6 +196,14 @@ func TestClientAssetsReferenceStatusAndOAuthRoutes(t *testing.T) {
 				"status.outbox?.ready === false",
 				"if (provider.access_token_expired === true)",
 				"if (provider.degraded === true)",
+				"/api/push/vapid-public-key",
+				"/api/push/subscribe",
+				"/api/push/unsubscribe",
+				"/sw.js",
+				"ブラウザ通知: 有効",
+				"ブラウザ通知: 未設定",
+				"ブラウザ通知: ブロック中",
+				"urlBase64ToUint8Array",
 			},
 		},
 		{
@@ -179,6 +211,11 @@ func TestClientAssetsReferenceStatusAndOAuthRoutes(t *testing.T) {
 			want: []string{
 				"<link rel=\"stylesheet\" href=\"/styles.css\">",
 				"<script src=\"/app.js\" defer></script>",
+				"id=\"notification-controls\"",
+				"id=\"notification-status\"",
+				"id=\"notification-toggle-btn\"",
+				"role=\"status\" aria-live=\"polite\"",
+				"aria-describedby=\"notification-status\"",
 			},
 		},
 	}

@@ -64,6 +64,8 @@ jobs:
       - run: make check-sqlc
       - run: make check-litestream-manifests
       - run: node --check cmd/nostr-bridge/web/static/app.js
+      - run: node --check cmd/nostr-bridge/web/static/sw.js
+      - run: node --test cmd/nostr-bridge/web/static/app.test.mjs cmd/nostr-bridge/web/static/sw.test.mjs
       - run: golangci-lint run
 
   build:

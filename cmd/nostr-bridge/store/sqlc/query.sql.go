@@ -8,6 +8,7 @@ package storesqlc
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 const advanceOutboxSequence = `-- name: AdvanceOutboxSequence :exec
@@ -135,6 +136,28 @@ func (q *Queries) CompleteOutbox(ctx context.Context, arg CompleteOutboxParams) 
 	return q.db.ExecContext(ctx, completeOutbox, arg.ID, arg.ClaimToken, arg.ClaimedUntil)
 }
 
+const countSubscriptions = `-- name: CountSubscriptions :one
+SELECT COUNT(*) FROM webpush_subscriptions
+`
+
+func (q *Queries) CountSubscriptions(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countSubscriptions)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countSubscriptionsByEndpoint = `-- name: CountSubscriptionsByEndpoint :one
+SELECT COUNT(*) FROM webpush_subscriptions WHERE endpoint = ?
+`
+
+func (q *Queries) CountSubscriptionsByEndpoint(ctx context.Context, endpoint string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countSubscriptionsByEndpoint, endpoint)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const cursor = `-- name: Cursor :one
 SELECT ` + "`" + `value` + "`" + ` AS cursor_value FROM sync_cursors WHERE provider=? AND source_account=? AND name=?
 `
@@ -219,6 +242,16 @@ type DeleteSourceOperationParams struct {
 
 func (q *Queries) DeleteSourceOperation(ctx context.Context, arg DeleteSourceOperationParams) error {
 	_, err := q.db.ExecContext(ctx, deleteSourceOperation, arg.Provider, arg.SourceAccount, arg.SourceUri)
+	return err
+}
+
+const deleteSubscription = `-- name: DeleteSubscription :exec
+DELETE FROM webpush_subscriptions
+WHERE endpoint = ?
+`
+
+func (q *Queries) DeleteSubscription(ctx context.Context, endpoint string) error {
+	_, err := q.db.ExecContext(ctx, deleteSubscription, endpoint)
 	return err
 }
 
@@ -335,6 +368,31 @@ func (q *Queries) EventMappingBySourceURI(ctx context.Context, arg EventMappingB
 	return i, err
 }
 
+const getVAPIDKeys = `-- name: GetVAPIDKeys :one
+SELECT private_key, public_key, subject, created_at
+FROM webpush_vapid_keys
+WHERE id = 1
+`
+
+type GetVAPIDKeysRow struct {
+	PrivateKey string
+	PublicKey  string
+	Subject    string
+	CreatedAt  time.Time
+}
+
+func (q *Queries) GetVAPIDKeys(ctx context.Context) (GetVAPIDKeysRow, error) {
+	row := q.db.QueryRowContext(ctx, getVAPIDKeys)
+	var i GetVAPIDKeysRow
+	err := row.Scan(
+		&i.PrivateKey,
+		&i.PublicKey,
+		&i.Subject,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const incrementOutboxLastSequence = `-- name: IncrementOutboxLastSequence :exec
 UPDATE outbox_sequences SET last_sequence=last_sequence+1 WHERE aggregate_key=?
 `
@@ -395,6 +453,41 @@ type InsertSyncTargetParams struct {
 func (q *Queries) InsertSyncTarget(ctx context.Context, arg InsertSyncTargetParams) error {
 	_, err := q.db.ExecContext(ctx, insertSyncTarget, arg.Provider, arg.SourceAccount, arg.Target)
 	return err
+}
+
+const listSubscriptions = `-- name: ListSubscriptions :many
+SELECT endpoint, p256dh, auth, created_at, updated_at
+FROM webpush_subscriptions
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListSubscriptions(ctx context.Context) ([]WebpushSubscription, error) {
+	rows, err := q.db.QueryContext(ctx, listSubscriptions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WebpushSubscription
+	for rows.Next() {
+		var i WebpushSubscription
+		if err := rows.Scan(
+			&i.Endpoint,
+			&i.P256dh,
+			&i.Auth,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const negateLaterOutboxSequences = `-- name: NegateLaterOutboxSequences :exec
@@ -675,6 +768,55 @@ func (q *Queries) SaveSourceOperation(ctx context.Context, arg SaveSourceOperati
 	return err
 }
 
+const saveVAPIDKeys = `-- name: SaveVAPIDKeys :exec
+INSERT INTO webpush_vapid_keys (id, private_key, public_key, subject, created_at)
+VALUES (1, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    private_key = excluded.private_key,
+    public_key = excluded.public_key,
+    subject = excluded.subject
+`
+
+type SaveVAPIDKeysParams struct {
+	PrivateKey string
+	PublicKey  string
+	Subject    string
+	CreatedAt  time.Time
+}
+
+func (q *Queries) SaveVAPIDKeys(ctx context.Context, arg SaveVAPIDKeysParams) error {
+	_, err := q.db.ExecContext(ctx, saveVAPIDKeys,
+		arg.PrivateKey,
+		arg.PublicKey,
+		arg.Subject,
+		arg.CreatedAt,
+	)
+	return err
+}
+
+const saveVAPIDKeysIfAbsent = `-- name: SaveVAPIDKeysIfAbsent :exec
+INSERT INTO webpush_vapid_keys (id, private_key, public_key, subject, created_at)
+VALUES (1, ?, ?, ?, ?)
+ON CONFLICT(id) DO NOTHING
+`
+
+type SaveVAPIDKeysIfAbsentParams struct {
+	PrivateKey string
+	PublicKey  string
+	Subject    string
+	CreatedAt  time.Time
+}
+
+func (q *Queries) SaveVAPIDKeysIfAbsent(ctx context.Context, arg SaveVAPIDKeysIfAbsentParams) error {
+	_, err := q.db.ExecContext(ctx, saveVAPIDKeysIfAbsent,
+		arg.PrivateKey,
+		arg.PublicKey,
+		arg.Subject,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const setPublisherRegistered = `-- name: SetPublisherRegistered :exec
 INSERT INTO publisher_registrations(pubkey, registered_at) VALUES(?, ?)
 ON CONFLICT(pubkey) DO UPDATE SET registered_at=excluded.registered_at
@@ -796,6 +938,34 @@ func (q *Queries) UpsertEventMapping(ctx context.Context, arg UpsertEventMapping
 		arg.NostrEventID,
 		arg.SourceKind,
 		arg.AuthorPubkey,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const upsertSubscription = `-- name: UpsertSubscription :exec
+INSERT INTO webpush_subscriptions (endpoint, p256dh, auth, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(endpoint) DO UPDATE SET
+    p256dh = excluded.p256dh,
+    auth = excluded.auth,
+    updated_at = excluded.updated_at
+`
+
+type UpsertSubscriptionParams struct {
+	Endpoint  string
+	P256dh    string
+	Auth      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func (q *Queries) UpsertSubscription(ctx context.Context, arg UpsertSubscriptionParams) error {
+	_, err := q.db.ExecContext(ctx, upsertSubscription,
+		arg.Endpoint,
+		arg.P256dh,
+		arg.Auth,
+		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
 	return err
