@@ -8,6 +8,9 @@ const statusError = document.getElementById("status-error");
 const actionError = document.getElementById("action-error");
 const oauthCallbackStatus = document.getElementById("oauth-callback-status");
 const overallStatus = document.getElementById("overall-status");
+const notificationControls = document.getElementById("notification-controls");
+const notificationStatus = document.getElementById("notification-status");
+const notificationToggleBtn = document.getElementById("notification-toggle-btn");
 const dateTimeFormat = new Intl.DateTimeFormat("ja-JP", {
   dateStyle: "short",
   timeStyle: "medium",
@@ -16,6 +19,11 @@ const dateTimeFormat = new Intl.DateTimeFormat("ja-JP", {
 let pollTimer = 0;
 let statusRequest = null;
 let oauthCallbackPending = false;
+let notificationRegistration = null;
+let notificationActionInFlight = false;
+let notificationNeedsResubscribe = false;
+let vapidPublicKeyCache = null;
+let vapidPublicKeyCheckedAt = 0;
 const oauthInFlight = { bluesky: false, mastodon: false };
 let blueskyHandle = "";
 
@@ -283,6 +291,7 @@ function loadStatus() {
       const response = await fetch(statusURL, { cache: "no-store" });
       if (!response.ok) throw new Error(`status request failed: ${response.status}`);
       renderStatus(await response.json());
+      void refreshNotificationUI();
       clearStatusError();
     } catch (_error) {
       showStatusError(requestErrorMessage);
@@ -316,3 +325,196 @@ document.addEventListener("visibilitychange", () => {
 
 showOAuthCallbackStatus();
 loadStatus();
+initNotifications();
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(window.atob(base64), (c) => c.charCodeAt(0));
+}
+
+function updateNotificationUI(subscription, keyMatches = null) {
+  const isDenied = Notification.permission === "denied";
+  if (subscription) {
+    notificationNeedsResubscribe = !isDenied && keyMatches === false;
+    if (isDenied) {
+      notificationStatus.textContent = "ブラウザ通知: ブロック中（登録済み）";
+    } else if (keyMatches === false) {
+      notificationStatus.textContent = "ブラウザ通知: 再登録が必要です（VAPID 鍵が変更されています）";
+    } else if (keyMatches === null) {
+      notificationStatus.textContent = "ブラウザ通知: 有効（鍵を確認できません）";
+    } else {
+      notificationStatus.textContent = "ブラウザ通知: 有効";
+    }
+    notificationToggleBtn.textContent = notificationNeedsResubscribe ? "通知を再登録する" : "通知を解除する";
+    notificationToggleBtn.disabled = false;
+  } else {
+    notificationNeedsResubscribe = false;
+    notificationStatus.textContent = isDenied ? "ブラウザ通知: ブロック中" : "ブラウザ通知: 未設定";
+    notificationToggleBtn.textContent = "通知を有効にする";
+    notificationToggleBtn.disabled = isDenied;
+  }
+}
+
+async function currentVapidPublicKey(forceRefresh = false) {
+  const cacheAgeMs = Date.now() - vapidPublicKeyCheckedAt;
+  if (!forceRefresh && vapidPublicKeyCache && cacheAgeMs < 60_000) {
+    return vapidPublicKeyCache;
+  }
+
+  const response = await fetch("/api/push/vapid-public-key", { cache: "no-store" });
+  if (!response.ok) throw new Error("failed to fetch VAPID public key");
+  const keyData = await response.json();
+  if (typeof keyData.public_key !== "string" || !keyData.public_key) {
+    throw new Error("missing VAPID public key");
+  }
+  vapidPublicKeyCache = keyData.public_key;
+  vapidPublicKeyCheckedAt = Date.now();
+  return vapidPublicKeyCache;
+}
+
+function subscriptionUsesVapidKey(subscription, publicKey) {
+  const subscribedKey = subscription.options?.applicationServerKey;
+  if (!subscribedKey) return null;
+
+  const expected = urlBase64ToUint8Array(publicKey);
+  const actual = new Uint8Array(subscribedKey);
+  return actual.length === expected.length && actual.every((byte, index) => byte === expected[index]);
+}
+
+async function refreshNotificationUI() {
+  if (!notificationRegistration || notificationActionInFlight) return;
+  let subscription = null;
+  try {
+    subscription = await notificationRegistration.pushManager.getSubscription();
+    if (notificationActionInFlight) return;
+    if (!subscription) {
+      updateNotificationUI(null);
+      return;
+    }
+    if (Notification.permission === "denied") {
+      updateNotificationUI(subscription);
+      return;
+    }
+    const key = await currentVapidPublicKey();
+    if (notificationActionInFlight) return;
+    updateNotificationUI(subscription, subscriptionUsesVapidKey(subscription, key));
+  } catch (_error) {
+    if (!notificationActionInFlight) updateNotificationUI(subscription, null);
+  }
+}
+
+async function saveSubscription(subscription) {
+  const subJson = subscription.toJSON();
+  const response = await fetch("/api/push/subscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      endpoint: subJson.endpoint,
+      keys: {
+        p256dh: subJson.keys?.p256dh,
+        auth: subJson.keys?.auth,
+      },
+    }),
+  });
+  if (!response.ok) throw new Error("failed to subscribe");
+}
+
+async function removeSubscription(subscription) {
+  const response = await fetch("/api/push/unsubscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
+  });
+  if (!response.ok) throw new Error("failed to unsubscribe");
+  try {
+    if (await subscription.unsubscribe()) return;
+  } catch (_error) {
+    // Check the browser state before deciding whether to restore the server row.
+  }
+
+  const activeSubscription = await notificationRegistration.pushManager.getSubscription().catch(() => subscription);
+  if (!activeSubscription) return;
+
+  await saveSubscription(activeSubscription).catch(() => {});
+  throw new Error("failed to remove browser subscription");
+}
+
+async function subscribeWithCurrentKey(registration) {
+  const publicKey = await currentVapidPublicKey(true);
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  });
+  try {
+    await saveSubscription(subscription);
+  } catch (error) {
+    await subscription.unsubscribe().catch(() => {});
+    throw error;
+  }
+}
+
+async function initNotifications() {
+  if (!("serviceWorker" in navigator && "PushManager" in window && "Notification" in window)) {
+    return;
+  }
+  if (!notificationControls || !notificationStatus || !notificationToggleBtn) {
+    return;
+  }
+
+  if (!window.isSecureContext) {
+    notificationControls.hidden = false;
+    notificationStatus.textContent = "ブラウザ通知: HTTPS環境が必要です";
+    notificationToggleBtn.hidden = true;
+    return;
+  }
+
+  let registration;
+  try {
+    registration = await navigator.serviceWorker.register("/sw.js");
+  } catch (_error) {
+    showActionError("ブラウザ通知の初期化に失敗しました。");
+    return;
+  }
+
+  notificationRegistration = registration;
+  notificationControls.hidden = false;
+  await refreshNotificationUI();
+
+  notificationToggleBtn.addEventListener("click", async () => {
+    if (notificationActionInFlight) return;
+    clearActionError();
+    notificationActionInFlight = true;
+    notificationToggleBtn.disabled = true;
+
+    try {
+      const currentSubscription = await registration.pushManager.getSubscription();
+      if (!currentSubscription) {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") {
+          return;
+        }
+
+        await subscribeWithCurrentKey(registration);
+      } else if (Notification.permission === "denied") {
+        await removeSubscription(currentSubscription);
+      } else {
+        let publicKey = null;
+        try {
+          publicKey = await currentVapidPublicKey(true);
+        } catch (error) {
+          if (notificationNeedsResubscribe) throw error;
+        }
+        await removeSubscription(currentSubscription);
+        if (publicKey && subscriptionUsesVapidKey(currentSubscription, publicKey) === false) {
+          await subscribeWithCurrentKey(registration);
+        }
+      }
+    } catch (_error) {
+      showActionError("ブラウザ通知の設定に失敗しました。しばらくしてから再試行してください。");
+    } finally {
+      notificationActionInFlight = false;
+      await refreshNotificationUI();
+    }
+  });
+}

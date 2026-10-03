@@ -4,6 +4,10 @@
 
 package storesqlc
 
+import (
+	"time"
+)
+
 type BridgeEvent struct {
 	Provider      string
 	SourceAccount string
@@ -81,4 +85,20 @@ type SyncTarget struct {
 	Provider      string
 	SourceAccount string
 	Target        string
+}
+
+type WebpushSubscription struct {
+	Endpoint  string
+	P256dh    string
+	Auth      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type WebpushVapidKey struct {
+	ID         int64
+	PrivateKey string
+	PublicKey  string
+	Subject    string
+	CreatedAt  time.Time
 }

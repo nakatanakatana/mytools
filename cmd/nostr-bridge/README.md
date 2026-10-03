@@ -118,6 +118,61 @@ boundary, and expose only the callback, metadata, and JWKS routes needed by the
 providers. The dashboard displays a separate completion notice and keeps it
 visible while the first updated status is fetched.
 
+### Browser push notifications
+
+Browser push subscriptions and generated VAPID keys are stored in SQLite. The
+generated VAPID private key is stored as plaintext, so restrict access to the
+database file, its persistent volume, and its backups. If VAPID keys are
+provided through `NOSTR_BRIDGE_VAPID_PRIVATE_KEY` and
+`NOSTR_BRIDGE_VAPID_PUBLIC_KEY`, keep that pair available across restarts;
+environment-provided keys are not copied into SQLite. Removing the configured
+pair loads a previously generated pair from SQLite, if one exists; otherwise,
+the bridge generates and stores a new pair. Preserve the previous configured
+pair in your secrets manager until the new pair has been verified, so it is
+available if you need to roll back.
+
+If startup reports invalid stored VAPID keys, stop the bridge and back up its
+database before removing the row with
+`sqlite3 /path/to/nostr-bridge.db 'DELETE FROM webpush_vapid_keys WHERE id = 1;'`.
+Restarting generates a new key pair. Existing browser subscriptions must be
+re-registered with the new key; the dashboard offers this for browsers that
+visit it again.
+
+Changing the VAPID key pair invalidates existing browser push subscriptions.
+The dashboard detects a mismatch and offers to replace the subscription with
+one using the current key. Existing subscriptions on other browsers or devices
+must be re-registered from those clients. Set `NOSTR_BRIDGE_VAPID_SUBJECT` to
+change the contact value used in VAPID tokens; this setting takes effect after
+the bridge restarts.
+
+Push notifications use the same SQLite database to read subscriptions. If
+SQLite is unavailable, the process cannot send a push alert about that database
+failure. Monitor `/readyz` through an independent health-checking system when
+database availability needs external alerting. `/healthz` reports only process
+liveness.
+
+The push API has no application-level authentication and limits the instance
+to 100 subscriptions. Keep `/api/push/vapid-public-key`,
+`/api/push/subscribe`, and `/api/push/unsubscribe` behind the private ingress
+boundary described above.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL` | Minimum interval between reminders while the same issue remains active (at least `1m`; a recurrence after recovery is notified immediately) | `24h` |
+| `NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL` | How often the bridge checks for notification issues and retries failed deliveries (at least `1s`) | `15s` |
+
+Abandoned subscriptions are removed when a push service reports them expired.
+If browser data was cleared and the 100-subscription limit is reached before
+those entries are reclaimed, stop the bridge and back up its database, then
+clear the push subscriptions from the configured SQLite database with
+`sqlite3 /path/to/nostr-bridge.db 'DELETE FROM webpush_subscriptions;'` and
+restart the bridge. This clears all browser push registrations; users must
+toggle notifications off and on again from each browser to register them.
+Permanent push-service 4xx responses are logged and not retried for the same
+active issue and unchanged subscription. Check those logs after configuration
+or subscription changes. Restart after correcting configuration; updating a
+subscription also allows delivery to be retried.
+
 The dashboard is not a configuration editor. Provider credentials and
 instance, account, and list configuration remain environment variables read
 at process startup; changing them requires updating the environment and

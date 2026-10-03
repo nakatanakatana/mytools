@@ -32,6 +32,8 @@ func TestMigrateCreatesBridgeSchema(t *testing.T) {
 		"oauth_sessions",
 		"oauth_tokens",
 		"source_operations",
+		"webpush_vapid_keys",
+		"webpush_subscriptions",
 	}
 	for _, table := range tables {
 		var count int

@@ -86,3 +86,20 @@ CREATE TABLE source_operations (
     `identity` TEXT NOT NULL,
     PRIMARY KEY(provider, source_account, source_uri)
 );
+
+CREATE TABLE webpush_vapid_keys (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    private_key TEXT NOT NULL,
+    public_key TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE webpush_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+

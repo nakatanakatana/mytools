@@ -13,6 +13,10 @@
         <h1>nostr-bridge</h1>
         <p id="overall-status" aria-live="polite">同期状況を確認しています。</p>
         <p id="oauth-callback-status" role="status" hidden></p>
+        <div class="notification-controls" id="notification-controls" hidden>
+          <span id="notification-status" role="status" aria-live="polite">ブラウザ通知: 未設定</span>
+          <button type="button" id="notification-toggle-btn" aria-describedby="notification-status">通知を有効にする</button>
+        </div>
         <dl class="status-summary">
           <div><dt>データベース</dt><dd id="database-status">未取得</dd></div>
           <div><dt>OAuth</dt><dd id="oauth-status">未取得</dd></div>
