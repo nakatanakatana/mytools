@@ -4,8 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/nakatanakatana/mytools/api/litestream/v1alpha1"
@@ -285,11 +286,7 @@ func marshalConfig(entries []dbEntry) (string, error) {
 // input the webhook uses to mutate a Pod. Credential bindings contribute only
 // their projection metadata; Secret values are never read or included.
 func hashRenderedConfig(data map[string]string, credentials []CredentialBinding) string {
-	keys := make([]string, 0, len(data))
-	for k := range data {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(data))
 
 	h := sha256.New()
 	for _, k := range keys {

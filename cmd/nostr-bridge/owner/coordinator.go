@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"sync"
@@ -50,9 +51,7 @@ func (c *Coordinator) Reconcile(ctx context.Context, scope store.SourceScope, sn
 		return err
 	}
 	candidate := make(map[store.SourceScope]source.TargetSnapshot, len(c.snapshots)+1)
-	for key, value := range c.snapshots {
-		candidate[key] = value
-	}
+	maps.Copy(candidate, c.snapshots)
 	candidate[scope] = snapshot
 	reconciledAt := c.options.Now()
 	createdAt := nostr.Timestamp(reconciledAt.Unix())

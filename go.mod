@@ -15,7 +15,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/mmcdole/gofeed v1.5.0
 	github.com/ncruces/go-sqlite3 v0.35.6
-	github.com/sqldef/sqldef/v3 v3.11.25
+	github.com/sqldef/sqldef/v3 v3.11.26
 	github.com/stretchr/testify v1.12.1
 	github.com/superfly/ltx v0.5.3
 	golang.org/x/crypto v0.57.0
@@ -28,7 +28,7 @@ require (
 	k8s.io/client-go v0.37.1
 	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3
 	modernc.org/sqlite v1.60.1
-	sigs.k8s.io/controller-runtime v0.25.1
+	sigs.k8s.io/controller-runtime v0.25.2
 )
 
 require (

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/benbjohnson/litestream"
@@ -162,9 +163,7 @@ func (f *replicaFile) hasSupersedingSnapshot(ctx context.Context, pollTXID ltx.T
 
 func mergePollLevelResults(pollPos ltx.Pos, pollMaxTXID1 ltx.TXID, pollCommit uint32, l0, l1 pollLevelResult) replicaUpdate {
 	index := make(map[uint32]ltx.PageIndexElem, len(l0.index)+len(l1.index))
-	for pgno, elem := range l0.index {
-		index[pgno] = elem
-	}
+	maps.Copy(index, l0.index)
 	for pgno, elem := range l1.index {
 		if existing, ok := index[pgno]; !ok || elem.MaxTXID >= existing.MaxTXID {
 			index[pgno] = elem
@@ -245,9 +244,7 @@ func (f *replicaFile) pollLevel(ctx context.Context, level int, previous ltx.TXI
 			result.index = make(map[uint32]ltx.PageIndexElem)
 		}
 		result.commit = hdr.Commit
-		for pgno, elem := range idx {
-			result.index[pgno] = elem
-		}
+		maps.Copy(result.index, idx)
 		result.maxTXID = info.MaxTXID
 	}
 	if itrErr := itr.Err(); itrErr != nil {
@@ -344,18 +341,14 @@ func (f *replicaFile) mergePendingLocked(update replicaUpdate) {
 	}
 
 	if f.pending.replace {
-		for pgno, elem := range update.index {
-			f.pending.index[pgno] = elem
-		}
+		maps.Copy(f.pending.index, update.index)
 		f.pending.commit = update.commit
 		f.pending.pos = update.pos
 		f.pending.maxTXID1 = update.maxTXID1
 		return
 	}
 
-	for pgno, elem := range update.index {
-		f.pending.index[pgno] = elem
-	}
+	maps.Copy(f.pending.index, update.index)
 	f.pending.commit = update.commit
 	f.pending.pos = update.pos
 	f.pending.maxTXID1 = update.maxTXID1
@@ -374,9 +367,5 @@ func (f *replicaFile) recordPollFailure(err error) {
 }
 
 func clonePageIndexMap(src map[uint32]ltx.PageIndexElem) map[uint32]ltx.PageIndexElem {
-	dst := make(map[uint32]ltx.PageIndexElem, len(src))
-	for pgno, elem := range src {
-		dst[pgno] = elem
-	}
-	return dst
+	return maps.Clone(src)
 }

@@ -3,46 +3,26 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
-// MockFilePathProvider implements FilePathProvider for testing
-type MockFilePathProvider struct {
-	files map[string]string
+// MockJSONProvider implements JSONProvider for testing
+type MockJSONProvider struct {
+	responses map[string][]byte
 }
 
-func (m *MockFilePathProvider) GetFilePath(name string) string {
-	return m.files[name]
+func (m *MockJSONProvider) GetJSON(name string) []byte {
+	return m.responses[name]
 }
 
 func TestNIP05Handler(t *testing.T) {
-	// Setup temporary files for testing
-	tempDir, err := os.MkdirTemp("", "handler_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = os.RemoveAll(tempDir)
-	}()
-
 	fullJSON := `{"names":{"alice":"pub1","bob":"pub2"}}`
 	aliceJSON := `{"names":{"alice":"pub1"}}`
-	fullPath := filepath.Join(tempDir, "full.json")
-	alicePath := filepath.Join(tempDir, "alice.json")
 
-	if err := os.WriteFile(fullPath, []byte(fullJSON), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(alicePath, []byte(aliceJSON), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	provider := &MockFilePathProvider{
-		files: map[string]string{
-			"":      fullPath,
-			"alice": alicePath,
+	provider := &MockJSONProvider{
+		responses: map[string][]byte{
+			"":      []byte(fullJSON),
+			"alice": []byte(aliceJSON),
 		},
 	}
 
@@ -73,7 +53,7 @@ func TestNIP05Handler(t *testing.T) {
 			name:           "Unknown User",
 			queryName:      "unknown",
 			hasQuery:       true,
-			wantStatusCode: http.StatusNotFound, 
+			wantStatusCode: http.StatusNotFound,
 		},
 	}
 
@@ -93,6 +73,9 @@ func TestNIP05Handler(t *testing.T) {
 			}
 
 			if tt.wantStatusCode == http.StatusOK {
+				if contentType := rr.Header().Get("Content-Type"); contentType != "application/json; charset=utf-8" {
+					t.Errorf("handler returned wrong Content-Type: got %v want %v", contentType, "application/json; charset=utf-8")
+				}
 				if rr.Body.String() != tt.wantBody {
 					t.Errorf("handler returned unexpected body: got %v want %v", rr.Body.String(), tt.wantBody)
 				}

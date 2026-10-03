@@ -5,8 +5,9 @@
 package litestreamconfig
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/nakatanakatana/mytools/api/litestream/v1alpha1"
@@ -184,24 +185,15 @@ func sanitizeIdentifier(s string) string {
 // so that Render output (and the revision hash derived from it) is stable
 // across runs.
 func sortCredentialBindings(bindings []CredentialBinding) {
-	sort.Slice(bindings, func(i, j int) bool {
-		a, b := bindings[i], bindings[j]
-		if a.ContainerPurpose != b.ContainerPurpose {
-			return a.ContainerPurpose < b.ContainerPurpose
-		}
-		if a.EnvName != b.EnvName {
-			return a.EnvName < b.EnvName
-		}
-		if a.FileMountPath != b.FileMountPath {
-			return a.FileMountPath < b.FileMountPath
-		}
-		if a.SecretKeyRef.Name != b.SecretKeyRef.Name {
-			return a.SecretKeyRef.Name < b.SecretKeyRef.Name
-		}
-		if a.SecretKeyRef.Key != b.SecretKeyRef.Key {
-			return a.SecretKeyRef.Key < b.SecretKeyRef.Key
-		}
-		return optionalSortValue(a.SecretKeyRef.Optional) < optionalSortValue(b.SecretKeyRef.Optional)
+	slices.SortFunc(bindings, func(a, b CredentialBinding) int {
+		return cmp.Or(
+			cmp.Compare(a.ContainerPurpose, b.ContainerPurpose),
+			cmp.Compare(a.EnvName, b.EnvName),
+			cmp.Compare(a.FileMountPath, b.FileMountPath),
+			cmp.Compare(a.SecretKeyRef.Name, b.SecretKeyRef.Name),
+			cmp.Compare(a.SecretKeyRef.Key, b.SecretKeyRef.Key),
+			cmp.Compare(optionalSortValue(a.SecretKeyRef.Optional), optionalSortValue(b.SecretKeyRef.Optional)),
+		)
 	})
 }
 

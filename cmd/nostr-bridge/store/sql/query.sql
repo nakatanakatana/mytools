@@ -143,3 +143,44 @@ SELECT provider,source_account,account_did,encrypted_payload,updated_at,last_ref
 UPDATE oauth_tokens
 SET last_refresh_error_class=?, reauth_required=?
 WHERE provider=? AND source_account=? AND account_did=?;
+
+-- name: GetVAPIDKeys :one
+SELECT private_key, public_key, subject, created_at
+FROM webpush_vapid_keys
+WHERE id = 1;
+
+-- name: SaveVAPIDKeys :exec
+INSERT INTO webpush_vapid_keys (id, private_key, public_key, subject, created_at)
+VALUES (1, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    private_key = excluded.private_key,
+    public_key = excluded.public_key,
+    subject = excluded.subject;
+
+-- name: SaveVAPIDKeysIfAbsent :exec
+INSERT INTO webpush_vapid_keys (id, private_key, public_key, subject, created_at)
+VALUES (1, ?, ?, ?, ?)
+ON CONFLICT(id) DO NOTHING;
+
+-- name: UpsertSubscription :exec
+INSERT INTO webpush_subscriptions (endpoint, p256dh, auth, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(endpoint) DO UPDATE SET
+    p256dh = excluded.p256dh,
+    auth = excluded.auth,
+    updated_at = excluded.updated_at;
+
+-- name: DeleteSubscription :exec
+DELETE FROM webpush_subscriptions
+WHERE endpoint = ?;
+
+-- name: ListSubscriptions :many
+SELECT endpoint, p256dh, auth, created_at, updated_at
+FROM webpush_subscriptions
+ORDER BY created_at ASC;
+
+-- name: CountSubscriptions :one
+SELECT COUNT(*) FROM webpush_subscriptions;
+
+-- name: CountSubscriptionsByEndpoint :one
+SELECT COUNT(*) FROM webpush_subscriptions WHERE endpoint = ?;

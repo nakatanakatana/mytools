@@ -86,7 +86,7 @@ func sqlitePagesFromFile(t *testing.T, path string) map[uint32][]byte {
 
 	pages := make(map[uint32][]byte)
 	pageCount := uint32(len(raw) / testPageSize)
-	for i := uint32(0); i < pageCount; i++ {
+	for i := range pageCount {
 		pgno := i + 1
 		start := int(i) * testPageSize
 		page := make([]byte, testPageSize)

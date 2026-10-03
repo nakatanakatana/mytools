@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -9,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"time"
 
 	"fiatjaf.com/nostr"
@@ -25,6 +26,8 @@ type SQLiteStore struct {
 
 var _ OAuthStore = SQLiteStore{}
 var _ OutboxStore = SQLiteStore{}
+var _ NotificationStore = SQLiteStore{}
+var _ Store = SQLiteStore{}
 
 // Open opens a SQLite state database and applies the bridge schema.
 func Open(ctx context.Context, databasePath string) (SQLiteStore, io.Closer, error) {
@@ -625,11 +628,11 @@ func (s SQLiteStore) ClaimOutbox(ctx context.Context, now time.Time, leaseDurati
 		item.ClaimedUntil = claimedUntil
 		items = append(items, item)
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].AvailableAt.Equal(items[j].AvailableAt) {
-			return items[i].ID < items[j].ID
-		}
-		return items[i].AvailableAt.Before(items[j].AvailableAt)
+	slices.SortFunc(items, func(a, b OutboxItem) int {
+		return cmp.Or(
+			a.AvailableAt.Compare(b.AvailableAt),
+			cmp.Compare(a.ID, b.ID),
+		)
 	})
 	return items, nil
 }
@@ -943,4 +946,115 @@ func (s SQLiteStore) OAuthTokenByAccountDID(ctx context.Context, scope SourceSco
 		return OAuthToken{}, fmt.Errorf("find OAuth token by account DID: %w", err)
 	}
 	return oauthToken(row), nil
+}
+
+func (s SQLiteStore) GetVAPIDKeys(ctx context.Context) (*StoredVAPIDKeys, error) {
+	row, err := s.queries.GetVAPIDKeys(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find VAPID keys: %w", err)
+	}
+	return &StoredVAPIDKeys{
+		PrivateKey: row.PrivateKey,
+		PublicKey:  row.PublicKey,
+		Subject:    row.Subject,
+		CreatedAt:  row.CreatedAt,
+	}, nil
+}
+
+func (s SQLiteStore) SaveVAPIDKeys(ctx context.Context, keys StoredVAPIDKeys) error {
+	err := s.queries.SaveVAPIDKeys(ctx, storesqlc.SaveVAPIDKeysParams{
+		PrivateKey: keys.PrivateKey,
+		PublicKey:  keys.PublicKey,
+		Subject:    keys.Subject,
+		CreatedAt:  keys.CreatedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("save VAPID keys: %w", err)
+	}
+	return nil
+}
+
+func (s SQLiteStore) SaveVAPIDKeysIfAbsent(ctx context.Context, keys StoredVAPIDKeys) error {
+	err := s.queries.SaveVAPIDKeysIfAbsent(ctx, storesqlc.SaveVAPIDKeysIfAbsentParams{
+		PrivateKey: keys.PrivateKey,
+		PublicKey:  keys.PublicKey,
+		Subject:    keys.Subject,
+		CreatedAt:  keys.CreatedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("save VAPID keys if absent: %w", err)
+	}
+	return nil
+}
+
+
+// UpsertSubscriptionWithLimit inserts or updates a subscription within a transaction.
+// When maxLimit > 0, it atomically checks whether the total number of subscriptions
+// is at or above maxLimit before adding a new endpoint.
+//
+// Invariant Note: Atomicity and isolation across concurrent goroutines relies on SQLite's
+// single-writer model and db.SetMaxOpenConns(1) established in Open(), ensuring all operations
+// are serialized on a single connection without TOCTOU race conditions.
+func (s SQLiteStore) UpsertSubscriptionWithLimit(ctx context.Context, sub StoredSubscription, maxLimit int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	qtx := s.queries.WithTx(tx)
+
+	if maxLimit > 0 {
+		existsCount, err := qtx.CountSubscriptionsByEndpoint(ctx, sub.Endpoint)
+		if err != nil {
+			return fmt.Errorf("check existing subscription: %w", err)
+		}
+		if existsCount == 0 {
+			totalCount, err := qtx.CountSubscriptions(ctx)
+			if err != nil {
+				return fmt.Errorf("count subscriptions: %w", err)
+			}
+			if totalCount >= int64(maxLimit) {
+				return ErrMaxSubscriptionsReached
+			}
+		}
+	}
+
+	err = qtx.UpsertSubscription(ctx, storesqlc.UpsertSubscriptionParams{
+		Endpoint:  sub.Endpoint,
+		P256dh:    sub.P256dh,
+		Auth:      sub.Auth,
+		CreatedAt: sub.CreatedAt,
+		UpdatedAt: sub.UpdatedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("upsert subscription in transaction: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit subscription transaction: %w", err)
+	}
+	return nil
+}
+
+func (s SQLiteStore) DeleteSubscription(ctx context.Context, endpoint string) error {
+	if err := s.queries.DeleteSubscription(ctx, endpoint); err != nil {
+		return fmt.Errorf("delete subscription: %w", err)
+	}
+	return nil
+}
+
+func (s SQLiteStore) ListSubscriptions(ctx context.Context) ([]StoredSubscription, error) {
+	rows, err := s.queries.ListSubscriptions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions: %w", err)
+	}
+	subs := make([]StoredSubscription, len(rows))
+	for i, row := range rows {
+		subs[i] = StoredSubscription(row)
+	}
+	return subs, nil
 }

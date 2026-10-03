@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"fiatjaf.com/nostr"
 	"github.com/caarlos0/env/v11"
+	"github.com/nakatanakatana/mytools/internal/webpush"
 )
 
 type SharedConfig struct {
@@ -65,12 +67,21 @@ type MastodonConfig struct {
 
 func (c MastodonConfig) Enabled() bool { return strings.TrimSpace(c.BaseURL) != "" }
 
+type NotificationConfig struct {
+	VAPIDPrivateKey    string        `env:"NOSTR_BRIDGE_VAPID_PRIVATE_KEY"`
+	VAPIDPublicKey     string        `env:"NOSTR_BRIDGE_VAPID_PUBLIC_KEY"`
+	VAPIDSubject       string        `env:"NOSTR_BRIDGE_VAPID_SUBJECT" envDefault:"mailto:admin@localhost"`
+	RemindInterval     time.Duration `env:"NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL" envDefault:"24h"`
+	EvaluationInterval time.Duration `env:"NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL" envDefault:"15s"`
+}
+
 // Config contains grouped settings required to start nostr-bridge.
 type Config struct {
-	Shared   SharedConfig
-	Owner    OwnerConfig
-	Bluesky  BlueskyConfig
-	Mastodon MastodonConfig
+	Shared       SharedConfig
+	Owner        OwnerConfig
+	Bluesky      BlueskyConfig
+	Mastodon     MastodonConfig
+	Notification NotificationConfig
 }
 
 type configDocumentation uint8
@@ -78,6 +89,7 @@ type configDocumentation uint8
 const (
 	documentInReadme configDocumentation = iota
 	documentInReadmeAndDeployment
+	documentUndocumented
 )
 
 type configVariable struct {
@@ -126,6 +138,11 @@ var configVariables = []configVariable{
 	{name: "NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_ID", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_MASTODON_OAUTH_CLIENT_SECRET", documentation: documentInReadmeAndDeployment},
 	{name: "NOSTR_BRIDGE_MASTODON_OAUTH_ENCRYPTION_KEY", documentation: documentInReadmeAndDeployment},
+	{name: "NOSTR_BRIDGE_VAPID_PRIVATE_KEY", documentation: documentInReadme},
+	{name: "NOSTR_BRIDGE_VAPID_PUBLIC_KEY", documentation: documentInReadme},
+	{name: "NOSTR_BRIDGE_VAPID_SUBJECT", documentation: documentInReadme},
+	{name: "NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", documentation: documentInReadme},
+	{name: "NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", documentation: documentInReadme},
 	{name: "NOSTR_BRIDGE_ACCOUNT_DID", removed: true},
 	{name: "NOSTR_BRIDGE_JETSTREAM_URL", removed: true},
 	{name: "NOSTR_BRIDGE_LIST_URIS", removed: true},
@@ -229,6 +246,32 @@ func LoadConfig() (Config, error) {
 	if cfg.Shared.OutboxPollInterval <= 0 {
 		return Config{}, fmt.Errorf("NOSTR_BRIDGE_OUTBOX_POLL_INTERVAL must be positive")
 	}
+	if cfg.Notification.RemindInterval < time.Minute {
+		return Config{}, fmt.Errorf("NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL must be at least 1m")
+	}
+	if cfg.Notification.EvaluationInterval < time.Second {
+		return Config{}, fmt.Errorf("NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL must be at least 1s")
+	}
+	cfg.Notification.VAPIDSubject = strings.TrimSpace(cfg.Notification.VAPIDSubject)
+	if cfg.Notification.VAPIDSubject == "" {
+		return Config{}, fmt.Errorf("NOSTR_BRIDGE_VAPID_SUBJECT must not be empty")
+	}
+	if !strings.HasPrefix(cfg.Notification.VAPIDSubject, "mailto:") && !strings.HasPrefix(cfg.Notification.VAPIDSubject, "https://") {
+		return Config{}, fmt.Errorf("NOSTR_BRIDGE_VAPID_SUBJECT must start with 'mailto:' or 'https:'")
+	}
+	hasPriv := cfg.Notification.VAPIDPrivateKey != ""
+	hasPub := cfg.Notification.VAPIDPublicKey != ""
+	if hasPriv != hasPub {
+		return Config{}, fmt.Errorf("NOSTR_BRIDGE_VAPID_PRIVATE_KEY and NOSTR_BRIDGE_VAPID_PUBLIC_KEY must both be set or both be empty")
+	}
+	if hasPriv {
+		if err := webpush.ValidateVAPIDKeys(webpush.VAPIDKeys{
+			PrivateKey: cfg.Notification.VAPIDPrivateKey,
+			PublicKey:  cfg.Notification.VAPIDPublicKey,
+		}); err != nil {
+			return Config{}, fmt.Errorf("invalid VAPID key configuration: %w", err)
+		}
+	}
 	return cfg, nil
 }
 
@@ -270,10 +313,5 @@ func validEndpoint(raw string, schemes ...string) bool {
 	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return false
 	}
-	for _, scheme := range schemes {
-		if u.Scheme == scheme {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(schemes, u.Scheme)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"testing"
 	"time"
@@ -644,9 +645,7 @@ func capturePollState(f *replicaFile) pollStateSnapshot {
 
 func clonePageIndex(src map[uint32]ltx.PageIndexElem) map[uint32]ltx.PageIndexElem {
 	dst := make(map[uint32]ltx.PageIndexElem, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
+	maps.Copy(dst, src)
 	return dst
 }
 
@@ -674,4 +673,3 @@ func TestMergePollLevelResults_Precedence(t *testing.T) {
 	require.Equal(t, uint32(10), update.commit, "commit should come from L0 which has higher MaxTXID")
 	require.Equal(t, l0Elem, update.index[1], "page index entry should come from L0 which has higher MaxTXID")
 }
-

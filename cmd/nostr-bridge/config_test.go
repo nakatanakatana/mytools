@@ -8,14 +8,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nakatanakatana/mytools/internal/webpush"
 )
 
 func validateConfigVariableCatalog(configType reflect.Type, catalog []configVariable) error {
 	tagNames := make(map[string]int)
 	var collect func(reflect.Type)
 	collect = func(current reflect.Type) {
-		for i := 0; i < current.NumField(); i++ {
-			field := current.Field(i)
+		for field := range current.Fields() {
+			field := field
 			tag := field.Tag.Get("env")
 			if tag != "" {
 				name, _, _ := strings.Cut(tag, ",")
@@ -60,7 +62,7 @@ func validateConfigVariableCatalog(configType reflect.Type, catalog []configVari
 }
 
 func TestConfigVariableCatalogMatchesEnvTags(t *testing.T) {
-	if err := validateConfigVariableCatalog(reflect.TypeOf(Config{}), configVariables); err != nil {
+	if err := validateConfigVariableCatalog(reflect.TypeFor[Config](), configVariables); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -73,7 +75,7 @@ func TestConfigVariableCatalogDetectsTagMismatch(t *testing.T) {
 		}
 	}
 	catalog := []configVariable{{name: "PRESENT"}, {name: "EXTRA"}}
-	err := validateConfigVariableCatalog(reflect.TypeOf(syntheticConfig{}), catalog)
+	err := validateConfigVariableCatalog(reflect.TypeFor[syntheticConfig](), catalog)
 	if err == nil || !strings.Contains(err.Error(), "missing MISSING") || !strings.Contains(err.Error(), "extra EXTRA") {
 		t.Fatalf("err = %v", err)
 	}
@@ -92,7 +94,7 @@ func TestDocumentedConfigurationMatchesConfig(t *testing.T) {
 	deployment := read("examples/kubernetes/deployment.yaml")
 
 	for _, variable := range configVariables {
-		if variable.removed {
+		if variable.removed || variable.documentation == documentUndocumented {
 			if strings.Contains(readme, "`"+variable.name+"`") || strings.Contains(deployment, "name: "+variable.name) {
 				t.Errorf("documentation contains removed configuration variable %s", variable.name)
 			}
@@ -108,7 +110,7 @@ func TestDocumentedConfigurationMatchesConfig(t *testing.T) {
 }
 
 func readmeDocumentsDefault(contents, name, defaultValue string) bool {
-	for _, line := range strings.Split(contents, "\n") {
+	for line := range strings.SplitSeq(contents, "\n") {
 		cells := strings.Split(line, "|")
 		if len(cells) == 5 &&
 			strings.TrimSpace(cells[1]) == "`"+name+"`" &&
@@ -120,7 +122,7 @@ func readmeDocumentsDefault(contents, name, defaultValue string) bool {
 }
 
 func deploymentDocumentsEnvValue(contents, name, value string) bool {
-	for _, line := range strings.Split(contents, "\n") {
+	for line := range strings.SplitSeq(contents, "\n") {
 		entry := strings.TrimSpace(line)
 		if !strings.HasPrefix(entry, "- {") || !strings.HasSuffix(entry, "}") {
 			continue
@@ -528,4 +530,201 @@ func TestValidEndpointRejectsCredentialsAndFragmentsButAllowsPathAndQuery(t *tes
 	if !validEndpoint("wss://relay.example/path?token=bound", "ws", "wss") {
 		t.Fatal("path and query endpoint rejected")
 	}
+}
+
+func TestConfigNotificationDefaults(t *testing.T) {
+	setSharedEnv(t)
+	setBlueskyEnv(t)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Notification.RemindInterval != 24*time.Hour {
+		t.Fatalf("RemindInterval = %v, want 24h", cfg.Notification.RemindInterval)
+	}
+	if cfg.Notification.EvaluationInterval != 15*time.Second {
+		t.Fatalf("EvaluationInterval = %v, want 15s", cfg.Notification.EvaluationInterval)
+	}
+	if cfg.Notification.VAPIDSubject != "mailto:admin@localhost" {
+		t.Fatalf("VAPIDSubject = %q, want mailto:admin@localhost", cfg.Notification.VAPIDSubject)
+	}
+	if cfg.Notification.VAPIDPrivateKey != "" {
+		t.Fatalf("VAPIDPrivateKey = %q, want empty", cfg.Notification.VAPIDPrivateKey)
+	}
+	if cfg.Notification.VAPIDPublicKey != "" {
+		t.Fatalf("VAPIDPublicKey = %q, want empty", cfg.Notification.VAPIDPublicKey)
+	}
+}
+
+func TestConfigNotificationCustomEnv(t *testing.T) {
+	setSharedEnv(t)
+	setBlueskyEnv(t)
+
+	keys, err := webpush.GenerateVAPIDKeys()
+	if err != nil {
+		t.Fatalf("GenerateVAPIDKeys: %v", err)
+	}
+
+	t.Setenv("NOSTR_BRIDGE_VAPID_PRIVATE_KEY", keys.PrivateKey)
+	t.Setenv("NOSTR_BRIDGE_VAPID_PUBLIC_KEY", keys.PublicKey)
+	t.Setenv("NOSTR_BRIDGE_VAPID_SUBJECT", "mailto:alerts@example.com")
+	t.Setenv("NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", "12h")
+	t.Setenv("NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", "30s")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Notification.VAPIDPrivateKey != keys.PrivateKey {
+		t.Fatalf("VAPIDPrivateKey = %q, want %q", cfg.Notification.VAPIDPrivateKey, keys.PrivateKey)
+	}
+	if cfg.Notification.VAPIDPublicKey != keys.PublicKey {
+		t.Fatalf("VAPIDPublicKey = %q, want %q", cfg.Notification.VAPIDPublicKey, keys.PublicKey)
+	}
+	if cfg.Notification.VAPIDSubject != "mailto:alerts@example.com" {
+		t.Fatalf("VAPIDSubject = %q, want mailto:alerts@example.com", cfg.Notification.VAPIDSubject)
+	}
+	if cfg.Notification.RemindInterval != 12*time.Hour {
+		t.Fatalf("RemindInterval = %v, want 12h", cfg.Notification.RemindInterval)
+	}
+	if cfg.Notification.EvaluationInterval != 30*time.Second {
+		t.Fatalf("EvaluationInterval = %v, want 30s", cfg.Notification.EvaluationInterval)
+	}
+}
+
+func TestConfigNotificationRejectsInvalidDurations(t *testing.T) {
+	for _, tc := range []struct {
+		variable, field string
+	}{
+		{"NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", "RemindInterval"},
+		{"NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", "EvaluationInterval"},
+	} {
+		for _, value := range []string{"invalid", "not-a-duration"} {
+			t.Run(tc.variable+"/"+value, func(t *testing.T) {
+				setSharedEnv(t)
+				setBlueskyEnv(t)
+				t.Setenv(tc.variable, value)
+
+				_, err := LoadConfig()
+				if err == nil {
+					t.Fatalf("LoadConfig() expected error for %s=%s, got nil", tc.variable, value)
+				}
+			})
+		}
+		for _, value := range []string{"0s", "-1s"} {
+			t.Run(tc.variable+"/"+value, func(t *testing.T) {
+				setSharedEnv(t)
+				setBlueskyEnv(t)
+				t.Setenv(tc.variable, value)
+
+				_, err := LoadConfig()
+				if err == nil || !strings.Contains(err.Error(), tc.variable) {
+					t.Fatalf("LoadConfig() error = %v, want error containing %s", err, tc.variable)
+				}
+			})
+		}
+	}
+}
+
+func TestConfigNotificationRejectsIntervalsBelowMinimum(t *testing.T) {
+	for _, tc := range []struct {
+		variable string
+		value    string
+	}{
+		{"NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", "59s"},
+		{"NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", "999ms"},
+	} {
+		t.Run(tc.variable, func(t *testing.T) {
+			setSharedEnv(t)
+			setBlueskyEnv(t)
+			t.Setenv(tc.variable, tc.value)
+
+			_, err := LoadConfig()
+			if err == nil || !strings.Contains(err.Error(), tc.variable) {
+				t.Fatalf("LoadConfig() error = %v, want error containing %s", err, tc.variable)
+			}
+		})
+	}
+}
+
+func TestConfigNotificationValidatesVAPIDKeys(t *testing.T) {
+	t.Run("private key only", func(t *testing.T) {
+		setSharedEnv(t)
+		setBlueskyEnv(t)
+		t.Setenv("NOSTR_BRIDGE_VAPID_PRIVATE_KEY", "privkey")
+		t.Setenv("NOSTR_BRIDGE_VAPID_PUBLIC_KEY", "")
+
+		_, err := LoadConfig()
+		if err == nil {
+			t.Fatal("expected error when only private key is set")
+		}
+	})
+
+	t.Run("public key only", func(t *testing.T) {
+		setSharedEnv(t)
+		setBlueskyEnv(t)
+		t.Setenv("NOSTR_BRIDGE_VAPID_PRIVATE_KEY", "")
+		t.Setenv("NOSTR_BRIDGE_VAPID_PUBLIC_KEY", "pubkey")
+
+		_, err := LoadConfig()
+		if err == nil {
+			t.Fatal("expected error when only public key is set")
+		}
+	})
+
+	t.Run("both keys present valid", func(t *testing.T) {
+		setSharedEnv(t)
+		setBlueskyEnv(t)
+		keys, err := webpush.GenerateVAPIDKeys()
+		if err != nil {
+			t.Fatalf("GenerateVAPIDKeys: %v", err)
+		}
+		t.Setenv("NOSTR_BRIDGE_VAPID_PRIVATE_KEY", keys.PrivateKey)
+		t.Setenv("NOSTR_BRIDGE_VAPID_PUBLIC_KEY", keys.PublicKey)
+
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Notification.VAPIDPrivateKey != keys.PrivateKey || cfg.Notification.VAPIDPublicKey != keys.PublicKey {
+			t.Fatalf("keys not set correctly: %+v", cfg.Notification)
+		}
+	})
+
+	t.Run("both keys present but invalid pair", func(t *testing.T) {
+		setSharedEnv(t)
+		setBlueskyEnv(t)
+		t.Setenv("NOSTR_BRIDGE_VAPID_PRIVATE_KEY", "invalid-key")
+		t.Setenv("NOSTR_BRIDGE_VAPID_PUBLIC_KEY", "invalid-key")
+
+		_, err := LoadConfig()
+		if err == nil {
+			t.Fatal("expected error for invalid VAPID key pair, got nil")
+		}
+	})
+
+	t.Run("subject invalid scheme", func(t *testing.T) {
+		setSharedEnv(t)
+		setBlueskyEnv(t)
+		t.Setenv("NOSTR_BRIDGE_VAPID_SUBJECT", "invalid-subject")
+
+		_, err := LoadConfig()
+		if err == nil {
+			t.Fatal("expected error for subject without mailto: or https:, got nil")
+		}
+	})
+
+	t.Run("subject empty", func(t *testing.T) {
+		setSharedEnv(t)
+		setBlueskyEnv(t)
+		t.Setenv("NOSTR_BRIDGE_VAPID_SUBJECT", "   ")
+
+		_, err := LoadConfig()
+		if err == nil {
+			t.Fatal("expected error for empty subject, got nil")
+		}
+	})
 }

@@ -1,13 +1,14 @@
 package webhook
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"path"
 	"reflect"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/nakatanakatana/mytools/api/litestream/v1alpha1"
@@ -87,7 +88,7 @@ func buildInjection(
 		Name: ConfigVolumeName,
 		VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 			LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
-			DefaultMode:          ptr.To(injectedFileMode),
+			DefaultMode:          new(injectedFileMode),
 		}},
 	}}
 	baseMounts := []corev1.VolumeMount{
@@ -106,7 +107,7 @@ func buildInjection(
 				Name: name,
 				VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
 					Sources:     sources,
-					DefaultMode: ptr.To(injectedFileMode),
+					DefaultMode: new(injectedFileMode),
 				}},
 			})
 		}
@@ -267,10 +268,10 @@ func applyPodSecurityContext(pod *corev1.Pod, configured *corev1.PodSecurityCont
 		pod.Spec.SecurityContext = &corev1.PodSecurityContext{}
 	}
 	if pod.Spec.SecurityContext.FSGroup == nil {
-		pod.Spec.SecurityContext.FSGroup = ptr.To(*configured.FSGroup)
+		pod.Spec.SecurityContext.FSGroup = new(*configured.FSGroup)
 	}
 	if pod.Spec.SecurityContext.FSGroupChangePolicy == nil && configured.FSGroupChangePolicy != nil {
-		pod.Spec.SecurityContext.FSGroupChangePolicy = ptr.To(*configured.FSGroupChangePolicy)
+		pod.Spec.SecurityContext.FSGroupChangePolicy = new(*configured.FSGroupChangePolicy)
 	}
 	return nil
 }
@@ -536,7 +537,7 @@ func secretProjections(bindings []litestreamconfig.CredentialBinding, purpose st
 		projected[identity] = struct{}{}
 		var projectionOptional *bool
 		if binding.SecretKeyRef.Optional != nil {
-			projectionOptional = ptr.To(*binding.SecretKeyRef.Optional)
+			projectionOptional = new(*binding.SecretKeyRef.Optional)
 		}
 		sources = append(sources, corev1.VolumeProjection{Secret: &corev1.SecretProjection{
 			LocalObjectReference: corev1.LocalObjectReference{Name: name},
@@ -545,15 +546,13 @@ func secretProjections(bindings []litestreamconfig.CredentialBinding, purpose st
 		}})
 	}
 
-	sort.Slice(sources, func(i, j int) bool {
-		a, b := sources[i].Secret, sources[j].Secret
-		if a.Name != b.Name {
-			return a.Name < b.Name
-		}
-		if a.Items[0].Path != b.Items[0].Path {
-			return a.Items[0].Path < b.Items[0].Path
-		}
-		return a.Items[0].Key < b.Items[0].Key
+	slices.SortFunc(sources, func(i, j corev1.VolumeProjection) int {
+		a, b := i.Secret, j.Secret
+		return cmp.Or(
+			cmp.Compare(a.Name, b.Name),
+			cmp.Compare(a.Items[0].Path, b.Items[0].Path),
+			cmp.Compare(a.Items[0].Key, b.Items[0].Key),
+		)
 	})
 	return sources
 }
@@ -588,19 +587,19 @@ func buildContainerSecurityContext(configured *corev1.SecurityContext) *corev1.S
 		securityContext = configured.DeepCopy()
 	}
 	if securityContext.RunAsUser == nil {
-		securityContext.RunAsUser = ptr.To(defaultLitestreamUID)
+		securityContext.RunAsUser = new(defaultLitestreamUID)
 	}
 	if securityContext.RunAsGroup == nil {
-		securityContext.RunAsGroup = ptr.To(defaultLitestreamGID)
+		securityContext.RunAsGroup = new(defaultLitestreamGID)
 	}
 	if securityContext.RunAsNonRoot == nil {
-		securityContext.RunAsNonRoot = ptr.To(true)
+		securityContext.RunAsNonRoot = new(true)
 	}
 	if securityContext.ReadOnlyRootFilesystem == nil {
-		securityContext.ReadOnlyRootFilesystem = ptr.To(true)
+		securityContext.ReadOnlyRootFilesystem = new(true)
 	}
 	if securityContext.AllowPrivilegeEscalation == nil {
-		securityContext.AllowPrivilegeEscalation = ptr.To(false)
+		securityContext.AllowPrivilegeEscalation = new(false)
 	}
 	if securityContext.Capabilities == nil {
 		securityContext.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}

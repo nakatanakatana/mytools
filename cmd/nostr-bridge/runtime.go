@@ -13,11 +13,13 @@ import (
 
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/mastodon"
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/notification"
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
 	bridgeowner "github.com/nakatanakatana/mytools/cmd/nostr-bridge/owner"
 	neutral "github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/syncer"
+	"github.com/nakatanakatana/mytools/internal/webpush"
 )
 
 // runtimeSync owns the authenticated source and Jetstream lifecycle.
@@ -151,12 +153,10 @@ func (r *runtimeSync) run(ctx context.Context, cfg Config, seed []byte, store ru
 	coordinator := bridgeowner.New(bridgeowner.Options{MasterSeed: seed, OwnerID: cfg.Owner.ID, OwnerName: cfg.Owner.Name, OwnerAbout: cfg.Owner.About, OwnerPicture: cfg.Owner.Picture, Store: store, OutboxLimit: int64(cfg.Shared.OutboxLimit), EnabledScopes: enabledProviderScopes(cfg)})
 	var wg sync.WaitGroup
 	if cfg.Bluesky.Enabled() && oauthClient != nil {
-		wg.Add(1)
-		go func() { defer wg.Done(); r.runBluesky(ctx, cfg, seed, store, oauthClient, health, coordinator) }()
+		wg.Go(func() { ; r.runBluesky(ctx, cfg, seed, store, oauthClient, health, coordinator) })
 	}
 	if cfg.Mastodon.Enabled() && mastodonOAuth != nil {
-		wg.Add(1)
-		go func() { defer wg.Done(); r.runMastodon(ctx, cfg, seed, store, mastodonOAuth, health, coordinator) }()
+		wg.Go(func() { ; r.runMastodon(ctx, cfg, seed, store, mastodonOAuth, health, coordinator) })
 	}
 	wg.Wait()
 }
@@ -745,4 +745,94 @@ func reconcileBluesky(ctx context.Context, coordinator reconciliationCoordinator
 		profiles = append(profiles, neutral.Profile{Identity: neutral.ActorIdentity{Provider: "bluesky", ID: profile.DID}, DisplayName: profile.DisplayName, Description: profile.Description, AvatarURL: profile.Avatar, ProfileURL: "https://bsky.app/profile/" + profile.Handle})
 	}
 	return coordinator.Reconcile(ctx, scope, targets.Snapshot(), profiles)
+}
+
+func normalizeAndValidateVAPIDKeys(privateKey, publicKey string) (webpush.VAPIDKeys, error) {
+	vk := webpush.VAPIDKeys{PrivateKey: privateKey, PublicKey: publicKey}
+	if err := webpush.ValidateVAPIDKeys(vk); err != nil {
+		return webpush.VAPIDKeys{}, err
+	}
+	pub, err := webpush.NormalizeVAPIDPublicKey(vk.PublicKey)
+	if err != nil {
+		return webpush.VAPIDKeys{}, err
+	}
+	vk.PublicKey = pub
+	return vk, nil
+}
+
+func resolveVAPIDKeys(ctx context.Context, cfg NotificationConfig, store bridgestore.NotificationStore) (webpush.VAPIDKeys, string, error) {
+	if cfg.VAPIDPrivateKey != "" && cfg.VAPIDPublicKey != "" {
+		vk, err := normalizeAndValidateVAPIDKeys(cfg.VAPIDPrivateKey, cfg.VAPIDPublicKey)
+		if err != nil {
+			return webpush.VAPIDKeys{}, "", fmt.Errorf("configured VAPID keys invalid: %w", err)
+		}
+		subject := cfg.VAPIDSubject
+		if subject == "" {
+			subject = "mailto:admin@localhost"
+		}
+		return vk, subject, nil
+	}
+
+	keys, err := store.GetVAPIDKeys(ctx)
+	if err != nil {
+		return webpush.VAPIDKeys{}, "", fmt.Errorf("get VAPID keys: %w", err)
+	}
+	if keys == nil {
+		subject := cfg.VAPIDSubject
+		if subject == "" {
+			subject = "mailto:admin@localhost"
+		}
+		generated, err := webpush.GenerateVAPIDKeys()
+		if err != nil {
+			return webpush.VAPIDKeys{}, "", fmt.Errorf("generate VAPID keys: %w", err)
+		}
+		stored := bridgestore.StoredVAPIDKeys{
+			PrivateKey: generated.PrivateKey,
+			PublicKey:  generated.PublicKey,
+			Subject:    subject,
+			CreatedAt:  time.Now().UTC(),
+		}
+		if err := store.SaveVAPIDKeysIfAbsent(ctx, stored); err != nil {
+			return webpush.VAPIDKeys{}, "", fmt.Errorf("save VAPID keys if absent: %w", err)
+		}
+		keys, err = store.GetVAPIDKeys(ctx)
+		if err != nil {
+			return webpush.VAPIDKeys{}, "", fmt.Errorf("load persisted VAPID keys: %w", err)
+		}
+		if keys == nil {
+			return webpush.VAPIDKeys{}, "", errors.New("VAPID keys were not persisted")
+		}
+	}
+
+	vk, err := normalizeAndValidateVAPIDKeys(keys.PrivateKey, keys.PublicKey)
+	if err != nil {
+		return webpush.VAPIDKeys{}, "", fmt.Errorf("stored VAPID keys invalid: %w", err)
+	}
+	subject := cfg.VAPIDSubject
+	if subject == "" {
+		subject = keys.Subject
+	}
+	if subject == "" {
+		subject = "mailto:admin@localhost"
+	}
+	return vk, subject, nil
+}
+
+func healthSnapshotToNotificationSnapshot(snap readinessSnapshot) notification.Snapshot {
+	providers := make(map[string]notification.ProviderStatus, len(snap.Providers))
+	for name, p := range snap.Providers {
+		providers[name] = notification.ProviderStatus{
+			ReauthRequired:         p.ReauthRequired,
+			AccessTokenExpired:     p.AccessTokenExpired,
+			StreamConnected:        p.StreamConnected,
+			TargetCount:            p.TargetCount,
+			Degraded:               p.Degraded,
+			AuthorizationAvailable: p.AuthorizationAvailable,
+		}
+	}
+	return notification.Snapshot{
+		DispatcherRunning: snap.Metrics.DispatcherRunning,
+		OutboxAtLimit:     snap.OutboxAtLimit,
+		Providers:         providers,
+	}
 }

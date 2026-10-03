@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -334,8 +335,8 @@ func TestPodMutatorAppliesInjectionSettings(t *testing.T) {
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")},
 		},
-		PodSecurityContext:       &corev1.PodSecurityContext{FSGroup: ptr.To(int64(2000)), FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch)},
-		ContainerSecurityContext: &corev1.SecurityContext{RunAsUser: ptr.To(int64(10001)), RunAsGroup: ptr.To(int64(2000))},
+		PodSecurityContext:       &corev1.PodSecurityContext{FSGroup: new(int64(2000)), FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch)},
+		ContainerSecurityContext: &corev1.SecurityContext{RunAsUser: new(int64(10001)), RunAsGroup: new(int64(2000))},
 	}
 	cr := readyResource(t, injection, replicateDatabase("app"))
 	cr.Spec.Image = v1alpha1.ImageSpec{
@@ -370,12 +371,12 @@ func TestPodMutatorAppliesInjectionSettings(t *testing.T) {
 
 func TestPodMutatorKeepsAMatchingFSGroup(t *testing.T) {
 	injection := v1alpha1.InjectionSpec{PodSecurityContext: &corev1.PodSecurityContext{
-		FSGroup:             ptr.To(int64(2000)),
+		FSGroup:             new(int64(2000)),
 		FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch),
 	}}
 	resource := readyResource(t, injection, replicateDatabase("app"))
 	pod := targetPod()
-	pod.Spec.SecurityContext = &corev1.PodSecurityContext{FSGroup: ptr.To(int64(2000)), RunAsUser: ptr.To(int64(1000))}
+	pod.Spec.SecurityContext = &corev1.PodSecurityContext{FSGroup: new(int64(2000)), RunAsUser: new(int64(1000))}
 
 	assert.NilError(t, newMutator(t, resource).Mutate(t.Context(), pod))
 
@@ -387,7 +388,7 @@ func TestPodMutatorKeepsAMatchingFSGroup(t *testing.T) {
 
 func TestPodMutatorKeepsAMatchingFSGroupChangePolicy(t *testing.T) {
 	injection := v1alpha1.InjectionSpec{PodSecurityContext: &corev1.PodSecurityContext{
-		FSGroup:             ptr.To(int64(2000)),
+		FSGroup:             new(int64(2000)),
 		FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch),
 	}}
 	resource := readyResource(t, injection, replicateDatabase("app"))
@@ -401,7 +402,7 @@ func TestPodMutatorKeepsAMatchingFSGroupChangePolicy(t *testing.T) {
 }
 
 func TestPodMutatorIsIdempotent(t *testing.T) {
-	injection := v1alpha1.InjectionSpec{PodSecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(int64(2000))}}
+	injection := v1alpha1.InjectionSpec{PodSecurityContext: &corev1.PodSecurityContext{FSGroup: new(int64(2000))}}
 	resource := readyResource(t, injection, cloneDatabase("app"), replicateDatabase("logs"))
 	mutator := newMutator(t, resource)
 	pod := targetPod()
@@ -529,8 +530,8 @@ func TestPodMutatorRejectsUnusablePods(t *testing.T) {
 			build: func(t *testing.T) (*v1alpha1.Litestream, *corev1.Pod) {
 				t.Helper()
 				injection := v1alpha1.InjectionSpec{PodSecurityContext: &corev1.PodSecurityContext{
-					FSGroup:            ptr.To(int64(2000)),
-					RunAsUser:          ptr.To(int64(1000)),
+					FSGroup:            new(int64(2000)),
+					RunAsUser:          new(int64(1000)),
 					SupplementalGroups: []int64{3000},
 				}}
 				return readyResource(t, injection, replicateDatabase("app")), targetPod()
@@ -553,12 +554,12 @@ func TestPodMutatorRejectsUnusablePods(t *testing.T) {
 			build: func(t *testing.T) (*v1alpha1.Litestream, *corev1.Pod) {
 				t.Helper()
 				injection := v1alpha1.InjectionSpec{PodSecurityContext: &corev1.PodSecurityContext{
-					FSGroup:             ptr.To(int64(2000)),
+					FSGroup:             new(int64(2000)),
 					FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch),
 				}}
 				pod := targetPod()
 				pod.Spec.SecurityContext = &corev1.PodSecurityContext{
-					FSGroup:             ptr.To(int64(2000)),
+					FSGroup:             new(int64(2000)),
 					FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeAlways),
 				}
 				return readyResource(t, injection, replicateDatabase("app")), pod
@@ -569,9 +570,9 @@ func TestPodMutatorRejectsUnusablePods(t *testing.T) {
 			name: "conflicting fsGroup",
 			build: func(t *testing.T) (*v1alpha1.Litestream, *corev1.Pod) {
 				t.Helper()
-				injection := v1alpha1.InjectionSpec{PodSecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(int64(2000))}}
+				injection := v1alpha1.InjectionSpec{PodSecurityContext: &corev1.PodSecurityContext{FSGroup: new(int64(2000))}}
 				pod := targetPod()
-				pod.Spec.SecurityContext = &corev1.PodSecurityContext{FSGroup: ptr.To(int64(3000))}
+				pod.Spec.SecurityContext = &corev1.PodSecurityContext{FSGroup: new(int64(3000))}
 				return readyResource(t, injection, replicateDatabase("app")), pod
 			},
 			err: "fsGroup",
@@ -981,12 +982,7 @@ func secretMount(t *testing.T, container corev1.Container) corev1.VolumeMount {
 type secretNames []string
 
 func (names secretNames) contains(want string) bool {
-	for _, name := range names {
-		if name == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(names, want)
 }
 
 func projectedSecretNames(volume corev1.Volume) secretNames {

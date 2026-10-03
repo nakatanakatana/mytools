@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 )
 
@@ -64,15 +65,7 @@ func (b *InMemoryBackend) Search(ctx context.Context, attributes map[string]stri
 
 	var matched []*SecretItem
 	for _, item := range b.items {
-		match := true
-		for k, v := range attributes {
-			val, ok := item.Attributes[k]
-			if !ok || val != v {
-				match = false
-				break
-			}
-		}
-		if match {
+		if attributesMatch(item.Attributes, attributes) {
 			matched = append(matched, item)
 		}
 	}
@@ -141,11 +134,7 @@ func (b *InMemoryBackend) LoadMetadata(ctx context.Context) ([]*SecretItem, erro
 }
 
 func copyAttributes(src map[string]string) map[string]string {
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
+	return maps.Clone(src)
 }
 
 func attributesMatch(got, want map[string]string) bool {

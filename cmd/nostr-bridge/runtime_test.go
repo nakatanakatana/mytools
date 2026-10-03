@@ -15,10 +15,12 @@ import (
 	"fiatjaf.com/nostr"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/nostrmap"
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/notification"
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
 	bridgeowner "github.com/nakatanakatana/mytools/cmd/nostr-bridge/owner"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
+	"github.com/nakatanakatana/mytools/internal/webpush"
 )
 
 var runtimeTestScope = bridgestore.SourceScope{Provider: "bluesky", Account: "did:plc:owner"}
@@ -179,7 +181,7 @@ func TestRuntimeCoordinatorRestartPreservesUnavailableProviderSnapshotAndList(t 
 		t.Fatalf("unavailable provider list removed: %v", err)
 	}
 	var latest nostr.Event
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		items, err := s.ClaimOutbox(ctx, time.Now().Add(time.Hour), time.Minute, 100)
 		if err != nil {
 			t.Fatal(err)
@@ -743,13 +745,13 @@ func TestOAuthMaintenanceLogsUseOnlyBoundedFields(t *testing.T) {
 			t.Fatalf("OAuth maintenance log contains secret %q: %q", secret, output)
 		}
 	}
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
 		const marker = "nostr-bridge OAuth maintenance: "
-		index := strings.Index(line, marker)
-		if index < 0 {
+		_, after, ok := strings.Cut(line, marker)
+		if !ok {
 			t.Fatalf("unexpected OAuth maintenance log line: %q", line)
 		}
-		fields := strings.Fields(line[index+len(marker):])
+		fields := strings.Fields(after)
 		if len(fields) != 5 {
 			t.Fatalf("OAuth maintenance log fields = %v, want five bounded fields", fields)
 		}
@@ -758,5 +760,258 @@ func TestOAuthMaintenanceLogsUseOnlyBoundedFields(t *testing.T) {
 				t.Fatalf("OAuth maintenance log fields = %v, field %d want prefix %q", fields, index, prefix)
 			}
 		}
+	}
+}
+
+func TestResolveVAPIDKeys(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("configured keys take precedence", func(t *testing.T) {
+		validKeys, err := webpush.GenerateVAPIDKeys()
+		if err != nil {
+			t.Fatalf("GenerateVAPIDKeys: %v", err)
+		}
+		store := newMockNotificationStore()
+		cfg := NotificationConfig{
+			VAPIDPrivateKey: validKeys.PrivateKey,
+			VAPIDPublicKey:  validKeys.PublicKey,
+			VAPIDSubject:    "mailto:custom@example.com",
+		}
+		keys, subject, err := resolveVAPIDKeys(ctx, cfg, store)
+		if err != nil {
+			t.Fatalf("resolveVAPIDKeys: %v", err)
+		}
+		if keys.PrivateKey != validKeys.PrivateKey || keys.PublicKey != validKeys.PublicKey {
+			t.Fatalf("unexpected keys: %+v", keys)
+		}
+		if subject != "mailto:custom@example.com" {
+			t.Fatalf("unexpected subject: %q", subject)
+		}
+		stored, err := store.GetVAPIDKeys(ctx)
+		if err != nil {
+			t.Fatalf("GetVAPIDKeys: %v", err)
+		}
+		if stored != nil {
+			t.Fatalf("expected store to remain empty, got %+v", stored)
+		}
+	})
+
+	t.Run("loads existing keys from store and applies configured subject", func(t *testing.T) {
+		validKeys, err := webpush.GenerateVAPIDKeys()
+		if err != nil {
+			t.Fatalf("GenerateVAPIDKeys: %v", err)
+		}
+		store := newMockNotificationStore()
+		existing := bridgestore.StoredVAPIDKeys{
+			PrivateKey: validKeys.PrivateKey,
+			PublicKey:  validKeys.PublicKey,
+			Subject:    "mailto:stored@example.com",
+			CreatedAt:  time.Now().UTC(),
+		}
+		if err := store.SaveVAPIDKeys(ctx, existing); err != nil {
+			t.Fatalf("SaveVAPIDKeys: %v", err)
+		}
+
+		cfg := NotificationConfig{
+			VAPIDSubject: "mailto:override@example.com",
+		}
+		keys, subject, err := resolveVAPIDKeys(ctx, cfg, store)
+		if err != nil {
+			t.Fatalf("resolveVAPIDKeys: %v", err)
+		}
+		if keys.PrivateKey != validKeys.PrivateKey || keys.PublicKey != validKeys.PublicKey {
+			t.Fatalf("unexpected keys: %+v", keys)
+		}
+		if subject != "mailto:override@example.com" {
+			t.Fatalf("unexpected subject: %q", subject)
+		}
+	})
+
+	t.Run("generates and persists keys when store is empty and omitted in config", func(t *testing.T) {
+		store := newMockNotificationStore()
+		cfg := NotificationConfig{
+			VAPIDSubject: "mailto:auto@example.com",
+		}
+		keys, subject, err := resolveVAPIDKeys(ctx, cfg, store)
+		if err != nil {
+			t.Fatalf("resolveVAPIDKeys: %v", err)
+		}
+		if keys.PrivateKey == "" || keys.PublicKey == "" {
+			t.Fatalf("expected non-empty generated keys, got %+v", keys)
+		}
+		if subject != "mailto:auto@example.com" {
+			t.Fatalf("unexpected subject: %q", subject)
+		}
+
+		stored, err := store.GetVAPIDKeys(ctx)
+		if err != nil {
+			t.Fatalf("GetVAPIDKeys: %v", err)
+		}
+		if stored == nil {
+			t.Fatal("expected keys to be saved in store")
+		}
+		if stored.PrivateKey != keys.PrivateKey || stored.PublicKey != keys.PublicKey {
+			t.Fatalf("stored keys mismatch: got %+v, want %+v", stored, keys)
+		}
+		if stored.Subject != "mailto:auto@example.com" {
+			t.Fatalf("stored subject mismatch: got %q", stored.Subject)
+		}
+
+		// Subsequent call returns the same keys
+		reloaded, reloadedSubject, err := resolveVAPIDKeys(ctx, NotificationConfig{}, store)
+		if err != nil {
+			t.Fatalf("resolveVAPIDKeys reload: %v", err)
+		}
+		if reloaded.PrivateKey != keys.PrivateKey || reloaded.PublicKey != keys.PublicKey {
+			t.Fatalf("reloaded keys mismatch: got %+v, want %+v", reloaded, keys)
+		}
+		if reloadedSubject != "mailto:auto@example.com" {
+			t.Fatalf("reloaded subject mismatch: got %q", reloadedSubject)
+		}
+	})
+}
+
+type concurrentVAPIDStore struct {
+	*mockNotificationStore
+	mu                  sync.Mutex
+	initialReads        int
+	initialReadsSettled chan struct{}
+	keys                *bridgestore.StoredVAPIDKeys
+}
+
+func newConcurrentVAPIDStore() *concurrentVAPIDStore {
+	return &concurrentVAPIDStore{
+		mockNotificationStore: newMockNotificationStore(),
+		initialReadsSettled:   make(chan struct{}),
+	}
+}
+
+func (s *concurrentVAPIDStore) GetVAPIDKeys(_ context.Context) (*bridgestore.StoredVAPIDKeys, error) {
+	s.mu.Lock()
+	if s.initialReads < 2 {
+		s.initialReads++
+		if s.initialReads == 2 {
+			close(s.initialReadsSettled)
+		}
+		settled := s.initialReadsSettled
+		s.mu.Unlock()
+		<-settled
+		return nil, nil
+	}
+	keys := s.keys
+	if keys != nil {
+		copy := *keys
+		keys = &copy
+	}
+	s.mu.Unlock()
+	return keys, nil
+}
+
+func (s *concurrentVAPIDStore) SaveVAPIDKeys(_ context.Context, keys bridgestore.StoredVAPIDKeys) error {
+	s.mu.Lock()
+	s.keys = &keys
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *concurrentVAPIDStore) SaveVAPIDKeysIfAbsent(_ context.Context, keys bridgestore.StoredVAPIDKeys) error {
+	s.mu.Lock()
+	if s.keys == nil {
+		s.keys = &keys
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func TestResolveVAPIDKeysConcurrentCreationUsesPersistedKey(t *testing.T) {
+	store := newConcurrentVAPIDStore()
+	start := make(chan struct{})
+	results := make([]webpush.VAPIDKeys, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Go(func() {
+			<-start
+			results[i], _, errs[i] = resolveVAPIDKeys(context.Background(), NotificationConfig{}, store)
+		})
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("resolveVAPIDKeys call %d: %v", i, err)
+		}
+	}
+
+	store.mu.Lock()
+	want := store.keys
+	store.mu.Unlock()
+	if want == nil {
+		t.Fatal("expected generated VAPID keys to be persisted")
+	}
+	for i, got := range results {
+		if got.PrivateKey != want.PrivateKey || got.PublicKey != want.PublicKey {
+			t.Errorf("resolveVAPIDKeys call %d returned a key pair different from the persisted pair", i)
+		}
+	}
+}
+
+func TestHealthSnapshotToNotificationSnapshot(t *testing.T) {
+	snap := readinessSnapshot{
+		Metrics: HealthMetrics{
+			DispatcherRunning: true,
+		},
+		OutboxAtLimit: true,
+		Providers: map[string]ProviderHealthMetrics{
+			"bluesky": {
+				AuthorizationAvailable: true,
+				ReauthRequired:         false,
+				AccessTokenExpired:     false,
+				StreamConnected:        true,
+				TargetCount:            5,
+				Degraded:               false,
+			},
+			"mastodon": {
+				AuthorizationAvailable: false,
+				ReauthRequired:         true,
+				AccessTokenExpired:     true,
+				StreamConnected:        false,
+				TargetCount:            2,
+				Degraded:               true,
+			},
+		},
+	}
+
+	converted := healthSnapshotToNotificationSnapshot(snap)
+	if !converted.DispatcherRunning {
+		t.Error("expected DispatcherRunning = true")
+	}
+	if !converted.OutboxAtLimit {
+		t.Error("expected OutboxAtLimit = true")
+	}
+	if len(converted.Providers) != 2 {
+		t.Fatalf("expected 2 providers, got %d", len(converted.Providers))
+	}
+	wantBluesky := notification.ProviderStatus{
+		AuthorizationAvailable: true,
+		ReauthRequired:         false,
+		AccessTokenExpired:     false,
+		StreamConnected:        true,
+		TargetCount:            5,
+		Degraded:               false,
+	}
+	if bsky := converted.Providers["bluesky"]; bsky != wantBluesky {
+		t.Errorf("unexpected bluesky status: got %+v, want %+v", bsky, wantBluesky)
+	}
+	wantMastodon := notification.ProviderStatus{
+		AuthorizationAvailable: false,
+		ReauthRequired:         true,
+		AccessTokenExpired:     true,
+		StreamConnected:        false,
+		TargetCount:            2,
+		Degraded:               true,
+	}
+	if masto := converted.Providers["mastodon"]; masto != wantMastodon {
+		t.Errorf("unexpected mastodon status: got %+v, want %+v", masto, wantMastodon)
 	}
 }

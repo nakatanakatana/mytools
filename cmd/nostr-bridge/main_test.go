@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
+	"github.com/nakatanakatana/mytools/internal/webpush"
 )
 
 type reconciliationSource struct{}
@@ -989,5 +992,190 @@ func TestWorkerCloseContextStopsWaitingAtDeadline(t *testing.T) {
 	defer cancel()
 	if err := w.CloseContext(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("CloseContext() = %v", err)
+	}
+}
+
+func TestRuntimeVAPIDKeyResolutionConfigured(t *testing.T) {
+	keys, err := webpush.GenerateVAPIDKeys()
+	if err != nil {
+		t.Fatalf("GenerateVAPIDKeys: %v", err)
+	}
+	cfg := testRuntimeConfig(t)
+	cfg.Notification.VAPIDPrivateKey = keys.PrivateKey
+	cfg.Notification.VAPIDPublicKey = keys.PublicKey
+	cfg.Notification.VAPIDSubject = "mailto:test@example.com"
+
+	resources, err := newRuntimeResources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources) }()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/push/vapid-public-key", nil)
+	rec := httptest.NewRecorder()
+	resources.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/push/vapid-public-key status = %d", rec.Code)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if got := resp["public_key"]; got != keys.PublicKey {
+		t.Fatalf("public_key = %q, want %q", got, keys.PublicKey)
+	}
+}
+
+func TestRuntimeVAPIDKeyResolutionGeneratedAndPersistedOnRestart(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	cfg.Notification.VAPIDPrivateKey = ""
+	cfg.Notification.VAPIDPublicKey = ""
+
+	// First start: generates and persists keys in SQLite
+	resources1, err := newRuntimeResources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec1 := httptest.NewRecorder()
+	resources1.httpServer.Handler.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/api/push/vapid-public-key", nil))
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first start: GET /api/push/vapid-public-key status = %d", rec1.Code)
+	}
+	var resp1 map[string]string
+	if err := json.Unmarshal(rec1.Body.Bytes(), &resp1); err != nil {
+		t.Fatal(err)
+	}
+	key1 := resp1["public_key"]
+	if key1 == "" {
+		t.Fatal("expected non-empty generated public key")
+	}
+	if err := closeRuntimeResources(resources1); err != nil {
+		t.Fatalf("close resources1: %v", err)
+	}
+
+	// Restart: loads previously generated keys from SQLite
+	resources2, err := newRuntimeResources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeRuntimeResources(resources2) }()
+
+	rec2 := httptest.NewRecorder()
+	resources2.httpServer.Handler.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/api/push/vapid-public-key", nil))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second start: GET /api/push/vapid-public-key status = %d", rec2.Code)
+	}
+	var resp2 map[string]string
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatal(err)
+	}
+	key2 := resp2["public_key"]
+	if key2 != key1 {
+		t.Fatalf("expected persistent key on restart: got %q, want %q", key2, key1)
+	}
+}
+
+func TestRuntimeNotificationWorkerLifecycleAndPushRoutes(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	resources, err := newRuntimeResources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resources.notification == nil {
+		t.Fatal("resources.notification worker is nil")
+	}
+	if resources.notificationDone == nil {
+		t.Fatal("resources.notificationDone channel is nil")
+	}
+
+	// 1. GET /api/push/vapid-public-key
+	rec := httptest.NewRecorder()
+	resources.httpServer.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/push/vapid-public-key", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/push/vapid-public-key status = %d", rec.Code)
+	}
+	var keyResp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &keyResp); err != nil {
+		t.Fatal(err)
+	}
+	if keyResp["public_key"] == "" {
+		t.Fatal("public_key is empty")
+	}
+
+	// 2. POST /api/push/subscribe
+	subPriv, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subPub := base64.RawURLEncoding.EncodeToString(subPriv.PublicKey().Bytes())
+	subAuth := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef")) // 16 bytes
+	subBody := fmt.Sprintf(`{
+		"endpoint": "https://push.example.com/sub/test-1",
+		"keys": {
+			"p256dh": %q,
+			"auth": %q
+		}
+	}`, subPub, subAuth)
+	subReq := httptest.NewRequest(http.MethodPost, "/api/push/subscribe", strings.NewReader(subBody))
+	subReq.Header.Set("Content-Type", "application/json")
+	subRec := httptest.NewRecorder()
+	resources.httpServer.Handler.ServeHTTP(subRec, subReq)
+	if subRec.Code != http.StatusOK {
+		t.Fatalf("POST /api/push/subscribe status = %d, body = %s", subRec.Code, subRec.Body.String())
+	}
+
+	// 3. POST /api/push/unsubscribe
+	unsubBody := `{"endpoint": "https://push.example.com/sub/test-1"}`
+	unsubReq := httptest.NewRequest(http.MethodPost, "/api/push/unsubscribe", strings.NewReader(unsubBody))
+	unsubReq.Header.Set("Content-Type", "application/json")
+	unsubRec := httptest.NewRecorder()
+	resources.httpServer.Handler.ServeHTTP(unsubRec, unsubReq)
+	if unsubRec.Code != http.StatusOK {
+		t.Fatalf("POST /api/push/unsubscribe status = %d, body = %s", unsubRec.Code, unsubRec.Body.String())
+	}
+
+	// 4. Graceful shutdown stops and cancels NotificationWorker
+	if err := closeRuntimeResources(resources); err != nil {
+		t.Fatalf("closeRuntimeResources: %v", err)
+	}
+
+	select {
+	case <-resources.notificationDone:
+		// Worker shut down cleanly
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification worker did not stop within deadline")
+	}
+}
+
+func TestRunPropagatesNotificationFailureAndClosesResourcesOnce(t *testing.T) {
+	old := newRuntimeResources
+	t.Cleanup(func() { newRuntimeResources = old })
+	notificationWorker := startWorker(func(context.Context) error {
+		return errors.New("notification worker failed")
+	})
+	jetstream, dispatcher, database := completedShutdownWorker(), completedShutdownWorker(), &countingCloser{}
+	newRuntimeResources = func(Config) (runtimeResources, error) {
+		return runtimeResources{
+			httpServer:       &http.Server{Addr: "127.0.0.1:0"},
+			jetstream:        jetstream,
+			dispatcher:       dispatcher,
+			notification:     notificationWorker,
+			notificationDone: notificationWorker.Done(),
+			database:         database,
+		}, nil
+	}
+
+	err := Run(context.Background(), Config{})
+	if err == nil || !strings.Contains(err.Error(), "notification") || !strings.Contains(err.Error(), "notification worker failed") {
+		t.Fatalf("Run() = %v", err)
+	}
+	if !jetstream.canceled || !dispatcher.canceled || database.count != 1 {
+		t.Fatalf(
+			"shutdown = jetstream canceled %v, dispatcher canceled %v, database closes %d",
+			jetstream.canceled,
+			dispatcher.canceled,
+			database.count,
+		)
 	}
 }
