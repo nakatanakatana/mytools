@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -9,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"time"
 
 	"fiatjaf.com/nostr"
@@ -627,11 +628,11 @@ func (s SQLiteStore) ClaimOutbox(ctx context.Context, now time.Time, leaseDurati
 		item.ClaimedUntil = claimedUntil
 		items = append(items, item)
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].AvailableAt.Equal(items[j].AvailableAt) {
-			return items[i].ID < items[j].ID
-		}
-		return items[i].AvailableAt.Before(items[j].AvailableAt)
+	slices.SortFunc(items, func(a, b OutboxItem) int {
+		return cmp.Or(
+			a.AvailableAt.Compare(b.AvailableAt),
+			cmp.Compare(a.ID, b.ID),
+		)
 	})
 	return items, nil
 }

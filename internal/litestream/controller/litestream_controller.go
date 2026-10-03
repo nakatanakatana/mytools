@@ -5,9 +5,12 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -330,15 +333,8 @@ func (s requestSet) add(request reconcile.Request) {
 }
 
 func (s requestSet) requests() []reconcile.Request {
-	keys := make([]client.ObjectKey, 0, len(s))
-	for key := range s {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].Namespace == keys[j].Namespace {
-			return keys[i].Name < keys[j].Name
-		}
-		return keys[i].Namespace < keys[j].Namespace
+	keys := slices.SortedFunc(maps.Keys(s), func(a, b client.ObjectKey) int {
+		return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Name, b.Name))
 	})
 	requests := make([]reconcile.Request, 0, len(keys))
 	for _, key := range keys {

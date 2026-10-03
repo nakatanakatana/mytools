@@ -26,11 +26,10 @@ func TestFullIntegration(t *testing.T) {
 	}
 
 	// 3. Initialize Components
-	provider, err := NewFileGenerator(cfg.Mapping, cfg.Relays)
+	provider, err := NewMemoryProvider(cfg.Mapping, cfg.Relays)
 	if err != nil {
-		t.Fatalf("Failed to create file generator: %v", err)
+		t.Fatalf("Failed to create memory provider: %v", err)
 	}
-	defer provider.Cleanup()
 
 	handler := NewNIP05Handler(provider)
 	router := CORSMiddleware(handler)
@@ -47,6 +46,11 @@ func TestFullIntegration(t *testing.T) {
 	// 5. Verify Response
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	// Check Content-Type
+	if val := rr.Header().Get("Content-Type"); val != "application/json; charset=utf-8" {
+		t.Errorf("Expected Content-Type application/json; charset=utf-8, got %s", val)
 	}
 
 	// Check CORS

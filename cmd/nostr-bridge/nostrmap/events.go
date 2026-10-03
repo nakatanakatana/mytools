@@ -1,9 +1,11 @@
 package nostrmap
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"fiatjaf.com/nostr"
@@ -140,15 +142,11 @@ func signedEvent(key nostr.SecretKey, event nostr.Event) (nostr.Event, error) {
 }
 
 func pTags(masterSeed []byte, identities source.IdentitySet) (nostr.Tags, error) {
-	values := make([]source.ActorIdentity, 0, len(identities))
-	for identity := range identities {
-		values = append(values, identity)
-	}
-	sort.Slice(values, func(i, j int) bool {
-		if values[i].Provider == values[j].Provider {
-			return values[i].ID < values[j].ID
-		}
-		return values[i].Provider < values[j].Provider
+	values := slices.SortedFunc(maps.Keys(identities), func(a, b source.ActorIdentity) int {
+		return cmp.Or(
+			cmp.Compare(a.Provider, b.Provider),
+			cmp.Compare(a.ID, b.ID),
+		)
 	})
 	tags := make(nostr.Tags, 0, len(values))
 	for _, identity := range values {

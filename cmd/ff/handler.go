@@ -46,7 +46,7 @@ func createHandler(filtersMap FilterFuncMap, modifiersMap ModifierFuncMap) http.
 
 		fp := gofeed.NewParser()
 
-		originFeed, err := fp.ParseURL(u)
+		originFeed, err := fp.ParseURLWithContext(u, r.Context())
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = fmt.Fprintln(w, fmt.Errorf("ParseURL Error: %w", err))
