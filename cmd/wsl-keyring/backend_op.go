@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -136,7 +137,11 @@ func (b *OnePasswordBackend) runOPCommand(ctx context.Context, stdin string, rea
 func (b *OnePasswordBackend) runOPCommandDirect(ctx context.Context, stdin string, args ...string) ([]byte, error) {
 	out, err := b.runCmd(ctx, stdin, b.binary, args...)
 	if err != nil {
-		if _, ok := err.(*exec.ExitError); ok {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderrStr := strings.ToLower(string(exitErr.Stderr))
+			if strings.Contains(stderrStr, "isn't an item") {
+				return nil, fmt.Errorf("%w: op command failed: %w", ErrNotFound, err)
+			}
 			return nil, fmt.Errorf("op command failed: %w", err)
 		}
 		return nil, fmt.Errorf("failed to run op: %w", err)
@@ -532,7 +537,6 @@ func buildOPItemTemplate(item *SecretItem, attrsStr string) opItem {
 	return opItem{
 		Title:    item.Label,
 		Category: "LOGIN",
-		Tags:     buildOPMetadataTags(item.Attributes),
 		Fields: []opItemField{
 			{
 				ID:      "username",
@@ -560,7 +564,18 @@ func buildOPItemTemplate(item *SecretItem, attrsStr string) opItem {
 
 func (b *OnePasswordBackend) Delete(ctx context.Context, id string) error {
 	_, err := b.runOPAllowInteractive(ctx, "item", "delete", id)
-	return err
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return err
+		}
+		// Fallback for mock errors or non-ExitError cases where stderr wasn't directly handled by runOPCommandDirect
+		errStr := strings.ToLower(err.Error())
+		if strings.Contains(errStr, "isn't an item") {
+			return fmt.Errorf("%w: %s", ErrNotFound, err.Error())
+		}
+		return err
+	}
+	return nil
 }
 
 func (b *OnePasswordBackend) List(ctx context.Context) ([]*SecretItem, error) {

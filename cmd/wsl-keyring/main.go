@@ -23,6 +23,7 @@ type Config struct {
 	SecretCacheTTL      time.Duration `env:"WSL_KEYRING_SECRET_CACHE_TTL" envDefault:"60s"`
 	AuthCheckMinSpacing time.Duration `env:"WSL_KEYRING_AUTH_CHECK_MIN_SPACING" envDefault:"5s"`
 	AuthCheckTimeout    time.Duration `env:"WSL_KEYRING_AUTH_CHECK_TIMEOUT" envDefault:"2s"`
+	SaveTimeout         time.Duration `env:"WSL_KEYRING_SAVE_TIMEOUT" envDefault:"30s"`
 }
 
 func (cfg Config) CacheBackendOptions() BackendOptions {
@@ -33,6 +34,7 @@ func (cfg Config) CacheBackendOptions() BackendOptions {
 		SecretCacheTTL:      cfg.SecretCacheTTL,
 		AuthCheckMinSpacing: cfg.AuthCheckMinSpacing,
 		AuthCheckTimeout:    cfg.AuthCheckTimeout,
+		SaveTimeout:         cfg.SaveTimeout,
 	}
 }
 

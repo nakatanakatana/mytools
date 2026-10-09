@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -247,6 +248,86 @@ func TestSecretServiceOPCommandSequenceWithCache(t *testing.T) {
 
 		h.op.assertCalls(t, "item list", "item create")
 	})
+
+	t.Run("CreateItem with AsyncSave followed by immediate Delete cleans up item", func(t *testing.T) {
+		h := newDBusOPSequenceHarness(t)
+		cached := NewCachedBackend(h.backend, BackendOptions{
+			CacheSecrets:        true,
+			CacheMetadata:       true,
+			AsyncSave:           true,
+			SecretCacheTTL:      time.Hour,
+			AuthCheckMinSpacing: time.Hour,
+		})
+		h.service = NewServiceObject(nil, cached)
+		h.service.sessions[h.session] = &SessionState{algorithm: AlgorithmPlain}
+		h.collection = NewCollectionObject(nil, cached, h.service)
+
+		attrs := map[string]string{"service": "glab:__keyring_probe__:123:1", "username": ""}
+		itemPath, _, dbusErr := h.collection.CreateItem(
+			h.properties("Password for '' on 'glab:__keyring_probe__:123:1'", attrs),
+			DBusSecret{Session: h.session, Value: []byte("1")},
+			false,
+		)
+		if dbusErr != nil {
+			t.Fatalf("CreateItem failed: %v", dbusErr)
+		}
+
+		// Immediate delete as glab does
+		id := strings.TrimPrefix(string(itemPath), ItemPathPrefix)
+		item := h.itemObject(id, "Password for '' on 'glab:__keyring_probe__:123:1'", attrs)
+		item.backend = cached
+		if prompt, dbusErr := item.Delete(); dbusErr != nil {
+			t.Fatalf("Delete failed: %v", dbusErr)
+		} else if prompt != dbus.ObjectPath("/") {
+			t.Fatalf("Delete returned prompt: %v", prompt)
+		}
+
+		// Wait for background persistSave / delete to settle and ensure raw backend has no item
+		cachedBackend := h.collection.backend.(*CachedBackend)
+		var finishedClean bool
+		for i := 0; i < 100; i++ {
+			cachedBackend.metaMu.Lock()
+			pendingCount := len(cachedBackend.pendingSaves)
+			cachedBackend.metaMu.Unlock()
+
+			h.op.mu.Lock()
+			hasCreated := false
+			hasDeleted := false
+			for _, call := range h.op.calls {
+				if call == "item create" {
+					hasCreated = true
+				}
+				if call == "item delete created-id" {
+					hasDeleted = true
+				}
+			}
+			remainingItems := len(h.op.items)
+			h.op.mu.Unlock()
+
+			if pendingCount == 0 && (!hasCreated || hasDeleted) && remainingItems == 0 {
+				finishedClean = true
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		if !finishedClean {
+			h.op.mu.Lock()
+			calls := append([]string(nil), h.op.calls...)
+			itemsLen := len(h.op.items)
+			h.op.mu.Unlock()
+			t.Fatalf("expected item create to be skipped or deleted, calls: %v, remaining items: %d", calls, itemsLen)
+		}
+
+		// Search should return nothing
+		unlocked, _, dbusErr := h.service.SearchItems(attrs)
+		if dbusErr != nil {
+			t.Fatalf("SearchItems failed: %v", dbusErr)
+		}
+		if len(unlocked) != 0 {
+			t.Fatalf("expected 0 items found, got %d", len(unlocked))
+		}
+	})
 }
 
 type dbusOPSequenceHarness struct {
@@ -315,6 +396,7 @@ func (h *dbusOPSequenceHarness) itemObject(id, label string, attrs map[string]st
 }
 
 type opCommandRecorder struct {
+	mu        sync.Mutex
 	calls     []string
 	listItems []opListItem
 	items     map[string]opItem
@@ -327,6 +409,9 @@ func (r *opCommandRecorder) runCmd(ctx context.Context, stdin string, name strin
 	if len(args) < 2 || args[0] != "item" {
 		return nil, fmt.Errorf("unexpected command: %s", strings.Join(args, " "))
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	switch args[1] {
 	case "list":
@@ -345,7 +430,11 @@ func (r *opCommandRecorder) runCmd(ctx context.Context, stdin string, name strin
 		return json.Marshal(item)
 	case "create":
 		r.calls = append(r.calls, "item create")
-		return json.Marshal(opItem{ID: "created-id", Title: "created"})
+		item := opItem{ID: "created-id", Title: "created"}
+		if r.items != nil {
+			r.items["created-id"] = item
+		}
+		return json.Marshal(item)
 	case "edit":
 		if len(args) < 3 {
 			return nil, fmt.Errorf("missing item id: %s", strings.Join(args, " "))
@@ -359,6 +448,9 @@ func (r *opCommandRecorder) runCmd(ctx context.Context, stdin string, name strin
 		}
 		id := args[2]
 		r.calls = append(r.calls, "item delete "+id)
+		if r.items != nil {
+			delete(r.items, id)
+		}
 		return []byte(`{}`), nil
 	default:
 		return nil, fmt.Errorf("unexpected command: %s", strings.Join(args, " "))
@@ -388,6 +480,8 @@ func (r *opCommandRecorder) secretItem(id, label string, attrs map[string]string
 
 func (r *opCommandRecorder) assertCalls(t *testing.T, want ...string) {
 	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if !reflect.DeepEqual(r.calls, want) {
 		t.Fatalf("op calls = %v, want %v", r.calls, want)
 	}
