@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"sync"
 )
 
@@ -158,10 +159,16 @@ func copySecretItem(src *SecretItem) *SecretItem {
 	}
 }
 
+const pendingIDPrefix = "pending_"
+
+func isPendingID(id string) bool {
+	return strings.HasPrefix(id, pendingIDPrefix)
+}
+
 func newPendingID() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("failed to generate pending item ID: %w", err)
 	}
-	return "pending_" + hex.EncodeToString(buf), nil
+	return pendingIDPrefix + hex.EncodeToString(buf), nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
@@ -184,13 +185,8 @@ func TestOnePasswordBackend_Save_CreatePersistsInBackground(t *testing.T) {
 		if !strings.Contains(fields["attributes"], "app=vscode") || !strings.Contains(fields["attributes"], "username=bob") {
 			t.Errorf("unexpected attributes field: %q", fields["attributes"])
 		}
-		if !containsAll(template.Tags, []string{
-			"wsl-keyring",
-			"wsl-keyring-meta-v1",
-			"wsl-keyring-attr:YXBw=dnNjb2Rl",
-			"wsl-keyring-attr:dXNlcm5hbWU=Ym9i",
-		}) {
-			t.Errorf("unexpected template tags: %+v", template.Tags)
+		if len(template.Tags) != 0 {
+			t.Errorf("template tags must be empty to avoid duplicate tags with CLI --tags flag, got: %+v", template.Tags)
 		}
 
 		resp := opItem{
@@ -370,19 +366,6 @@ func TestOnePasswordBackend_ReadsDoNotRequireWhoamiPreflight(t *testing.T) {
 	if len(commands) != 2 {
 		t.Fatalf("commands = %+v, want item get and item list only", commands)
 	}
-}
-
-func containsAll(got []string, want []string) bool {
-	values := make(map[string]bool, len(got))
-	for _, value := range got {
-		values[value] = true
-	}
-	for _, value := range want {
-		if !values[value] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestOnePasswordBackend_Get(t *testing.T) {
@@ -1356,6 +1339,21 @@ func TestOnePasswordBackend_Delete_RunsOPDelete(t *testing.T) {
 	}
 	if !strings.Contains(gotArgs, "item delete id1") || !strings.Contains(gotArgs, "--vault test-vault") {
 		t.Fatalf("unexpected delete args: %s", gotArgs)
+	}
+}
+
+func TestOnePasswordBackend_Delete_MissingItemReturnsErrNotFound(t *testing.T) {
+	b := &OnePasswordBackend{
+		binary: "op.exe",
+		vault:  "test-vault",
+	}
+	b.runCmd = func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
+		return nil, errors.New(`[ERROR] 2026/10/10 17:00:00 "nonexistent" isn't an item in the "test-vault" vault.`)
+	}
+
+	err := b.Delete(context.Background(), "nonexistent")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
 	}
 }
 

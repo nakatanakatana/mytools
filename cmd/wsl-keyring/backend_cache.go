@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ const (
 	defaultSecretCacheTTL      = 60 * time.Second
 	defaultAuthCheckMinSpacing = 5 * time.Second
 	defaultAuthCheckTimeout    = 2 * time.Second
+	defaultSaveTimeout         = 30 * time.Second
 )
 
 type BackendOptions struct {
@@ -23,6 +25,7 @@ type BackendOptions struct {
 	SecretCacheTTL      time.Duration
 	AuthCheckMinSpacing time.Duration
 	AuthCheckTimeout    time.Duration
+	SaveTimeout         time.Duration
 	Now                 func() time.Time
 }
 
@@ -30,16 +33,27 @@ type CachedBackend struct {
 	raw  RawStorageBackend
 	opts BackendOptions
 
-	metaMu     sync.RWMutex
-	metaCache  map[string]*SecretItem
-	metaLoaded bool
-	metaLoad   singleflight.Group
-	idAliases  map[string]string
+	metaMu       sync.RWMutex
+	metaCache    map[string]*SecretItem
+	metaLoaded   bool
+	metaLoad     singleflight.Group
+	idAliases    map[string]string
+	pendingSaves map[string][]*pendingSaveState
 
 	secretMu             sync.Mutex
 	secretCache          map[string]*cachedSecretItem
 	authCheckInFlight    bool
 	authCheckLastStarted time.Time
+
+	beforePersistSave func()
+}
+
+type pendingSaveState struct {
+	done       chan struct{}
+	prevDone   <-chan struct{}
+	deleted    bool
+	superseded bool
+	isNew      bool
 }
 
 type cachedSecretItem struct {
@@ -65,11 +79,12 @@ func NewCachedBackend(raw RawStorageBackend, opts BackendOptions) *CachedBackend
 	}
 
 	return &CachedBackend{
-		raw:         raw,
-		opts:        opts,
-		metaCache:   make(map[string]*SecretItem),
-		idAliases:   make(map[string]string),
-		secretCache: make(map[string]*cachedSecretItem),
+		raw:          raw,
+		opts:         opts,
+		metaCache:    make(map[string]*SecretItem),
+		idAliases:    make(map[string]string),
+		pendingSaves: make(map[string][]*pendingSaveState),
+		secretCache:  make(map[string]*cachedSecretItem),
 	}
 }
 
@@ -109,8 +124,25 @@ func (b *CachedBackend) Get(ctx context.Context, id string) (*SecretItem, error)
 	return copySecretItem(item), nil
 }
 
+func (b *CachedBackend) saveTimeout() time.Duration {
+	if b.opts.SaveTimeout > 0 {
+		return b.opts.SaveTimeout
+	}
+	return defaultSaveTimeout
+}
+
 func (b *CachedBackend) Save(ctx context.Context, item *SecretItem) error {
+	if item == nil {
+		return errors.New("item is nil")
+	}
+
 	if !b.opts.AsyncSave {
+		if item.ID != "" {
+			item.ID = b.resolveID(item.ID)
+			if isPendingID(item.ID) {
+				item.ID = ""
+			}
+		}
 		if err := b.raw.Save(ctx, item); err != nil {
 			return err
 		}
@@ -118,34 +150,175 @@ func (b *CachedBackend) Save(ctx context.Context, item *SecretItem) error {
 		return nil
 	}
 
-	pendingID := ""
-	persistItem := copySecretItem(item)
-	if item.ID == "" {
-		id, err := newPendingID()
-		if err != nil {
-			return err
+	b.metaMu.Lock()
+	if item.ID != "" {
+		if realID, ok := b.idAliases[item.ID]; ok {
+			item.ID = realID
 		}
-		pendingID = id
-		item.ID = pendingID
-		persistItem.ID = ""
 	}
 
-	b.cacheSavedItem(item)
-	go b.persistSave(context.Background(), pendingID, persistItem)
+	pendingID := ""
+	persistItem := copySecretItem(item)
+	trackingKey := item.ID
+	if item.ID == "" || isPendingID(item.ID) {
+		if item.ID == "" {
+			id, err := newPendingID()
+			if err != nil {
+				b.metaMu.Unlock()
+				return err
+			}
+			pendingID = id
+			item.ID = pendingID
+		} else {
+			pendingID = item.ID
+		}
+		persistItem.ID = ""
+		trackingKey = pendingID
+	}
+
+	state := &pendingSaveState{isNew: pendingID != ""}
+	b.addPendingSaveLocked(trackingKey, state)
+	if b.opts.CacheMetadata {
+		copied := copySecretItem(item)
+		copied.Secret = nil
+		b.metaCache[item.ID] = copied
+		b.metaLoaded = true
+	}
+	if b.opts.CacheSecrets {
+		b.storeSecretCache(item)
+	}
+	b.metaMu.Unlock()
+
+	saveCtx, cancel := context.WithTimeout(context.Background(), b.saveTimeout())
+	go func() {
+		defer cancel()
+		b.persistSave(saveCtx, pendingID, trackingKey, state, persistItem)
+	}()
 	return nil
 }
 
 func (b *CachedBackend) Delete(ctx context.Context, id string) error {
-	id = b.resolveID(id)
-	if err := b.raw.Delete(ctx, id); err != nil {
+	b.metaMu.Lock()
+	resolvedID := id
+	if realID, ok := b.idAliases[id]; ok {
+		resolvedID = realID
+	}
+
+	b.markPendingSavesDeletedLocked(id)
+	if resolvedID != id {
+		b.markPendingSavesDeletedLocked(resolvedID)
+	}
+	for pending, target := range b.idAliases {
+		if target == id || target == resolvedID {
+			b.markPendingSavesDeletedLocked(pending)
+		}
+	}
+
+	if isPendingID(resolvedID) {
+		b.evictItemFromCachesLocked(id, resolvedID)
+		b.metaMu.Unlock()
+
+		b.deleteSecretCache(id)
+		b.deleteSecretCache(resolvedID)
+		return nil
+	}
+	b.metaMu.Unlock()
+
+	if err := b.raw.Delete(ctx, resolvedID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			b.metaMu.Lock()
+			b.evictItemFromCachesLocked(id, resolvedID)
+			b.metaMu.Unlock()
+			b.deleteSecretCache(id)
+			b.deleteSecretCache(resolvedID)
+			return nil
+		}
 		return err
 	}
 
 	b.metaMu.Lock()
-	delete(b.metaCache, id)
+	b.evictItemFromCachesLocked(id, resolvedID)
 	b.metaMu.Unlock()
 	b.deleteSecretCache(id)
+	b.deleteSecretCache(resolvedID)
 	return nil
+}
+
+func (b *CachedBackend) evictItemFromCachesLocked(id, resolvedID string) {
+	delete(b.metaCache, id)
+	delete(b.metaCache, resolvedID)
+	b.cleanupAliasesLocked(id, resolvedID)
+}
+
+func (b *CachedBackend) addPendingSaveLocked(key string, state *pendingSaveState) {
+	state.done = make(chan struct{})
+	if existing := b.pendingSaves[key]; len(existing) > 0 {
+		for _, s := range existing {
+			s.superseded = true
+		}
+		state.prevDone = existing[len(existing)-1].done
+	}
+	b.pendingSaves[key] = append(b.pendingSaves[key], state)
+}
+
+func (b *CachedBackend) removePendingSaveLocked(key string, state *pendingSaveState) {
+	if b.removePendingSaveFromKeyLocked(key, state) {
+		return
+	}
+	if realID, ok := b.idAliases[key]; ok && realID != key {
+		if b.removePendingSaveFromKeyLocked(realID, state) {
+			return
+		}
+	}
+	// Fallback in case aliases were already cleared by a concurrent Delete
+	for k := range b.pendingSaves {
+		if b.removePendingSaveFromKeyLocked(k, state) {
+			break
+		}
+	}
+}
+
+func (b *CachedBackend) removePendingSaveFromKeyLocked(key string, state *pendingSaveState) bool {
+	states := b.pendingSaves[key]
+	found := false
+	for i, s := range states {
+		if s == state {
+			copy(states[i:], states[i+1:])
+			states[len(states)-1] = nil
+			b.pendingSaves[key] = states[:len(states)-1]
+			found = true
+			break
+		}
+	}
+	if len(b.pendingSaves[key]) == 0 {
+		delete(b.pendingSaves, key)
+	}
+	return found
+}
+
+func (b *CachedBackend) markPendingSavesDeletedLocked(key string) bool {
+	states := b.pendingSaves[key]
+	if len(states) == 0 {
+		return false
+	}
+	for _, s := range states {
+		s.deleted = true
+	}
+	return true
+}
+
+func (b *CachedBackend) cleanupAliasesLocked(ids ...string) {
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		delete(b.idAliases, id)
+		for k, v := range b.idAliases {
+			if v == id {
+				delete(b.idAliases, k)
+			}
+		}
+	}
 }
 
 func (b *CachedBackend) List(ctx context.Context) ([]*SecretItem, error) {
@@ -232,37 +405,128 @@ func (b *CachedBackend) cacheSavedItem(item *SecretItem) {
 	}
 }
 
-func (b *CachedBackend) persistSave(ctx context.Context, pendingID string, item *SecretItem) {
-	if err := b.raw.Save(ctx, item); err != nil {
+func (b *CachedBackend) persistSave(ctx context.Context, pendingID, trackingKey string, state *pendingSaveState, item *SecretItem) {
+	defer close(state.done)
+
+	if state.prevDone != nil {
+		select {
+		case <-state.prevDone:
+		case <-ctx.Done():
+			log.Printf("cancelled waiting for previous save on %s: %v", trackingKey, ctx.Err())
+			b.metaMu.Lock()
+			b.removePendingSaveLocked(trackingKey, state)
+			b.metaMu.Unlock()
+			return
+		}
+	}
+
+	if b.beforePersistSave != nil {
+		b.beforePersistSave()
+	}
+
+	b.metaMu.Lock()
+	if state.deleted || state.superseded {
+		b.removePendingSaveLocked(trackingKey, state)
+		wasDeletedBefore := state.deleted
+		targetDeleteID := trackingKey
+		if isPendingID(targetDeleteID) && pendingID != "" {
+			if realID, ok := b.idAliases[pendingID]; ok && !isPendingID(realID) {
+				targetDeleteID = realID
+			}
+		}
+		b.metaMu.Unlock()
+		if wasDeletedBefore && !isPendingID(targetDeleteID) {
+			func() {
+				delCtx, delCancel := context.WithTimeout(context.Background(), b.saveTimeout())
+				defer delCancel()
+				if delErr := b.raw.Delete(delCtx, targetDeleteID); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+					log.Printf("failed to delete secret %s after cancelled in-flight save: %v", targetDeleteID, delErr)
+				}
+			}()
+		}
+		return
+	}
+	// If an earlier save resolved the pending ID to a real ID, reuse it so we update instead of creating a duplicate item.
+	if item.ID == "" && pendingID != "" {
+		if realID, ok := b.idAliases[pendingID]; ok && realID != "" {
+			item.ID = realID
+		}
+	}
+	b.metaMu.Unlock()
+
+	err := b.raw.Save(ctx, item)
+
+	b.metaMu.Lock()
+	wasDeleted := state.deleted
+	wasSuperseded := state.superseded
+	b.removePendingSaveLocked(trackingKey, state)
+	if !wasDeleted && err == nil && pendingID != "" && item.ID != "" && item.ID != pendingID {
+		b.idAliases[pendingID] = item.ID
+
+		// Migrate queued pending saves for pendingID to real item.ID to preserve serialization.
+		if remaining := b.pendingSaves[pendingID]; len(remaining) > 0 {
+			b.pendingSaves[item.ID] = append(b.pendingSaves[item.ID], remaining...)
+			delete(b.pendingSaves, pendingID)
+		}
+
+		// Always rename cache keys to the real item ID so cache hits and metadata match.
+		if cached := b.metaCache[pendingID]; cached != nil {
+			delete(b.metaCache, pendingID)
+			cached.ID = item.ID
+			b.metaCache[item.ID] = cached
+		} else if b.opts.CacheMetadata {
+			copied := copySecretItem(item)
+			copied.Secret = nil
+			b.metaCache[item.ID] = copied
+		}
+
+		b.secretMu.Lock()
+		if entry := b.secretCache[pendingID]; entry != nil {
+			delete(b.secretCache, pendingID)
+			entry.id = item.ID
+			if old := b.secretCache[item.ID]; old != nil && old != entry {
+				old.destroy()
+			}
+			b.secretCache[item.ID] = entry
+		}
+		b.secretMu.Unlock()
+	}
+
+	targetDeleteID := trackingKey
+	if wasDeleted {
+		if !state.isNew {
+			// existing item
+		} else if err == nil && item.ID != "" && !isPendingID(item.ID) {
+			targetDeleteID = item.ID
+		} else if pendingID != "" {
+			if realID, ok := b.idAliases[pendingID]; ok && !isPendingID(realID) {
+				targetDeleteID = realID
+			}
+		}
+	}
+	b.metaMu.Unlock()
+
+	if wasDeleted {
+		if !isPendingID(targetDeleteID) {
+			func() {
+				delCtx, delCancel := context.WithTimeout(context.Background(), b.saveTimeout())
+				defer delCancel()
+				if delErr := b.raw.Delete(delCtx, targetDeleteID); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+					log.Printf("failed to delete secret %s after cancelled in-flight save: %v", targetDeleteID, delErr)
+				}
+			}()
+		}
+		return
+	}
+
+	if wasSuperseded {
+		return
+	}
+
+	if err != nil {
 		log.Printf("failed to persist secret: %v", err)
 		return
 	}
-	if pendingID != "" && item.ID != "" && item.ID != pendingID {
-		b.reconcileCreatedItem(pendingID, item.ID, item)
-	}
-}
-
-func (b *CachedBackend) reconcileCreatedItem(pendingID, realID string, item *SecretItem) {
-	b.metaMu.Lock()
-	if cached := b.metaCache[pendingID]; cached != nil {
-		delete(b.metaCache, pendingID)
-		cached.ID = realID
-		b.metaCache[realID] = cached
-	} else if item != nil {
-		copied := copySecretItem(item)
-		copied.Secret = nil
-		b.metaCache[realID] = copied
-	}
-	b.idAliases[pendingID] = realID
-	b.metaMu.Unlock()
-
-	b.secretMu.Lock()
-	if entry := b.secretCache[pendingID]; entry != nil {
-		delete(b.secretCache, pendingID)
-		entry.id = realID
-		b.secretCache[realID] = entry
-	}
-	b.secretMu.Unlock()
 }
 
 func (b *CachedBackend) resolveID(id string) string {

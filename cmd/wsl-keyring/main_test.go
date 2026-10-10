@@ -123,6 +123,7 @@ func TestConfigCacheBackendOptionsUsesEnvDurations(t *testing.T) {
 	t.Setenv("WSL_KEYRING_SECRET_CACHE_TTL", "15m")
 	t.Setenv("WSL_KEYRING_AUTH_CHECK_MIN_SPACING", "30s")
 	t.Setenv("WSL_KEYRING_AUTH_CHECK_TIMEOUT", "750ms")
+	t.Setenv("WSL_KEYRING_SAVE_TIMEOUT", "45s")
 
 	var cfg Config
 	if err := env.Parse(&cfg); err != nil {
@@ -141,6 +142,9 @@ func TestConfigCacheBackendOptionsUsesEnvDurations(t *testing.T) {
 	}
 	if got, want := opts.AuthCheckTimeout, 750*time.Millisecond; got != want {
 		t.Fatalf("AuthCheckTimeout = %s, want %s", got, want)
+	}
+	if got, want := opts.SaveTimeout, 45*time.Second; got != want {
+		t.Fatalf("SaveTimeout = %s, want %s", got, want)
 	}
 }
 
