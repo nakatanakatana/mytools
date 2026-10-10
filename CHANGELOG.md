@@ -1,5 +1,28 @@
 # Changelog
 
+## [v0.12.1](https://github.com/nakatanakatana/mytools/compare/v0.12.0...v0.12.1) - 2026-10-10
+
+### Maintenance & Others
+- fix(deps): update fiatjaf.com/nostr digest to 685c38f by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/288
+- chore(deps): update dependency aquaproj/aqua-registry to v4.572.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/290
+- chore(deps): update aquaproj/aqua-installer action to v4.1.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/292
+- chore(deps): update dependency aqua to v2.64.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/293
+- chore(deps): update dependency aquaproj/aqua to v2.64.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/294
+- chore(deps): update golang:1.27 docker digest to 1e93e00 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/291
+- chore(deps): update dependency aquaproj/aqua-registry to v4.573.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/297
+- chore(deps): update actions/upload-artifact action to v7.0.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/299
+- chore(deps): update actions/download-artifact action to v8.0.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/298
+- chore(deps): update dependency k1low/octocov to v0.83.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/300
+- fix(deps): update module golang.org/x/net to v0.60.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/302
+- chore(deps): update dependency golang/go to v1.27.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/301
+- chore(deps): update dependency aquaproj/aqua-registry to v4.573.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/303
+- chore(deps): update dependency goreleaser/goreleaser to v2.18.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/304
+- chore(deps): update dependency k1low/octocov to v0.83.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/306
+- fix(deps): update module golang.org/x/sync to v0.24.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/307
+- fix(deps): update module golang.org/x/crypto to v0.58.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/308
+- fix(deps): update module golang.org/x/net to v0.61.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/309
+- fix(wsl-keyring): prevent duplicate tags and clean up deleted in-flight async saves by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/305
+
 ## [v0.12.0](https://github.com/nakatanakatana/mytools/compare/v0.11.0...v0.12.0) - 2026-10-04
 
 ### Maintenance & Others
