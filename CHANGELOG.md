@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.12.2](https://github.com/nakatanakatana/mytools/compare/v0.12.1...v0.12.2) - 2026-10-10
+
+### Maintenance & Others
+- chore(deps): update songmu/tagpr digest to 0c4eb5a by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/296
+
 ## [v0.12.1](https://github.com/nakatanakatana/mytools/compare/v0.12.0...v0.12.1) - 2026-10-10
 
 ### Maintenance & Others
