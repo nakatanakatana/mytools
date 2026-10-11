@@ -10,7 +10,7 @@ require (
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/coder/websocket v1.8.15
 	github.com/fasthttp/websocket v1.5.12
-	github.com/godbus/dbus/v5 v5.2.2
+	github.com/godbus/dbus/v5 v5.2.3
 	github.com/gorilla/feeds v1.2.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/mmcdole/gofeed v1.5.0
