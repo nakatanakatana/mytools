@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.12.2](https://github.com/nakatanakatana/mytools/compare/v0.12.1...v0.12.2) - 2026-10-12
+
+### Maintenance & Others
+- chore(deps): update songmu/tagpr digest to 0c4eb5a by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/296
+- chore(deps): update dependency aquaproj/aqua-registry to v4.574.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/311
+- fix(deps): update module github.com/godbus/dbus/v5 to v5.2.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/312
+- chore(deps): update dependency aquaproj/aqua-registry to v4.574.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/313
+
 ## [v0.12.1](https://github.com/nakatanakatana/mytools/compare/v0.12.0...v0.12.1) - 2026-10-10
 
 ### Maintenance & Others
