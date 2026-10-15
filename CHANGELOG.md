@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.12.3](https://github.com/nakatanakatana/mytools/compare/v0.12.2...v0.12.3) - 2026-10-15
+
+### Maintenance & Others
+- chore(deps): update goreleaser/goreleaser-action action to v7.3.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/314
+- fix(deps): update module github.com/godbus/dbus/v5 to v5.2.4 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/318
+- chore(deps): update dependency aquaproj/aqua-registry to v4.575.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/319
+- fix(deps): update fiatjaf.com/nostr digest to a42e7be by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/320
+- chore(deps): update moznion/cccc-action digest to 1d53138 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/317
+- chore(deps): update actions/create-github-app-token digest to 64ab729 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/316
+
 ## [v0.12.2](https://github.com/nakatanakatana/mytools/compare/v0.12.1...v0.12.2) - 2026-10-12
 
 ### Maintenance & Others
