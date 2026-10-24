@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -310,4 +312,96 @@ func TestCacheMiddlewareErrorHandling(t *testing.T) {
 	// Should return error due to empty response body
 	assert.Equal(t, w.Code, http.StatusInternalServerError,
 		"Should return 500 for empty response body")
+}
+
+func TestCacheMiddlewareHeadRequest(t *testing.T) {
+	t.Parallel()
+
+	filtersMap := CreateFiltersMap(nil, nil)
+	modifiersMap := CreateModifierMap()
+	handler := createHandler(filtersMap, modifiersMap)
+
+	middleware, err := NewCacheMiddleware(handler)
+	assert.NilError(t, err, "Failed to create cache middleware")
+
+	var getRequestCount atomic.Int32
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			getRequestCount.Add(1)
+		}
+		w.Header().Set("ETag", `"test-etag"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+<channel>
+  <title>HEAD Test Feed</title>
+  <link>http://example.com</link>
+  <description>HEAD test feed description</description>
+  <item>
+    <title>Item 1</title>
+    <link>http://example.com/1</link>
+  </item>
+</channel>
+</rss>`))
+	}))
+	defer mockServer.Close()
+
+	params := url.Values{}
+	params.Set("url", mockServer.URL)
+
+	cacheKey := middleware.GetCacheKey(params)
+	cachePath := filepath.Join(middleware.TmpDir, cacheKey)
+	t.Cleanup(func() {
+		_ = os.Remove(cachePath)
+	})
+
+	// 1. First request is HEAD (cache miss)
+	reqHead := httptest.NewRequestWithContext(t.Context(), http.MethodHead, "/?"+params.Encode(), nil)
+	wHead := httptest.NewRecorder()
+	middleware.ServeHTTP(wHead, reqHead)
+
+	assert.Equal(t, wHead.Code, http.StatusOK, "HEAD on cache miss should return 200")
+	assert.Equal(t, wHead.Body.String(), "", "HEAD response body should be empty")
+	assert.Equal(t, wHead.Header().Get("Content-Type"), "application/rss+xml; charset=utf-8")
+	assert.Equal(t, getRequestCount.Load(), int32(1), "Initial cache miss should fetch upstream feed via GET")
+
+	// Verify cache file was created despite being a HEAD request
+	_, err = os.Stat(cachePath)
+	assert.NilError(t, err, "Cache file should exist after HEAD request on cache miss")
+
+	// 2. Subsequent GET request hits cache
+	reqGet := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?"+params.Encode(), nil)
+	wGet := httptest.NewRecorder()
+	middleware.ServeHTTP(wGet, reqGet)
+
+	assert.Equal(t, wGet.Code, http.StatusOK, "GET after HEAD should return 200")
+	assert.Assert(t, strings.Contains(wGet.Body.String(), "<title>HEAD Test Feed</title>"),
+		"GET response should return full RSS body from cache")
+	assert.Equal(t, getRequestCount.Load(), int32(1), "Subsequent GET should hit cache without upstream GET")
+
+	// 3. Subsequent HEAD request hits cache
+	wHead2 := httptest.NewRecorder()
+	middleware.ServeHTTP(wHead2, reqHead)
+
+	assert.Equal(t, wHead2.Code, http.StatusOK, "HEAD on cache hit should return 200")
+	assert.Equal(t, wHead2.Body.String(), "", "HEAD response body on cache hit should be empty")
+	assert.Equal(t, getRequestCount.Load(), int32(1), "Subsequent HEAD should hit cache without upstream GET")
+}
+
+func TestCacheMiddlewareMethodPassThrough(t *testing.T) {
+	t.Parallel()
+
+	filtersMap := CreateFiltersMap(nil, nil)
+	modifiersMap := CreateModifierMap()
+	handler := createHandler(filtersMap, modifiersMap)
+
+	middleware, err := NewCacheMiddleware(handler)
+	assert.NilError(t, err, "Failed to create cache middleware")
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/?url=http://example.com", nil)
+	w := httptest.NewRecorder()
+
+	middleware.ServeHTTP(w, req)
+
+	assert.Equal(t, w.Code, http.StatusMethodNotAllowed, "Non-GET/HEAD request should pass through and return 405")
 }
