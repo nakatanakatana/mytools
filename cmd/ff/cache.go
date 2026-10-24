@@ -48,6 +48,12 @@ func NewCacheMiddleware(next http.Handler) (*CacheMiddleware, error) {
 }
 
 func (c *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		c.next.ServeHTTP(w, r)
+
+		return
+	}
+
 	queries := r.URL.Query()
 	cacheKey := c.GetCacheKey(queries)
 	cachePath := filepath.Join(c.TmpDir, cacheKey)
@@ -95,7 +101,13 @@ func (c *CacheMiddleware) generateAndCacheResponse(
 		statusCode:      http.StatusOK,
 	}
 
-	c.next.ServeHTTP(responseRecorder, r)
+	getReq := r
+	if r.Method == http.MethodHead {
+		getReq = r.Clone(r.Context())
+		getReq.Method = http.MethodGet
+	}
+
+	c.next.ServeHTTP(responseRecorder, getReq)
 
 	upstreamURLs := queries["url"]
 	if len(upstreamURLs) > 0 {
@@ -111,7 +123,9 @@ func (c *CacheMiddleware) generateAndCacheResponse(
 
 	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
 	w.WriteHeader(responseRecorder.statusCode)
-	_, _ = w.Write(responseRecorder.body)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(responseRecorder.body)
+	}
 }
 
 func (c *CacheMiddleware) GetCacheKey(params url.Values) string {
