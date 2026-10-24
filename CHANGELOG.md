@@ -1,5 +1,35 @@
 # Changelog
 
+## [v0.12.3](https://github.com/nakatanakatana/mytools/compare/v0.12.2...v0.12.3) - 2026-10-24
+
+### Maintenance & Others
+- chore(deps): update goreleaser/goreleaser-action action to v7.3.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/314
+- fix(deps): update module github.com/godbus/dbus/v5 to v5.2.4 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/318
+- chore(deps): update dependency aquaproj/aqua-registry to v4.575.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/319
+- fix(deps): update fiatjaf.com/nostr digest to a42e7be by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/320
+- chore(deps): update moznion/cccc-action digest to 1d53138 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/317
+- chore(deps): update actions/create-github-app-token digest to 64ab729 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/316
+- chore(deps): update songmu/tagpr digest to 1fcd729 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/323
+- fix(deps): update fiatjaf.com/nostr digest to d56c990 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/321
+- chore(deps): update dependency golang/go to v1.27.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/325
+- fix(deps): update module modernc.org/sqlite to v1.61.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/326
+- chore(deps): update gcr.io/distroless/static docker digest to 034df5c by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/324
+- chore(deps): update dependency aqua to v2.65.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/328
+- chore(deps): update dependency aquaproj/aqua to v2.65.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/329
+- chore(deps): update dependency aquaproj/aqua to v2.65.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/332
+- chore(deps): update aquaproj/aqua-installer action to v4.1.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/330
+- chore(deps): update dependency aqua to v2.65.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/331
+- chore(deps): update dependency goreleaser/goreleaser to v2.19.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/333
+- chore(deps): update docker/login-action action to v4.7.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/336
+- chore(deps): update dependency aquaproj/aqua-registry to v4.576.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/338
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.27 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/339
+- fix(ff): resolve 500 error on HEAD request and forward non-cacheable methods by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/340
+- chore(deps): update songmu/tagpr digest to e1250d6 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/334
+- chore(deps): update gcr.io/distroless/static docker digest to 15f8637 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/337
+- chore(deps): update golang:1.27 docker digest to f20d83a by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/295
+- fix(deps): update fiatjaf.com/nostr digest to 83d05c5 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/327
+- fix(deps): update k8s.io/utils digest to ca04ba5 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/335
+
 ## [v0.12.2](https://github.com/nakatanakatana/mytools/compare/v0.12.1...v0.12.2) - 2026-10-12
 
 ### Maintenance & Others
