@@ -96,14 +96,16 @@ func runWithDependencies(ctx context.Context, cfg Config, deps runtimeDependenci
 
 	select {
 	case err := <-serverErrors:
-		if err == http.ErrServerClosed {
+		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
 		for _, server := range servers {
 			_ = server.Close()
 		}
 		for i := 1; i < len(servers); i++ {
-			<-serverErrors
+			if drainErr := <-serverErrors; drainErr != nil && !errors.Is(drainErr, http.ErrServerClosed) {
+				err = errors.Join(err, drainErr)
+			}
 		}
 		if err == nil {
 			return nil
