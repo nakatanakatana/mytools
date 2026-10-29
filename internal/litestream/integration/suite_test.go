@@ -144,7 +144,10 @@ func runSuite(m *testing.M) (int, error) {
 
 	cancel()
 	select {
-	case <-managerDone:
+	case err := <-managerDone:
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "manager stopped with error:", err)
+		}
 	case <-time.After(pollTimeout):
 		fmt.Fprintln(os.Stderr, "manager did not stop within", pollTimeout)
 	}
