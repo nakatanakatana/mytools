@@ -1,5 +1,26 @@
 # Changelog
 
+## [v0.12.4](https://github.com/nakatanakatana/mytools/compare/v0.12.3...v0.12.4) - 2026-10-31
+
+### Maintenance & Others
+- chore(deps): update dependency aquaproj/aqua-renovate-config to v2.14.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/341
+- chore(deps): update dependency aquaproj/aqua-registry to v4.577.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/343
+- chore(deps): update dependency aquaproj/aqua-registry to v4.578.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/345
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.28 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/347
+- chore(deps): update dependency k1low/octocov to v0.83.4 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/348
+- fix(deps): update module golang.org/x/net to v0.62.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/349
+- chore(deps): update dependency aquaproj/aqua-registry to v4.579.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/350
+- chore(deps): update golang:1.27 docker digest to b760209 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/346
+- fix(deps): update fiatjaf.com/nostr digest to 252a038 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/344
+- fix(deps): update kubernetes monorepo to v0.37.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/351
+- chore(deps): update golang:1.27 docker digest to 2920bb1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/352
+- fix(deps): update fiatjaf.com/nostr digest to 2b54a33 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/353
+- chore(deps): update dependency golangci/golangci-lint to v2.15.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/322
+- fix(deps): update module github.com/ncruces/go-sqlite3 to v0.36.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/355
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.29 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/356
+- fix(deps): update fiatjaf.com/nostr digest to 6cc50f1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/354
+- fix(deps): update module modernc.org/sqlite to v1.61.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/357
+
 ## [v0.12.3](https://github.com/nakatanakatana/mytools/compare/v0.12.2...v0.12.3) - 2026-10-24
 
 ### Maintenance & Others
