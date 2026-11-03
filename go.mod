@@ -6,7 +6,7 @@ require (
 	fiatjaf.com/nostr v0.0.0-20261029141847-6cc50f1a5b58
 	github.com/arl/gitstatus v0.7.0
 	github.com/awnumar/memguard v0.23.0
-	github.com/benbjohnson/litestream v0.5.17
+	github.com/benbjohnson/litestream v0.5.18
 	github.com/caarlos0/env/v11 v11.4.2
 	github.com/coder/websocket v1.8.15
 	github.com/fasthttp/websocket v1.5.12
@@ -49,7 +49,7 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
+	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
 	github.com/go-openapi/jsonreference v1.0.0 // indirect
