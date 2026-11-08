@@ -1,5 +1,46 @@
 # Changelog
 
+## [v0.12.4](https://github.com/nakatanakatana/mytools/compare/v0.12.3...v0.12.4) - 2026-11-08
+
+### Maintenance & Others
+- chore(deps): update dependency aquaproj/aqua-renovate-config to v2.14.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/341
+- chore(deps): update dependency aquaproj/aqua-registry to v4.577.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/343
+- chore(deps): update dependency aquaproj/aqua-registry to v4.578.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/345
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.28 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/347
+- chore(deps): update dependency k1low/octocov to v0.83.4 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/348
+- fix(deps): update module golang.org/x/net to v0.62.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/349
+- chore(deps): update dependency aquaproj/aqua-registry to v4.579.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/350
+- chore(deps): update golang:1.27 docker digest to b760209 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/346
+- fix(deps): update fiatjaf.com/nostr digest to 252a038 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/344
+- fix(deps): update kubernetes monorepo to v0.37.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/351
+- chore(deps): update golang:1.27 docker digest to 2920bb1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/352
+- fix(deps): update fiatjaf.com/nostr digest to 2b54a33 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/353
+- chore(deps): update dependency golangci/golangci-lint to v2.15.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/322
+- fix(deps): update module github.com/ncruces/go-sqlite3 to v0.36.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/355
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.29 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/356
+- fix(deps): update fiatjaf.com/nostr digest to 6cc50f1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/354
+- fix(deps): update module modernc.org/sqlite to v1.61.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/357
+- chore(deps): update dependency aquaproj/aqua-registry to v4.580.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/360
+- chore(deps): update dependency aquaproj/aqua-registry to v4.581.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/361
+- chore(deps): update dependency aquaproj/aqua-registry to v4.581.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/362
+- chore(deps): update dependency aquaproj/aqua to v2.66.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/364
+- chore(deps): update dependency aqua to v2.66.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/363
+- fix(deps): update module github.com/caarlos0/env/v11 to v11.4.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/365
+- fix(deps): update module github.com/benbjohnson/litestream to v0.5.18 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/367
+- chore(deps): update dependency goreleaser/goreleaser to v2.20.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/368
+- chore(deps): update dependency aqua to v2.66.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/370
+- chore(deps): update dependency aquaproj/aqua to v2.66.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/371
+- chore(deps): update dependency k1low/octocov to v0.83.5 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/372
+- chore(deps): update docker/login-action action to v4.8.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/373
+- chore(deps): update dependency aquaproj/aqua-registry to v4.582.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/374
+- fix(deps): update module github.com/ncruces/go-sqlite3 to v0.37.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/376
+- chore(deps): update dependency aquaproj/aqua-registry to v4.583.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/375
+- fix(deps): update module modernc.org/sqlite to v1.62.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/377
+- chore(deps): update golang:1.27 docker digest to e519d3b by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/369
+- chore(deps): update songmu/tagpr digest to 047aec4 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/366
+- fix(deps): update fiatjaf.com/nostr digest to 96f8989 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/359
+- chore(deps): update gcr.io/distroless/static docker digest to 4488103 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/358
+
 ## [v0.12.3](https://github.com/nakatanakatana/mytools/compare/v0.12.2...v0.12.3) - 2026-10-24
 
 ### Maintenance & Others
