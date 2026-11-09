@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.12.5](https://github.com/nakatanakatana/mytools/compare/v0.12.4...v0.12.5) - 2026-11-09
+
+### Maintenance & Others
+- feat(nostr-bridge): delay transient error alerts with grace period and notify reauth immediately by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/378
+
 ## [v0.12.4](https://github.com/nakatanakatana/mytools/compare/v0.12.3...v0.12.4) - 2026-11-08
 
 ### Maintenance & Others
