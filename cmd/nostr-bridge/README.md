@@ -160,6 +160,7 @@ boundary described above.
 | --- | --- | --- |
 | `NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL` | Minimum interval between reminders while the same issue remains active (at least `1m`; a recurrence after recovery is notified immediately) | `24h` |
 | `NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL` | How often the bridge checks for notification issues and retries failed deliveries (at least `1s`) | `15s` |
+| `NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD` | Minimum continuous duration a transient issue must persist before notifying (at least `0s`; re-authentication is notified immediately) | `1h` |
 
 Abandoned subscriptions are removed when a push service reports them expired.
 If browser data was cleared and the 100-subscription limit is reached before

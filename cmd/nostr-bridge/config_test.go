@@ -171,6 +171,23 @@ func TestConfigVariablesAreDocumented(t *testing.T) {
 	}
 }
 
+func TestConfigDocumentationMatchesConfigVariables(t *testing.T) {
+	readmeContents, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme := string(readmeContents)
+	for _, tc := range []struct {
+		name, defaultValue string
+	}{
+		{"NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD", "1h"},
+	} {
+		if !readmeDocumentsDefault(readme, tc.name, tc.defaultValue) {
+			t.Errorf("README does not document %s with default %s", tc.name, tc.defaultValue)
+		}
+	}
+}
+
 func TestConfigDocumentationRejectsLongerOrUnassociatedDefaults(t *testing.T) {
 	read := func(path string) string {
 		t.Helper()
@@ -547,6 +564,9 @@ func TestConfigNotificationDefaults(t *testing.T) {
 	if cfg.Notification.EvaluationInterval != 15*time.Second {
 		t.Fatalf("EvaluationInterval = %v, want 15s", cfg.Notification.EvaluationInterval)
 	}
+	if cfg.Notification.ErrorGracePeriod != time.Hour {
+		t.Fatalf("ErrorGracePeriod = %v, want 1h", cfg.Notification.ErrorGracePeriod)
+	}
 	if cfg.Notification.VAPIDSubject != "mailto:admin@localhost" {
 		t.Fatalf("VAPIDSubject = %q, want mailto:admin@localhost", cfg.Notification.VAPIDSubject)
 	}
@@ -572,6 +592,7 @@ func TestConfigNotificationCustomEnv(t *testing.T) {
 	t.Setenv("NOSTR_BRIDGE_VAPID_SUBJECT", "mailto:alerts@example.com")
 	t.Setenv("NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", "12h")
 	t.Setenv("NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", "30s")
+	t.Setenv("NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD", "30m")
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -593,6 +614,9 @@ func TestConfigNotificationCustomEnv(t *testing.T) {
 	if cfg.Notification.EvaluationInterval != 30*time.Second {
 		t.Fatalf("EvaluationInterval = %v, want 30s", cfg.Notification.EvaluationInterval)
 	}
+	if cfg.Notification.ErrorGracePeriod != 30*time.Minute {
+		t.Fatalf("ErrorGracePeriod = %v, want 30m", cfg.Notification.ErrorGracePeriod)
+	}
 }
 
 func TestConfigNotificationRejectsInvalidDurations(t *testing.T) {
@@ -601,6 +625,7 @@ func TestConfigNotificationRejectsInvalidDurations(t *testing.T) {
 	}{
 		{"NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", "RemindInterval"},
 		{"NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", "EvaluationInterval"},
+		{"NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD", "ErrorGracePeriod"},
 	} {
 		for _, value := range []string{"invalid", "not-a-duration"} {
 			t.Run(tc.variable+"/"+value, func(t *testing.T) {
@@ -614,19 +639,41 @@ func TestConfigNotificationRejectsInvalidDurations(t *testing.T) {
 				}
 			})
 		}
-		for _, value := range []string{"0s", "-1s"} {
-			t.Run(tc.variable+"/"+value, func(t *testing.T) {
-				setSharedEnv(t)
-				setBlueskyEnv(t)
-				t.Setenv(tc.variable, value)
-
-				_, err := LoadConfig()
-				if err == nil || !strings.Contains(err.Error(), tc.variable) {
-					t.Fatalf("LoadConfig() error = %v, want error containing %s", err, tc.variable)
-				}
-			})
-		}
 	}
+	for _, tc := range []struct {
+		variable, value string
+	}{
+		{"NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", "0s"},
+		{"NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", "-1s"},
+		{"NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", "0s"},
+		{"NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", "-1s"},
+		{"NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD", "-1s"},
+	} {
+		t.Run(tc.variable+"/"+tc.value, func(t *testing.T) {
+			setSharedEnv(t)
+			setBlueskyEnv(t)
+			t.Setenv(tc.variable, tc.value)
+
+			_, err := LoadConfig()
+			if err == nil || !strings.Contains(err.Error(), tc.variable) {
+				t.Fatalf("LoadConfig() error = %v, want error containing %s", err, tc.variable)
+			}
+		})
+	}
+
+	t.Run("NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD/0s", func(t *testing.T) {
+		setSharedEnv(t)
+		setBlueskyEnv(t)
+		t.Setenv("NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD", "0s")
+
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v, want nil for 0s grace period", err)
+		}
+		if cfg.Notification.ErrorGracePeriod != 0 {
+			t.Fatalf("ErrorGracePeriod = %v, want 0s", cfg.Notification.ErrorGracePeriod)
+		}
+	})
 }
 
 func TestConfigNotificationRejectsIntervalsBelowMinimum(t *testing.T) {
@@ -636,6 +683,7 @@ func TestConfigNotificationRejectsIntervalsBelowMinimum(t *testing.T) {
 	}{
 		{"NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", "59s"},
 		{"NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", "999ms"},
+		{"NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD", "-1s"},
 	} {
 		t.Run(tc.variable, func(t *testing.T) {
 			setSharedEnv(t)

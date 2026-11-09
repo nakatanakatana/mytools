@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/bluesky"
+	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/notification"
+	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 	"github.com/nakatanakatana/mytools/internal/webpush"
 )
 
@@ -1181,4 +1183,148 @@ func TestRunPropagatesNotificationFailureAndClosesResourcesOnce(t *testing.T) {
 			database.count,
 		)
 	}
+}
+
+func TestRuntimeNotificationErrorGracePeriodWiring(t *testing.T) {
+	tests := []struct {
+		name                   string
+		errorGracePeriod       time.Duration
+		wantErrorGracePeriod   time.Duration
+		wantDisableGracePeriod bool
+	}{
+		{
+			name:                   "default 1h",
+			errorGracePeriod:       time.Hour,
+			wantErrorGracePeriod:   time.Hour,
+			wantDisableGracePeriod: false,
+		},
+		{
+			name:                   "custom duration 30m",
+			errorGracePeriod:       30 * time.Minute,
+			wantErrorGracePeriod:   30 * time.Minute,
+			wantDisableGracePeriod: false,
+		},
+		{
+			name:                   "zero duration disabled",
+			errorGracePeriod:       0,
+			wantErrorGracePeriod:   0,
+			wantDisableGracePeriod: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var capturedOpts notification.WorkerOptions
+			origNewWorker := newNotificationWorker
+			newNotificationWorker = func(opts notification.WorkerOptions) *notification.NotificationWorker {
+				capturedOpts = opts
+				return origNewWorker(opts)
+			}
+			t.Cleanup(func() {
+				newNotificationWorker = origNewWorker
+			})
+
+			cfg := testRuntimeConfig(t)
+			cfg.Notification.ErrorGracePeriod = tc.errorGracePeriod
+
+			resources, err := newRuntimeResources(cfg)
+			if err != nil {
+				t.Fatalf("newRuntimeResources() error = %v", err)
+			}
+			defer func() {
+				if err := closeRuntimeResources(resources); err != nil {
+					t.Fatalf("closeRuntimeResources() error = %v", err)
+				}
+			}()
+
+			if capturedOpts.ErrorGracePeriod != tc.wantErrorGracePeriod {
+				t.Errorf("ErrorGracePeriod = %v, want %v", capturedOpts.ErrorGracePeriod, tc.wantErrorGracePeriod)
+			}
+			if capturedOpts.DisableErrorGracePeriod != tc.wantDisableGracePeriod {
+				t.Errorf("DisableErrorGracePeriod = %v, want %v", capturedOpts.DisableErrorGracePeriod, tc.wantDisableGracePeriod)
+			}
+
+			// Verify that the worker constructed from capturedOpts exhibits the expected grace period behavior.
+			baseTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+			currentTime := baseTime
+			pushClient := &mockNotificationPushClient{}
+			store := &mockSubscriptionStore{
+				subs: []bridgestore.StoredSubscription{
+					{
+						Endpoint: "https://push.example.com/sub/1",
+						P256dh:   "dummy-p256dh",
+						Auth:     "dummy-auth",
+					},
+				},
+			}
+			workerOpts := capturedOpts
+			workerOpts.Store = store
+			workerOpts.PushClient = pushClient
+			workerOpts.Now = func() time.Time { return currentTime }
+
+			worker := notification.NewWorker(workerOpts)
+			snap := notification.Snapshot{
+				DispatcherRunning: true,
+				Providers: map[string]notification.ProviderStatus{
+					"bluesky": {TargetCount: 1, StreamConnected: false},
+				},
+			}
+
+			// Initial evaluation at t = 0
+			if err := worker.EvaluateSnapshot(context.Background(), snap); err != nil {
+				t.Fatalf("EvaluateSnapshot() error = %v", err)
+			}
+
+			if tc.wantDisableGracePeriod {
+				// Immediate notification when grace period is disabled
+				if pushes := pushClient.pushes.Load(); pushes != 1 {
+					t.Errorf("pushes at t=0 = %d, want 1 (grace period disabled)", pushes)
+				}
+			} else {
+				// Suppressed at t=0 because issue is within grace period
+				if pushes := pushClient.pushes.Load(); pushes != 0 {
+					t.Errorf("pushes at t=0 = %d, want 0 (grace period active)", pushes)
+				}
+
+				// Advance time to just before grace period
+				currentTime = baseTime.Add(tc.wantErrorGracePeriod - time.Second)
+				if err := worker.EvaluateSnapshot(context.Background(), snap); err != nil {
+					t.Fatalf("EvaluateSnapshot() error = %v", err)
+				}
+				if pushes := pushClient.pushes.Load(); pushes != 0 {
+					t.Errorf("pushes before grace period expired = %d, want 0", pushes)
+				}
+
+				// Advance time to exactly grace period
+				currentTime = baseTime.Add(tc.wantErrorGracePeriod)
+				if err := worker.EvaluateSnapshot(context.Background(), snap); err != nil {
+					t.Fatalf("EvaluateSnapshot() error = %v", err)
+				}
+				if pushes := pushClient.pushes.Load(); pushes != 1 {
+					t.Errorf("pushes at grace period expiration = %d, want 1", pushes)
+				}
+			}
+		})
+	}
+}
+
+type mockSubscriptionStore struct {
+	subs []bridgestore.StoredSubscription
+}
+
+func (m *mockSubscriptionStore) ListSubscriptions(context.Context) ([]bridgestore.StoredSubscription, error) {
+	return m.subs, nil
+}
+
+func (m *mockSubscriptionStore) DeleteSubscription(context.Context, string) error {
+	return nil
+}
+
+type mockNotificationPushClient struct {
+	pushes atomic.Int32
+}
+
+func (m *mockNotificationPushClient) Send(context.Context, webpush.Subscription, []byte, webpush.Options) error {
+	m.pushes.Add(1)
+	return nil
 }

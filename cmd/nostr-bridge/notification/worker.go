@@ -26,6 +26,9 @@ const (
 	// DefaultRemindInterval is the default duration before repeating an active alert.
 	DefaultRemindInterval = 24 * time.Hour
 
+	// DefaultErrorGracePeriod is the default duration a transient issue must persist before notifying.
+	DefaultErrorGracePeriod = 1 * time.Hour
+
 	maxConcurrentPushes = 5
 	perPushTimeout      = 5 * time.Second
 )
@@ -79,6 +82,11 @@ type Issue struct {
 	Tag   string
 }
 
+// IsImmediate returns true if the issue represents an urgent state requiring immediate user action.
+func (i Issue) IsImmediate() bool {
+	return strings.HasSuffix(i.ID, ":reauth_required")
+}
+
 // WorkerOptions configures a NotificationWorker.
 type WorkerOptions struct {
 	Store              SubscriptionStore
@@ -86,8 +94,15 @@ type WorkerOptions struct {
 	SnapshotProvider   func(ctx context.Context) (Snapshot, error)
 	RemindInterval     time.Duration
 	EvaluationInterval time.Duration
-	Now                func() time.Time
-	Logf               func(format string, v ...any)
+	// ErrorGracePeriod configures the continuous duration a transient issue must persist
+	// before sending a notification. If 0 and DisableErrorGracePeriod is false, DefaultErrorGracePeriod
+	// is used.
+	ErrorGracePeriod time.Duration
+	// DisableErrorGracePeriod forces the error grace period to 0, enabling immediate notifications
+	// for all issues.
+	DisableErrorGracePeriod bool
+	Now                     func() time.Time
+	Logf                    func(format string, v ...any)
 }
 
 // NotificationWorker evaluates operational health and sends push notifications.
@@ -99,10 +114,11 @@ type NotificationWorker struct {
 	snapshotProvider   func(ctx context.Context) (Snapshot, error)
 	remindInterval     time.Duration
 	evaluationInterval time.Duration
+	errorGracePeriod   time.Duration
 	now                func() time.Time
 	logfFunc           func(format string, v ...any)
 	activeIssues       map[string]map[string]endpointDeliveryState
-	streamDownTicks    map[string]int
+	detectedIssueSince map[string]time.Time
 }
 
 type endpointDeliveryState struct {
@@ -125,6 +141,13 @@ func NewWorker(opts WorkerOptions) *NotificationWorker {
 		remindInterval = DefaultRemindInterval
 	}
 
+	errorGracePeriod := opts.ErrorGracePeriod
+	if opts.DisableErrorGracePeriod || errorGracePeriod < 0 {
+		errorGracePeriod = 0
+	} else if errorGracePeriod == 0 {
+		errorGracePeriod = DefaultErrorGracePeriod
+	}
+
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -141,10 +164,11 @@ func NewWorker(opts WorkerOptions) *NotificationWorker {
 		snapshotProvider:   opts.SnapshotProvider,
 		remindInterval:     remindInterval,
 		evaluationInterval: evalInterval,
+		errorGracePeriod:   errorGracePeriod,
 		now:                now,
 		logfFunc:           logf,
 		activeIssues:       make(map[string]map[string]endpointDeliveryState),
-		streamDownTicks:    make(map[string]int),
+		detectedIssueSince: make(map[string]time.Time),
 	}
 }
 
@@ -354,40 +378,37 @@ func (w *NotificationWorker) EvaluateSnapshot(ctx context.Context, snapshot Snap
 	w.evalMu.Lock()
 	defer w.evalMu.Unlock()
 
+	now := w.now()
+	detected := detectIssues(snapshot)
+
 	w.mu.Lock()
-	detected := w.filterTransientStreamIssues(snapshot, detectIssues(snapshot))
-	currentIDs := make(map[string]bool, len(detected))
+	currentRawIDs := make(map[string]bool, len(detected))
 	for _, issue := range detected {
-		currentIDs[issue.ID] = true
+		currentRawIDs[issue.ID] = true
+		if _, exists := w.detectedIssueSince[issue.ID]; !exists {
+			w.detectedIssueSince[issue.ID] = now
+		}
 	}
 
 	// Recovery: remove issues no longer detected
-	maps.DeleteFunc(w.activeIssues, func(id string, _ map[string]endpointDeliveryState) bool {
-		return !currentIDs[id]
+	maps.DeleteFunc(w.detectedIssueSince, func(id string, _ time.Time) bool {
+		return !currentRawIDs[id]
 	})
-	w.mu.Unlock()
-	return w.sendNotifications(ctx, detected)
-}
+	maps.DeleteFunc(w.activeIssues, func(id string, _ map[string]endpointDeliveryState) bool {
+		return !currentRawIDs[id]
+	})
 
-func (w *NotificationWorker) filterTransientStreamIssues(snapshot Snapshot, issues []Issue) []Issue {
-	suppressed := make(map[string]struct{})
-	for name, provider := range snapshot.Providers {
-		name = strings.ToLower(name)
-		issueID := fmt.Sprintf("provider:%s:stream_disconnected", name)
-		if provider.TargetCount == 0 || provider.StreamConnected {
-			delete(w.streamDownTicks, name)
-			continue
-		}
-		w.streamDownTicks[name]++
-		if w.streamDownTicks[name] < 2 {
-			suppressed[issueID] = struct{}{}
+	// Filter issues eligible for push delivery
+	eligible := make([]Issue, 0, len(detected))
+	for _, issue := range detected {
+		since := w.detectedIssueSince[issue.ID]
+		if issue.IsImmediate() || w.errorGracePeriod == 0 || now.Sub(since) >= w.errorGracePeriod {
+			eligible = append(eligible, issue)
 		}
 	}
+	w.mu.Unlock()
 
-	return slices.DeleteFunc(issues, func(issue Issue) bool {
-		_, skip := suppressed[issue.ID]
-		return skip
-	})
+	return w.sendNotifications(ctx, eligible)
 }
 
 func (w *NotificationWorker) sendNotifications(ctx context.Context, issues []Issue) error {
