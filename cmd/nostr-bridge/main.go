@@ -104,6 +104,9 @@ type databaseCloser interface {
 	CloseContext(context.Context) error
 }
 
+// newNotificationWorker is a seam for constructing the notification worker.
+var newNotificationWorker = notification.NewWorker
+
 // newRuntimeResources is a seam for constructing the process-lifetime integrations.
 var newRuntimeResources = func(cfg Config) (res runtimeResources, retErr error) {
 	if seed, err := base64.StdEncoding.DecodeString(cfg.Shared.MasterSeed); err != nil {
@@ -189,15 +192,17 @@ var newRuntimeResources = func(cfg Config) (res runtimeResources, retErr error) 
 		VAPIDKeys: resolvedKeys,
 		Subject:   subject,
 	})
-	notifWorker := notification.NewWorker(notification.WorkerOptions{
+	notifWorker := newNotificationWorker(notification.WorkerOptions{
 		Store:      bridgeStore,
 		PushClient: webpushClient,
 		SnapshotProvider: func(ctx context.Context) (notification.Snapshot, error) {
 			snap := health.readinessSnapshot(ctx)
 			return healthSnapshotToNotificationSnapshot(snap), nil
 		},
-		RemindInterval:     cfg.Notification.RemindInterval,
-		EvaluationInterval: cfg.Notification.EvaluationInterval,
+		RemindInterval:          cfg.Notification.RemindInterval,
+		EvaluationInterval:      cfg.Notification.EvaluationInterval,
+		ErrorGracePeriod:        cfg.Notification.ErrorGracePeriod,
+		DisableErrorGracePeriod: cfg.Notification.ErrorGracePeriod == 0,
 	})
 	notificationWorker := startWorker(func(ctx context.Context) error {
 		return notifWorker.Run(ctx)

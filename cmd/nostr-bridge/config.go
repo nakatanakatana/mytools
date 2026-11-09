@@ -73,6 +73,7 @@ type NotificationConfig struct {
 	VAPIDSubject       string        `env:"NOSTR_BRIDGE_VAPID_SUBJECT" envDefault:"mailto:admin@localhost"`
 	RemindInterval     time.Duration `env:"NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL" envDefault:"24h"`
 	EvaluationInterval time.Duration `env:"NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL" envDefault:"15s"`
+	ErrorGracePeriod   time.Duration `env:"NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD" envDefault:"1h"`
 }
 
 // Config contains grouped settings required to start nostr-bridge.
@@ -143,6 +144,7 @@ var configVariables = []configVariable{
 	{name: "NOSTR_BRIDGE_VAPID_SUBJECT", documentation: documentInReadme},
 	{name: "NOSTR_BRIDGE_NOTIFICATION_REMIND_INTERVAL", documentation: documentInReadme},
 	{name: "NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL", documentation: documentInReadme},
+	{name: "NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD", documentation: documentInReadme},
 	{name: "NOSTR_BRIDGE_ACCOUNT_DID", removed: true},
 	{name: "NOSTR_BRIDGE_JETSTREAM_URL", removed: true},
 	{name: "NOSTR_BRIDGE_LIST_URIS", removed: true},
@@ -251,6 +253,9 @@ func LoadConfig() (Config, error) {
 	}
 	if cfg.Notification.EvaluationInterval < time.Second {
 		return Config{}, fmt.Errorf("NOSTR_BRIDGE_NOTIFICATION_EVALUATION_INTERVAL must be at least 1s")
+	}
+	if cfg.Notification.ErrorGracePeriod < 0 {
+		return Config{}, fmt.Errorf("NOSTR_BRIDGE_NOTIFICATION_ERROR_GRACE_PERIOD must be non-negative")
 	}
 	cfg.Notification.VAPIDSubject = strings.TrimSpace(cfg.Notification.VAPIDSubject)
 	if cfg.Notification.VAPIDSubject == "" {

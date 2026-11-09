@@ -209,19 +209,15 @@ func TestInitialDegradationTriggersImmediatePushNotification(t *testing.T) {
 			now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
 			worker := notification.NewWorker(notification.WorkerOptions{
-				Store:      st,
-				PushClient: push,
-				Now:        func() time.Time { return now },
+				Store:            st,
+				PushClient:       push,
+				ErrorGracePeriod: -1,
+				Now:              func() time.Time { return now },
 			})
 
 			ctx := context.Background()
 			if err := worker.EvaluateSnapshot(ctx, tc.snapshot); err != nil {
 				t.Fatalf("EvaluateSnapshot failed: %v", err)
-			}
-			if tc.name == "provider stream disconnected" {
-				if err := worker.EvaluateSnapshot(ctx, tc.snapshot); err != nil {
-					t.Fatalf("second disconnected evaluation failed: %v", err)
-				}
 			}
 
 			sent := push.Sent()
@@ -271,10 +267,11 @@ func TestContinuingDegradationDoesNotTriggerDuplicateNotificationBeforeRemindInt
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
 	worker := notification.NewWorker(notification.WorkerOptions{
-		Store:          st,
-		PushClient:     push,
-		RemindInterval: 24 * time.Hour,
-		Now:            func() time.Time { return now },
+		Store:            st,
+		PushClient:       push,
+		RemindInterval:   24 * time.Hour,
+		ErrorGracePeriod: -1,
+		Now:              func() time.Time { return now },
 	})
 
 	ctx := context.Background()
@@ -322,10 +319,11 @@ func TestReminderTriggersAfterRemindInterval(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
 	worker := notification.NewWorker(notification.WorkerOptions{
-		Store:          st,
-		PushClient:     push,
-		RemindInterval: 24 * time.Hour,
-		Now:            func() time.Time { return now },
+		Store:            st,
+		PushClient:       push,
+		RemindInterval:   24 * time.Hour,
+		ErrorGracePeriod: -1,
+		Now:              func() time.Time { return now },
 	})
 
 	ctx := context.Background()
@@ -373,10 +371,11 @@ func TestRecoveryClearsIssueSoSubsequentDegradationTriggersImmediately(t *testin
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
 	worker := notification.NewWorker(notification.WorkerOptions{
-		Store:          st,
-		PushClient:     push,
-		RemindInterval: 24 * time.Hour,
-		Now:            func() time.Time { return now },
+		Store:            st,
+		PushClient:       push,
+		RemindInterval:   24 * time.Hour,
+		ErrorGracePeriod: -1,
+		Now:              func() time.Time { return now },
 	})
 
 	ctx := context.Background()
@@ -429,9 +428,10 @@ func TestExpiredSubscriptionCausesDeleteSubscription(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
 	worker := notification.NewWorker(notification.WorkerOptions{
-		Store:      st,
-		PushClient: push,
-		Now:        func() time.Time { return now },
+		Store:            st,
+		PushClient:       push,
+		ErrorGracePeriod: -1,
+		Now:              func() time.Time { return now },
 	})
 
 	ctx := context.Background()
@@ -471,9 +471,10 @@ func TestMultipleSubscriptionsReceiveNotificationsAndSingleFailureDoesNotAbort(t
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
 	worker := notification.NewWorker(notification.WorkerOptions{
-		Store:      st,
-		PushClient: push,
-		Now:        func() time.Time { return now },
+		Store:            st,
+		PushClient:       push,
+		ErrorGracePeriod: -1,
+		Now:              func() time.Time { return now },
 	})
 
 	ctx := context.Background()
@@ -520,6 +521,7 @@ func TestPartialDeliveryRetriesOnlyFailedSubscription(t *testing.T) {
 	worker := notification.NewWorker(notification.WorkerOptions{
 		Store:              st,
 		PushClient:         push,
+		ErrorGracePeriod:   -1,
 		Now:                func() time.Time { return now },
 		EvaluationInterval: 15 * time.Second,
 	})
@@ -566,6 +568,7 @@ func TestPermanentPushFailureIsNotRetriedUntilSubscriptionChanges(t *testing.T) 
 	worker := notification.NewWorker(notification.WorkerOptions{
 		Store:              st,
 		PushClient:         push,
+		ErrorGracePeriod:   -1,
 		Now:                func() time.Time { return now },
 		EvaluationInterval: 15 * time.Second,
 	})
@@ -620,7 +623,12 @@ func TestSendNotificationTreatsDeletedExpiredSubscriptionAsSuccess(t *testing.T)
 func TestStreamDisconnectDoesNotNotifyOnFirstDetection(t *testing.T) {
 	st := &mockStore{subscriptions: []store.StoredSubscription{makeTestSubscription("https://push.example.com/sub1")}}
 	push := &mockPushClient{}
-	worker := notification.NewWorker(notification.WorkerOptions{Store: st, PushClient: push})
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	worker := notification.NewWorker(notification.WorkerOptions{
+		Store:      st,
+		PushClient: push,
+		Now:        func() time.Time { return now },
+	})
 	snapshot := notification.Snapshot{
 		DispatcherRunning: true,
 		Providers: map[string]notification.ProviderStatus{
@@ -635,11 +643,12 @@ func TestStreamDisconnectDoesNotNotifyOnFirstDetection(t *testing.T) {
 		t.Fatalf("pushes after first disconnected snapshot = %d, want 0", got)
 	}
 
+	now = now.Add(time.Hour)
 	if err := worker.EvaluateSnapshot(context.Background(), snapshot); err != nil {
-		t.Fatalf("second EvaluateSnapshot while bootstrap is incomplete: %v", err)
+		t.Fatalf("second EvaluateSnapshot: %v", err)
 	}
 	if got := len(push.Sent()); got != 1 {
-		t.Fatalf("pushes after second unbootstrapped disconnected snapshot = %d, want 1", got)
+		t.Fatalf("pushes after grace period elapsed = %d, want 1", got)
 	}
 }
 
@@ -688,10 +697,11 @@ func TestFailedListSubscriptionsDoesNotSuppressNextEvaluation(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
 	worker := notification.NewWorker(notification.WorkerOptions{
-		Store:          st,
-		PushClient:     push,
-		RemindInterval: 24 * time.Hour,
-		Now:            func() time.Time { return now },
+		Store:            st,
+		PushClient:       push,
+		RemindInterval:   24 * time.Hour,
+		ErrorGracePeriod: -1,
+		Now:              func() time.Time { return now },
 	})
 
 	ctx := context.Background()
@@ -736,10 +746,11 @@ func TestZeroSubscribersDoesNotSuppressWhenSubscriberJoins(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
 	worker := notification.NewWorker(notification.WorkerOptions{
-		Store:          st,
-		PushClient:     push,
-		RemindInterval: 24 * time.Hour,
-		Now:            func() time.Time { return now },
+		Store:            st,
+		PushClient:       push,
+		RemindInterval:   24 * time.Hour,
+		ErrorGracePeriod: -1,
+		Now:              func() time.Time { return now },
 	})
 
 	ctx := context.Background()
@@ -850,9 +861,10 @@ func TestSendNotifications_AllDeliveriesFailed_RetriesNextTime(t *testing.T) {
 	now := time.Now()
 
 	worker := notification.NewWorker(notification.WorkerOptions{
-		Store:      st,
-		PushClient: push,
-		Now:        func() time.Time { return now },
+		Store:            st,
+		PushClient:       push,
+		ErrorGracePeriod: -1,
+		Now:              func() time.Time { return now },
 		SnapshotProvider: func(ctx context.Context) (notification.Snapshot, error) {
 			return snap, nil
 		},
@@ -974,5 +986,297 @@ func TestSendNotification_NormalizesTag(t *testing.T) {
 	}
 	if strings.Contains(topic, ":") {
 		t.Errorf("opts.Topic %q should not contain colons", topic)
+	}
+}
+
+func TestIssue_IsImmediate(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"provider:bluesky:reauth_required", true},
+		{"provider:mastodon:reauth_required", true},
+		{"custom:reauth_required", true},
+		{"provider:bluesky:stream_disconnected", false},
+		{"provider:bluesky:degraded", false},
+		{"provider:bluesky:token_expired", false},
+		{"system:dispatcher_stopped", false},
+		{"system:outbox_limit", false},
+	}
+	for _, tc := range tests {
+		issue := notification.Issue{ID: tc.id}
+		if got := issue.IsImmediate(); got != tc.want {
+			t.Errorf("Issue{ID: %q}.IsImmediate() = %v, want %v", tc.id, got, tc.want)
+		}
+	}
+}
+
+func TestWorker_EvaluateSnapshot_GracePeriod(t *testing.T) {
+	st := &mockStore{
+		subscriptions: []store.StoredSubscription{
+			makeTestSubscription("https://push.example.com/sub1"),
+		},
+	}
+	push := &mockPushClient{}
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+
+	worker := notification.NewWorker(notification.WorkerOptions{
+		Store:          st,
+		PushClient:     push,
+		RemindInterval: 24 * time.Hour,
+		Now:            func() time.Time { return now },
+	})
+
+	ctx := context.Background()
+
+	// Snapshot at T=0 with both stream_disconnected and reauth_required
+	snapshot := notification.Snapshot{
+		DispatcherRunning: true,
+		Providers: map[string]notification.ProviderStatus{
+			"bluesky": {
+				TargetCount:     1,
+				StreamConnected: false,
+				ReauthRequired:  true,
+			},
+		},
+	}
+
+	// T=0: Only reauth_required sent; stream_disconnected is suppressed
+	if err := worker.EvaluateSnapshot(ctx, snapshot); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=0: %v", err)
+	}
+	sent := push.Sent()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 push at T=0, got %d", len(sent))
+	}
+	var payload struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.Unmarshal(sent[0].payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload at T=0: %v", err)
+	}
+	if payload.Tag != "provider:bluesky:reauth_required" {
+		t.Errorf("expected tag provider:bluesky:reauth_required, got %s", payload.Tag)
+	}
+
+	// T=30m: stream_disconnected still active; no push sent
+	now = now.Add(30 * time.Minute)
+	push.Reset()
+	if err := worker.EvaluateSnapshot(ctx, snapshot); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=30m: %v", err)
+	}
+	if len(push.Sent()) != 0 {
+		t.Fatalf("expected 0 pushes at T=30m, got %d", len(push.Sent()))
+	}
+
+	// T=59m: stream_disconnected still active; no push sent
+	now = now.Add(29 * time.Minute)
+	if err := worker.EvaluateSnapshot(ctx, snapshot); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=59m: %v", err)
+	}
+	if len(push.Sent()) != 0 {
+		t.Fatalf("expected 0 pushes at T=59m, got %d", len(push.Sent()))
+	}
+
+	// T=60m: stream_disconnected is sent
+	now = now.Add(1 * time.Minute)
+	if err := worker.EvaluateSnapshot(ctx, snapshot); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=60m: %v", err)
+	}
+	sent = push.Sent()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 push at T=60m, got %d", len(sent))
+	}
+	if err := json.Unmarshal(sent[0].payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload at T=60m: %v", err)
+	}
+	if payload.Tag != "provider:bluesky:stream_disconnected" {
+		t.Errorf("expected tag provider:bluesky:stream_disconnected at T=60m, got %s", payload.Tag)
+	}
+
+	// T=90m: no duplicate push sent (suppressed by reminder interval)
+	now = now.Add(30 * time.Minute)
+	push.Reset()
+	if err := worker.EvaluateSnapshot(ctx, snapshot); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=90m: %v", err)
+	}
+	if len(push.Sent()) != 0 {
+		t.Fatalf("expected 0 pushes at T=90m, got %d", len(push.Sent()))
+	}
+}
+
+func TestWorker_EvaluateSnapshot_GracePeriod_RecoveryReset(t *testing.T) {
+	st := &mockStore{
+		subscriptions: []store.StoredSubscription{
+			makeTestSubscription("https://push.example.com/sub1"),
+		},
+	}
+	push := &mockPushClient{}
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+
+	worker := notification.NewWorker(notification.WorkerOptions{
+		Store:          st,
+		PushClient:     push,
+		RemindInterval: 24 * time.Hour,
+		Now:            func() time.Time { return now },
+	})
+
+	ctx := context.Background()
+
+	disconnectedSnap := notification.Snapshot{
+		DispatcherRunning: true,
+		Providers: map[string]notification.ProviderStatus{
+			"bluesky": {
+				TargetCount:     1,
+				StreamConnected: false,
+			},
+		},
+	}
+	healthySnap := notification.Snapshot{
+		DispatcherRunning: true,
+		Providers: map[string]notification.ProviderStatus{
+			"bluesky": {
+				TargetCount:     1,
+				StreamConnected: true,
+			},
+		},
+	}
+
+	// T=0: stream_disconnected active; no push sent
+	if err := worker.EvaluateSnapshot(ctx, disconnectedSnap); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=0: %v", err)
+	}
+	if len(push.Sent()) != 0 {
+		t.Fatalf("expected 0 pushes at T=0, got %d", len(push.Sent()))
+	}
+
+	// T=30m: still active, no push
+	now = now.Add(30 * time.Minute)
+	if err := worker.EvaluateSnapshot(ctx, disconnectedSnap); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=30m: %v", err)
+	}
+	if len(push.Sent()) != 0 {
+		t.Fatalf("expected 0 pushes at T=30m, got %d", len(push.Sent()))
+	}
+
+	// T=40m: healthy snapshot (stream reconnected)
+	now = now.Add(10 * time.Minute)
+	if err := worker.EvaluateSnapshot(ctx, healthySnap); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=40m: %v", err)
+	}
+	if len(push.Sent()) != 0 {
+		t.Fatalf("expected 0 pushes at T=40m, got %d", len(push.Sent()))
+	}
+
+	// T=50m: stream_disconnected recurs
+	now = now.Add(10 * time.Minute)
+	if err := worker.EvaluateSnapshot(ctx, disconnectedSnap); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=50m: %v", err)
+	}
+	if len(push.Sent()) != 0 {
+		t.Fatalf("expected 0 pushes at T=50m, got %d", len(push.Sent()))
+	}
+
+	// T=100m (50 min since recur): no push
+	now = now.Add(50 * time.Minute)
+	if err := worker.EvaluateSnapshot(ctx, disconnectedSnap); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=100m: %v", err)
+	}
+	if len(push.Sent()) != 0 {
+		t.Fatalf("expected 0 pushes at T=100m, got %d", len(push.Sent()))
+	}
+
+	// T=110m (60 min since recur): push sent
+	now = now.Add(10 * time.Minute)
+	if err := worker.EvaluateSnapshot(ctx, disconnectedSnap); err != nil {
+		t.Fatalf("EvaluateSnapshot at T=110m: %v", err)
+	}
+	sent := push.Sent()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 push at T=110m, got %d", len(sent))
+	}
+	var payload struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.Unmarshal(sent[0].payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload at T=110m: %v", err)
+	}
+	if payload.Tag != "provider:bluesky:stream_disconnected" {
+		t.Errorf("expected tag provider:bluesky:stream_disconnected at T=110m, got %s", payload.Tag)
+	}
+}
+
+func TestWorker_EvaluateSnapshot_GracePeriod_Disabled(t *testing.T) {
+	testCases := []struct {
+		name string
+		opts notification.WorkerOptions
+	}{
+		{
+			name: "negative ErrorGracePeriod",
+			opts: notification.WorkerOptions{
+				ErrorGracePeriod: -1,
+			},
+		},
+		{
+			name: "DisableErrorGracePeriod true",
+			opts: notification.WorkerOptions{
+				DisableErrorGracePeriod: true,
+			},
+		},
+		{
+			name: "DisableErrorGracePeriod true with explicit zero ErrorGracePeriod",
+			opts: notification.WorkerOptions{
+				DisableErrorGracePeriod: true,
+				ErrorGracePeriod:        0,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &mockStore{
+				subscriptions: []store.StoredSubscription{
+					makeTestSubscription("https://push.example.com/sub1"),
+				},
+			}
+			push := &mockPushClient{}
+			now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+
+			opts := tc.opts
+			opts.Store = st
+			opts.PushClient = push
+			opts.Now = func() time.Time { return now }
+
+			worker := notification.NewWorker(opts)
+
+			ctx := context.Background()
+			snapshot := notification.Snapshot{
+				DispatcherRunning: true,
+				Providers: map[string]notification.ProviderStatus{
+					"bluesky": {
+						TargetCount:     1,
+						StreamConnected: false,
+					},
+				},
+			}
+
+			// When disabled, stream_disconnected sends immediately on first evaluation at T=0
+			if err := worker.EvaluateSnapshot(ctx, snapshot); err != nil {
+				t.Fatalf("EvaluateSnapshot: %v", err)
+			}
+			sent := push.Sent()
+			if len(sent) != 1 {
+				t.Fatalf("expected 1 push sent immediately, got %d", len(sent))
+			}
+			var payload struct {
+				Tag string `json:"tag"`
+			}
+			if err := json.Unmarshal(sent[0].payload, &payload); err != nil {
+				t.Fatalf("unmarshal payload: %v", err)
+			}
+			if payload.Tag != "provider:bluesky:stream_disconnected" {
+				t.Errorf("expected tag provider:bluesky:stream_disconnected, got %s", payload.Tag)
+			}
+		})
 	}
 }
