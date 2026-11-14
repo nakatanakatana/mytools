@@ -1,5 +1,23 @@
 # Changelog
 
+## [v0.12.6](https://github.com/nakatanakatana/mytools/compare/v0.12.5...v0.12.6) - 2026-11-14
+
+### Maintenance & Others
+- fix(deps): update module golang.org/x/sync to v0.25.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/380
+- ci(docker): build mytools first and reuse cache for individual tools by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/382
+- chore(deps): update dependency golang/go to v1.27.4 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/384
+- chore(deps): update dependency goreleaser/goreleaser to v2.20.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/386
+- fix(deps): update module github.com/sqldef/sqldef/v3 to v3.11.30 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/387
+- chore(deps): update dependency aquaproj/aqua-registry to v4.584.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/388
+- fix(deps): update module golang.org/x/crypto to v0.59.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/389
+- chore(deps): update golang:1.27 docker digest to ec47ea3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/385
+- fix(deps): update fiatjaf.com/nostr digest to 26892fc by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/383
+- chore(deps): update dependency goreleaser/goreleaser to v2.20.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/390
+- chore(deps): update dependency aquaproj/aqua-registry to v4.585.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/392
+- chore(deps): update gcr.io/distroless/static docker digest to 1a64f46 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/391
+- chore(deps): update dependency aquaproj/aqua-renovate-config to v2.15.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/394
+- chore(deps): update dependency aquaproj/aqua-registry to v4.586.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/393
+
 ## [v0.12.5](https://github.com/nakatanakatana/mytools/compare/v0.12.4...v0.12.5) - 2026-11-09
 
 ### Maintenance & Others
