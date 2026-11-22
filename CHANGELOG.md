@@ -2,6 +2,26 @@
 
 ## [v0.13.0](https://github.com/nakatanakatana/mytools/compare/v0.12.6...v0.13.0) - 2026-11-22
 
+### Features 🚀
+- Release for v0.13.0 by @nakatanakatana-release-bot[bot] in https://github.com/nakatanakatana/mytools/pull/398
+### Maintenance & Others
+- fix(deps): update module sigs.k8s.io/controller-runtime to v0.25.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/397
+- chore(deps): update actions/setup-go action to v7.1.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/399
+- chore(deps): update dependency aquaproj/aqua-registry to v4.588.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/400
+- chore(deps): update dependency aquaproj/aqua-registry to v4.589.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/401
+- fix(deps): update module golang.org/x/net to v0.63.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/402
+- chore(deps): update actions/create-github-app-token digest to f418cff by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/403
+- chore(deps): update golang:1.27 docker digest to 205c763 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/396
+- chore(deps): update dependency goreleaser/goreleaser to v2.20.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/404
+- chore(deps): update dependency aquaproj/aqua-registry to v4.590.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/405
+- fix(deps): update module github.com/ncruces/go-sqlite3 to v0.38.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/407
+- chore(deps): update dependency aquaproj/aqua-registry to v4.591.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/409
+- feat(sandbox-control): add single-binary control plane, preview proxy, and SSH gateway by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/408
+- fix(deps): update module github.com/charmbracelet/ssh to v0.4.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/410
+- fix(sandbox-control): migrate to charm.land/wish/v2 and charm.land/ssh by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/412
+
+## [v0.13.0](https://github.com/nakatanakatana/mytools/compare/v0.12.6...v0.13.0) - 2026-11-22
+
 ### Maintenance & Others
 - fix(deps): update module sigs.k8s.io/controller-runtime to v0.25.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/397
 - chore(deps): update actions/setup-go action to v7.1.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/399
