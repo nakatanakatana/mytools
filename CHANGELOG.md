@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.13.2](https://github.com/nakatanakatana/mytools/compare/v0.13.1...v0.13.2) - 2026-11-22
+
+### Maintenance & Others
+- fix(sandbox-control): add preview cookie fallback, SSE flushing, and warm-pool standby filter by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/416
+- fix(deps): update module modernc.org/sqlite to v1.63.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/418
+
 ## [v0.13.1](https://github.com/nakatanakatana/mytools/compare/v0.13.0...v0.13.1) - 2026-11-22
 
 ### Maintenance & Others
