@@ -14,8 +14,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/charmbracelet/ssh"
-	"github.com/charmbracelet/wish"
+	"charm.land/ssh"
+	"charm.land/wish/v2"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/config"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/k8s"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/service"

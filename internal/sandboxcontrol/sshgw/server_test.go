@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/ssh"
+	"charm.land/ssh"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/config"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/k8s"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/service"

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/ssh"
+	"charm.land/ssh"
 )
 
 const (
