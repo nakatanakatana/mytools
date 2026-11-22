@@ -12,6 +12,7 @@ import (
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/config"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/githubauth"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/k8s"
+	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/proxy"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -215,4 +216,92 @@ func TestServer_HealthDashboardAndActions(t *testing.T) {
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/github/logout", nil))
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.True(t, gh.logoutCalled)
+}
+
+func TestServer_PreviewCookieFallbackDoesNotHijackManagementRoutes(t *testing.T) {
+	var proxiedPaths []string
+	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxiedPaths = append(proxiedPaths, r.URL.Path)
+		assert.Equal(t, "dev-1", r.Header.Get(proxy.HeaderSandboxID))
+		assert.Equal(t, "4096", r.Header.Get(proxy.HeaderSandboxPort))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("from-router:" + r.URL.Path))
+	}))
+	defer router.Close()
+
+	cfg := config.Default()
+	cfg.InsecureAllowAnySSHKey = true
+	cfg.RouterURL = router.URL
+	fs := &fakeService{
+		cfg: cfg,
+		overview: &service.DashboardData{
+			Namespace: "sandbox",
+		},
+	}
+	gh := &fakeGHAuth{
+		enabled: true,
+		snap:    githubauth.StatusSnapshot{DeviceFlowEnabled: true},
+	}
+	srv, err := NewServer(fs, gh)
+	require.NoError(t, err)
+
+	previewCookie := &http.Cookie{Name: proxy.PreviewTargetCookieName, Value: "dev-1:4096"}
+
+	// Management routes must NOT be hijacked even when preview cookie is present.
+	for _, tc := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{http.MethodGet, "/", http.StatusOK},
+		{http.MethodGet, "/api/overview", http.StatusOK},
+		{http.MethodGet, "/api/github/status", http.StatusOK},
+		{http.MethodGet, "/healthz", http.StatusOK},
+		{http.MethodGet, "/readyz", http.StatusOK},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
+		req.AddCookie(previewCookie)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		assert.Equal(t, tc.status, rec.Code, "route %s %s", tc.method, tc.path)
+	}
+
+	form := url.Values{"name": {"sb-test"}, "template": {"opencode-ephemeral"}}
+	postReq := httptest.NewRequest(http.MethodPost, "/sandboxes", strings.NewReader(form.Encode()))
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postReq.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
+	postReq.AddCookie(previewCookie)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, postReq)
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.Empty(t, proxiedPaths)
+
+	// /preview/dev-1/4096/ sets the preview cookie and proxies "/".
+	req := httptest.NewRequest(http.MethodGet, "/preview/dev-1/4096/", nil)
+	req.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "from-router:/", rec.Body.String())
+	require.Len(t, rec.Result().Cookies(), 1)
+	assert.Equal(t, "dev-1:4096", rec.Result().Cookies()[0].Value)
+
+	// Root-relative SPA paths with cookie proxy through fallback.
+	for _, spaPath := range []string{"/assets/app.js", "/global/event"} {
+		req = httptest.NewRequest(http.MethodGet, spaPath, nil)
+		req.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
+		req.AddCookie(previewCookie)
+		rec = httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "from-router:"+spaPath, rec.Body.String())
+	}
+
+	// Unknown path without cookie -> 404.
+	req = httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }

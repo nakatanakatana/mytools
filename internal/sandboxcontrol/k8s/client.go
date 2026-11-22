@@ -104,6 +104,7 @@ type SandboxInfo struct {
 	NodeName            string     `json:"nodeName,omitempty"`
 	LabelSelector       string     `json:"-"`
 	Persistent          bool       `json:"persistent"`
+	WarmPoolStandby     bool       `json:"warmPoolStandby,omitempty"`
 	WorkspaceVolumeName string     `json:"workspaceVolumeName,omitempty"`
 	ShutdownTime        *time.Time `json:"shutdownTime,omitempty"`
 	CreatedAt           time.Time  `json:"createdAt"`
@@ -671,6 +672,14 @@ func parseSandbox(item *unstructured.Unstructured) SandboxInfo {
 		}
 	}
 
+	warmPoolStandby := false
+	for _, ref := range item.GetOwnerReferences() {
+		if ref.Kind == "SandboxWarmPool" {
+			warmPoolStandby = true
+			break
+		}
+	}
+
 	return SandboxInfo{
 		Name:                item.GetName(),
 		TemplateName:        tmplName,
@@ -684,6 +693,7 @@ func parseSandbox(item *unstructured.Unstructured) SandboxInfo {
 		NodeName:            nodeName,
 		LabelSelector:       selector,
 		Persistent:          len(vcts) > 0,
+		WarmPoolStandby:     warmPoolStandby,
 		WorkspaceVolumeName: wsVolName,
 		ShutdownTime:        parseTimePtr(shutdownStr),
 		CreatedAt:           item.GetCreationTimestamp().Time,

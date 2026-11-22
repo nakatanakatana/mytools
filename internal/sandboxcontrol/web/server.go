@@ -48,7 +48,7 @@ type GitHubAuthService interface {
 type Server struct {
 	svc     ControlService
 	ghAuth  GitHubAuthService
-	preview http.Handler
+	preview *proxy.PreviewHandler
 	tmpl    *template.Template
 	mux     *http.ServeMux
 }
@@ -109,6 +109,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sandboxes/{name}/logs", s.handleLogs)
 	s.mux.HandleFunc("POST /checkpoints/{name}/delete", s.handleDeleteCheckpoint)
 	s.mux.Handle("/preview/", s.preview)
+	s.mux.HandleFunc("/", s.preview.ServeFallback)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
