@@ -8,7 +8,7 @@ require (
 	github.com/awnumar/memguard v0.23.0
 	github.com/benbjohnson/litestream v0.5.18
 	github.com/caarlos0/env/v11 v11.4.2
-	github.com/charmbracelet/ssh v0.0.0-20250128164007-98fd5ae11894
+	github.com/charmbracelet/ssh v0.4.3
 	github.com/charmbracelet/wish v1.4.7
 	github.com/coder/websocket v1.8.15
 	github.com/fasthttp/websocket v1.5.12
