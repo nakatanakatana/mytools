@@ -170,3 +170,27 @@ func TestKubeClient_WarmPoolsClaimsSandboxesCheckpoints(t *testing.T) {
 	require.NoError(t, client.DeleteSandbox(ctx, "dev-1"))
 	require.NoError(t, client.DeleteClaim(ctx, "eph-1"))
 }
+
+func TestParseSandbox_WarmPoolStandbyOwnerReference(t *testing.T) {
+	standby := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "agents.x-k8s.io/v1beta1",
+			"kind":       "Sandbox",
+			"metadata": map[string]any{
+				"name":      "opencode-ephemeral-pool-abcde",
+				"namespace": "sandbox",
+				"ownerReferences": []any{
+					map[string]any{
+						"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
+						"kind":       "SandboxWarmPool",
+						"name":       "opencode-ephemeral-pool",
+						"uid":        "uid-1",
+					},
+				},
+			},
+			"spec": map[string]any{},
+		},
+	}
+	info := parseSandbox(standby)
+	assert.True(t, info.WarmPoolStandby)
+}

@@ -249,3 +249,27 @@ func TestService_AutoResumeAndExec(t *testing.T) {
 	assert.Equal(t, []string{"/bin/sh"}, fc.execCalled.Command)
 	assert.True(t, fc.sandboxes["dev-1"].Ready)
 }
+
+func TestService_OverviewExcludesUnclaimedWarmPoolStandbySandboxes(t *testing.T) {
+	fc := newFakeClient()
+	fc.sandboxes["pool-standby-1"] = k8s.SandboxInfo{
+		Name:            "pool-standby-1",
+		Phase:           "Running",
+		Ready:           true,
+		WarmPoolStandby: true,
+	}
+	fc.sandboxes["active-1"] = k8s.SandboxInfo{
+		Name:  "active-1",
+		Phase: "Running",
+		Ready: true,
+	}
+
+	cfg := config.Default()
+	cfg.InsecureAllowAnySSHKey = true
+	svc := New(cfg, fc)
+
+	data, err := svc.Overview(t.Context())
+	require.NoError(t, err)
+	require.Len(t, data.Sandboxes, 1)
+	assert.Equal(t, "active-1", data.Sandboxes[0].Name)
+}

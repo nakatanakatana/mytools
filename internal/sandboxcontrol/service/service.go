@@ -96,11 +96,17 @@ func (s *Service) Overview(ctx context.Context) (*DashboardData, error) {
 			claimBySandbox[c.SandboxName] = c.Name
 		}
 	}
+	activeSandboxes := make([]k8s.SandboxInfo, 0, len(sandboxes))
 	for i := range sandboxes {
 		if cn, ok := claimBySandbox[sandboxes[i].Name]; ok {
 			sandboxes[i].ClaimName = cn
 		}
+		if sandboxes[i].WarmPoolStandby && sandboxes[i].ClaimName == "" {
+			continue
+		}
+		activeSandboxes = append(activeSandboxes, sandboxes[i])
 	}
+	sandboxes = activeSandboxes
 
 	slices.SortFunc(pools, func(a, b k8s.WarmPoolInfo) int { return strings.Compare(a.Name, b.Name) })
 	slices.SortFunc(sandboxes, func(a, b k8s.SandboxInfo) int { return strings.Compare(a.Name, b.Name) })
