@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.13.3](https://github.com/nakatanakatana/mytools/compare/v0.13.2...v0.13.3) - 2026-11-22
+
+### Maintenance & Others
+- fix(sandbox-control): move control UI under /_control and redirect /preview to / for SPA routing by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/419
+
 ## [v0.13.2](https://github.com/nakatanakatana/mytools/compare/v0.13.1...v0.13.2) - 2026-11-22
 
 ### Maintenance & Others
