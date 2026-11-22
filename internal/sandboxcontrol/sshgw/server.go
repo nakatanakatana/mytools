@@ -17,6 +17,7 @@ import (
 	"charm.land/ssh"
 	"charm.land/wish/v2"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/config"
+	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/githubauth"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/k8s"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/service"
 	gossh "golang.org/x/crypto/ssh"
@@ -37,19 +38,28 @@ type GatewayService interface {
 	Exec(ctx context.Context, sandboxName string, opts k8s.ExecOptions) error
 }
 
+// GitHubAuthService abstracts GitHub Device Flow and egress-proxy-admin operations for SSH commands.
+type GitHubAuthService interface {
+	Enabled() bool
+	Status(ctx context.Context) githubauth.StatusSnapshot
+	StartDeviceFlow(ctx context.Context) (githubauth.FlowStatus, <-chan githubauth.FlowStatus, error)
+	Logout(ctx context.Context) (*githubauth.ProxyStatus, error)
+}
+
 // Server wraps a charmbracelet/wish SSH server for sandbox management and direct shell attach.
 type Server struct {
 	wishServer *ssh.Server
 	keyStore   *KeyStore
 	svc        GatewayService
+	ghAuth     GitHubAuthService
 	logger     *slog.Logger
 }
 
-var managementCommands = []string{"ls", "list", "new", "create", "checkpoint", "cp", "suspend", "resume", "rm", "delete", "help"}
+var managementCommands = []string{"ls", "list", "new", "create", "checkpoint", "cp", "suspend", "resume", "rm", "delete", "github", "help"}
 var managementUsers = []string{"admin", "ctl", "sandbox-ctl", "root"}
 
 // NewServer builds the embedded SSH gateway server.
-func NewServer(svc GatewayService, keyStore *KeyStore, logger *slog.Logger) (*Server, error) {
+func NewServer(svc GatewayService, keyStore *KeyStore, ghAuth GitHubAuthService, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -57,6 +67,7 @@ func NewServer(svc GatewayService, keyStore *KeyStore, logger *slog.Logger) (*Se
 	s := &Server{
 		keyStore: keyStore,
 		svc:      svc,
+		ghAuth:   ghAuth,
 		logger:   logger,
 	}
 
@@ -145,6 +156,8 @@ func (s *Server) runManagementCommand(ctx context.Context, args []string, out io
 		return s.cmdResume(ctx, rest, out)
 	case "rm", "delete":
 		return s.cmdRemove(ctx, rest, out)
+	case "github":
+		return s.cmdGitHub(ctx, rest, out)
 	default:
 		_, _ = fmt.Fprintf(out, "unknown command %q\n\n", sub)
 		printHelp(out)
@@ -305,6 +318,73 @@ func (s *Server) cmdRemove(ctx context.Context, args []string, out io.Writer) in
 	return 0
 }
 
+func (s *Server) cmdGitHub(ctx context.Context, args []string, out io.Writer) int {
+	if s.ghAuth == nil {
+		_, _ = fmt.Fprintln(out, "error: github auth is not configured")
+		return 1
+	}
+	if len(args) < 1 {
+		_, _ = fmt.Fprintln(out, "usage: github status | login | logout")
+		return 2
+	}
+	switch args[0] {
+	case "status":
+		snap := s.ghAuth.Status(ctx)
+		if snap.ProxyError != "" {
+			_, _ = fmt.Fprintf(out, "error: %s\n", snap.ProxyError)
+			return 1
+		}
+		if snap.Proxy != nil {
+			_, _ = fmt.Fprintf(out, "mode: %s\n", snap.Proxy.Mode)
+			_, _ = fmt.Fprintf(out, "app_configured: %t\n", snap.Proxy.AppConfigured)
+			if snap.Proxy.UserTokenExpiresAt != nil {
+				exp := time.Unix(*snap.Proxy.UserTokenExpiresAt, 0).UTC().Format(time.RFC3339)
+				_, _ = fmt.Fprintf(out, "user_token_expires_at: %s\n", exp)
+			}
+		}
+		_, _ = fmt.Fprintf(out, "device_flow_enabled: %t\n", snap.DeviceFlowEnabled)
+		return 0
+	case "login":
+		if !s.ghAuth.Enabled() {
+			_, _ = fmt.Fprintln(out, "error: github device flow is disabled (GITHUB_APP_CLIENT_ID is not set)")
+			return 1
+		}
+		flow, done, err := s.ghAuth.StartDeviceFlow(ctx)
+		if err != nil {
+			_, _ = fmt.Fprintf(out, "error: %v\n", err)
+			return 1
+		}
+		_, _ = fmt.Fprintf(out, "Open %s and enter code: %s\nWaiting for authorization...\n", flow.VerificationURI, flow.UserCode)
+		select {
+		case final, ok := <-done:
+			if !ok || final.State != githubauth.FlowStateCompleted {
+				errMsg := final.Error
+				if errMsg == "" {
+					errMsg = "authorization did not complete"
+				}
+				_, _ = fmt.Fprintf(out, "error: %s\n", errMsg)
+				return 1
+			}
+			_, _ = fmt.Fprintln(out, "GitHub authentication completed (mode: user_oauth)")
+			return 0
+		case <-ctx.Done():
+			_, _ = fmt.Fprintln(out, "cancelled waiting for GitHub authorization")
+			return 1
+		}
+	case "logout":
+		st, err := s.ghAuth.Logout(ctx)
+		if err != nil {
+			_, _ = fmt.Fprintf(out, "error: %v\n", err)
+			return 1
+		}
+		_, _ = fmt.Fprintf(out, "logged out (mode: %s)\n", st.Mode)
+		return 0
+	default:
+		_, _ = fmt.Fprintf(out, "unknown github subcommand %q\nusage: github status | login | logout\n", args[0])
+		return 2
+	}
+}
+
 func (s *Server) runDirectExec(sess ssh.Session, sandboxName string, cmd []string) int {
 	ptyReq, winCh, isPty := sess.Pty()
 	var sizeQueue remotecommand.TerminalSizeQueue
@@ -339,6 +419,7 @@ Management commands (ssh sandbox-ctl <command>):
   suspend <sandbox>                                   Suspend a sandbox
   resume [--wait] <sandbox>                           Resume a sandbox
   rm <sandbox>                                        Delete a sandbox or claim
+  github status | login | logout                      Inspect or authenticate GitHub App Device Flow
 
 Direct shell:
   ssh <sandbox-name>@sandbox-ctl                      Auto-resume if suspended and attach TTY`)

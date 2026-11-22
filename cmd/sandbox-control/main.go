@@ -15,6 +15,7 @@ import (
 
 	"charm.land/ssh"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/config"
+	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/githubauth"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/k8s"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/service"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/sshgw"
@@ -66,7 +67,14 @@ func run(args []string, logger *slog.Logger) error {
 
 	go keyStore.StartRefreshLoop(ctx, cfg.SSHKeysRefreshInterval)
 
-	webHandler, err := web.NewServer(svc)
+	ghAuth := githubauth.NewManager(githubauth.Options{
+		ClientID:            cfg.GitHubAppClientID,
+		EgressProxyAdminURL: cfg.EgressProxyAdminURL,
+		Logger:              logger,
+	})
+	defer ghAuth.Close()
+
+	webHandler, err := web.NewServer(svc, ghAuth)
 	if err != nil {
 		return fmt.Errorf("init web server: %w", err)
 	}
@@ -77,7 +85,7 @@ func run(args []string, logger *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	sshServer, err := sshgw.NewServer(svc, keyStore, logger)
+	sshServer, err := sshgw.NewServer(svc, keyStore, ghAuth, logger)
 	if err != nil {
 		return fmt.Errorf("init ssh gateway: %w", err)
 	}

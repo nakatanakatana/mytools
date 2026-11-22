@@ -10,11 +10,34 @@ import (
 	"testing"
 
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/config"
+	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/githubauth"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/k8s"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type fakeGHAuth struct {
+	enabled      bool
+	snap         githubauth.StatusSnapshot
+	loginFlow    githubauth.FlowStatus
+	logoutCalled bool
+}
+
+func (f *fakeGHAuth) Enabled() bool { return f.enabled }
+func (f *fakeGHAuth) Status(context.Context) githubauth.StatusSnapshot {
+	return f.snap
+}
+func (f *fakeGHAuth) StartDeviceFlow(context.Context) (githubauth.FlowStatus, <-chan githubauth.FlowStatus, error) {
+	ch := make(chan githubauth.FlowStatus, 1)
+	ch <- githubauth.FlowStatus{State: githubauth.FlowStateCompleted}
+	close(ch)
+	return f.loginFlow, ch, nil
+}
+func (f *fakeGHAuth) Logout(context.Context) (*githubauth.ProxyStatus, error) {
+	f.logoutCalled = true
+	return &githubauth.ProxyStatus{Mode: "app_installation", AppConfigured: true}, nil
+}
 
 type fakeService struct {
 	cfg           config.Config
@@ -82,7 +105,26 @@ func TestServer_HealthDashboardAndActions(t *testing.T) {
 		logs: "line1\nline2\n",
 	}
 
-	srv, err := NewServer(fs)
+	exp := int64(1763810000)
+	gh := &fakeGHAuth{
+		enabled: true,
+		snap: githubauth.StatusSnapshot{
+			DeviceFlowEnabled: true,
+			Proxy: &githubauth.ProxyStatus{
+				Mode:               "user_oauth",
+				UserTokenExpiresAt: &exp,
+				AppConfigured:      true,
+			},
+			Flow: githubauth.FlowStatus{State: githubauth.FlowStateIdle},
+		},
+		loginFlow: githubauth.FlowStatus{
+			State:           githubauth.FlowStatePending,
+			UserCode:        "WXYZ-9999",
+			VerificationURI: "https://github.com/login/device",
+		},
+	}
+
+	srv, err := NewServer(fs, gh)
 	require.NoError(t, err)
 
 	// /healthz
@@ -155,4 +197,22 @@ func TestServer_HealthDashboardAndActions(t *testing.T) {
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sandboxes/dev-1/logs?format=text", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "line1\nline2\n", rec.Body.String())
+
+	// GitHub Auth status JSON, Device Flow login JSON, and logout
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/github/status", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"user_oauth"`)
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/github/login", nil)
+	loginReq.Header.Set("Accept", "application/json")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, loginReq)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"WXYZ-9999"`)
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/github/logout", nil))
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.True(t, gh.logoutCalled)
 }

@@ -13,12 +13,38 @@ import (
 
 	"charm.land/ssh"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/config"
+	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/githubauth"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/k8s"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gossh "golang.org/x/crypto/ssh"
 )
+
+type fakeSSHGHAuth struct {
+	enabled      bool
+	snap         githubauth.StatusSnapshot
+	logoutCalled bool
+}
+
+func (f *fakeSSHGHAuth) Enabled() bool { return f.enabled }
+func (f *fakeSSHGHAuth) Status(context.Context) githubauth.StatusSnapshot {
+	return f.snap
+}
+func (f *fakeSSHGHAuth) StartDeviceFlow(context.Context) (githubauth.FlowStatus, <-chan githubauth.FlowStatus, error) {
+	ch := make(chan githubauth.FlowStatus, 1)
+	ch <- githubauth.FlowStatus{State: githubauth.FlowStateCompleted}
+	close(ch)
+	return githubauth.FlowStatus{
+		State:           githubauth.FlowStatePending,
+		UserCode:        "SSH1-2345",
+		VerificationURI: "https://github.com/login/device",
+	}, ch, nil
+}
+func (f *fakeSSHGHAuth) Logout(context.Context) (*githubauth.ProxyStatus, error) {
+	f.logoutCalled = true
+	return &githubauth.ProxyStatus{Mode: "app_installation", AppConfigured: true}, nil
+}
 
 func generateTestKeyPair(t *testing.T) (gossh.PublicKey, []byte) {
 	t.Helper()
@@ -141,8 +167,15 @@ func TestServer_ManagementCommands(t *testing.T) {
 			Checkpoints: []k8s.CheckpointInfo{{Name: "cp-1", SourcePVC: "workspace-dev-1", ReadyToUse: true}},
 		},
 	}
+	gh := &fakeSSHGHAuth{
+		enabled: true,
+		snap: githubauth.StatusSnapshot{
+			DeviceFlowEnabled: true,
+			Proxy:             &githubauth.ProxyStatus{Mode: "app_installation", AppConfigured: true},
+		},
+	}
 	ks := NewKeyStore(KeyStoreOptions{InsecureAllowAny: true})
-	srv, err := NewServer(fsvc, ks, nil)
+	srv, err := NewServer(fsvc, ks, gh, nil)
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
@@ -172,6 +205,20 @@ func TestServer_ManagementCommands(t *testing.T) {
 	buf.Reset()
 	assert.Equal(t, 0, srv.runManagementCommand(t.Context(), []string{"rm", "dev-1"}, &buf))
 	assert.Equal(t, "dev-1", fsvc.deletedName)
+
+	buf.Reset()
+	assert.Equal(t, 0, srv.runManagementCommand(t.Context(), []string{"github", "status"}, &buf))
+	assert.Contains(t, buf.String(), "mode: app_installation")
+
+	buf.Reset()
+	assert.Equal(t, 0, srv.runManagementCommand(t.Context(), []string{"github", "login"}, &buf))
+	assert.Contains(t, buf.String(), "SSH1-2345")
+	assert.Contains(t, buf.String(), "GitHub authentication completed")
+
+	buf.Reset()
+	assert.Equal(t, 0, srv.runManagementCommand(t.Context(), []string{"github", "logout"}, &buf))
+	assert.True(t, gh.logoutCalled)
+	assert.Contains(t, buf.String(), "mode: app_installation")
 }
 
 func TestServer_EndToEndSSHAuthAndRouting(t *testing.T) {
@@ -203,7 +250,7 @@ func TestServer_EndToEndSSHAuthAndRouting(t *testing.T) {
 		},
 	}
 
-	srv, err := NewServer(fsvc, ks, nil)
+	srv, err := NewServer(fsvc, ks, nil, nil)
 	require.NoError(t, err)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
