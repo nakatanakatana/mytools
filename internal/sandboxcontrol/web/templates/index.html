@@ -77,8 +77,13 @@
       <div class="muted">Namespace: <code>{{.Data.Namespace}}</code>{{if .UserLogin}} · User: <code>{{.UserLogin}}</code>{{end}}</div>
     </div>
     <div class="actions">
-      <a class="btn" href="/">Refresh</a>
-      <a class="btn" href="/api/overview">JSON</a>
+      {{if .ActivePreview}}
+      <span class="muted">Active preview: <code>{{.ActivePreview}}</code></span>
+      <a class="btn" href="/" target="_blank" rel="noopener">Open Active Preview</a>
+      <form method="post" action="/_control/preview/clear"><button type="submit">Clear Preview</button></form>
+      {{end}}
+      <a class="btn" href="/_control">Refresh</a>
+      <a class="btn" href="/_control/api/overview">JSON</a>
     </div>
   </header>
 
@@ -122,7 +127,7 @@
       <div class="actions" style="margin-top:0.5rem;">
         <button type="button" class="primary" onclick="startGitHubDeviceFlow()">GitHub でログイン (Device Flow)</button>
         {{if and .GitHubAuth.Proxy (eq .GitHubAuth.Proxy.Mode "user_oauth")}}
-        <form method="post" action="/github/logout"><button type="submit">ログアウト (App Installation へ戻す)</button></form>
+        <form method="post" action="/_control/github/logout"><button type="submit">ログアウト (App Installation へ戻す)</button></form>
         {{end}}
       </div>
       <div id="github-device-flow-box" class="muted" style="margin-top:0.5rem;">
@@ -140,7 +145,7 @@
   </section>
 
   <h2>Create Sandbox / Fork from Checkpoint</h2>
-  <form class="create" method="post" action="/sandboxes">
+  <form class="create" method="post" action="/_control/sandboxes">
     <label>
       Name (DNS-1123, optional)
       <input name="name" placeholder="auto-generated if empty" pattern="[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?">
@@ -207,16 +212,16 @@
         </td>
         <td>
           <div class="actions">
-            <a class="btn" href="/sandboxes/{{.Name}}/logs" target="_blank" rel="noopener">Logs</a>
+            <a class="btn" href="/_control/sandboxes/{{.Name}}/logs" target="_blank" rel="noopener">Logs</a>
             {{if .Suspended}}
-            <form method="post" action="/sandboxes/{{.Name}}/resume"><button type="submit">Resume</button></form>
+            <form method="post" action="/_control/sandboxes/{{.Name}}/resume"><button type="submit">Resume</button></form>
             {{else}}
-            <form method="post" action="/sandboxes/{{.Name}}/suspend"><button type="submit">Suspend</button></form>
+            <form method="post" action="/_control/sandboxes/{{.Name}}/suspend"><button type="submit">Suspend</button></form>
             {{end}}
             {{if .Persistent}}
-            <form method="post" action="/sandboxes/{{.Name}}/checkpoint"><button type="submit">Checkpoint</button></form>
+            <form method="post" action="/_control/sandboxes/{{.Name}}/checkpoint"><button type="submit">Checkpoint</button></form>
             {{end}}
-            <form method="post" action="/sandboxes/{{.Name}}/delete" onsubmit="return confirm('Delete sandbox {{.Name}}?')"><button type="submit" class="danger">Delete</button></form>
+            <form method="post" action="/_control/sandboxes/{{.Name}}/delete" onsubmit="return confirm('Delete sandbox {{.Name}}?')"><button type="submit" class="danger">Delete</button></form>
           </div>
         </td>
       </tr>
@@ -245,7 +250,7 @@
         <td><code>{{if .SandboxName}}{{.SandboxName}}{{else}}-{{end}}</code></td>
         <td><span class="badge {{if .Ready}}Ready{{else}}Starting{{end}}">{{if .Ready}}Ready{{else}}{{if .Reason}}{{.Reason}}{{else}}Pending{{end}}{{end}}</span></td>
         <td>
-          <form method="post" action="/sandboxes/{{.Name}}/delete" onsubmit="return confirm('Delete claim {{.Name}}?')"><button type="submit" class="danger">Delete</button></form>
+          <form method="post" action="/_control/sandboxes/{{.Name}}/delete" onsubmit="return confirm('Delete claim {{.Name}}?')"><button type="submit" class="danger">Delete</button></form>
         </td>
       </tr>
     {{else}}
@@ -275,7 +280,7 @@
         <td>
           <div class="actions">
             <button type="button" onclick="selectFork('{{.Name}}')">Fork</button>
-            <form method="post" action="/checkpoints/{{.Name}}/delete" onsubmit="return confirm('Delete checkpoint {{.Name}}?')"><button type="submit" class="danger">Delete</button></form>
+            <form method="post" action="/_control/checkpoints/{{.Name}}/delete" onsubmit="return confirm('Delete checkpoint {{.Name}}?')"><button type="submit" class="danger">Delete</button></form>
           </div>
         </td>
       </tr>
@@ -335,7 +340,7 @@
     const box = document.getElementById("github-device-flow-box");
     ghPollTimer = setInterval(async () => {
       try {
-        const res = await fetch("/api/github/status", { headers: { Accept: "application/json" } });
+        const res = await fetch("/_control/api/github/status", { headers: { Accept: "application/json" } });
         if (!res.ok) return;
         const snap = await res.json();
         if (!snap.flow) return;
@@ -355,7 +360,7 @@
     const box = document.getElementById("github-device-flow-box");
     if (box) box.textContent = "Starting GitHub Device Flow...";
     try {
-      const res = await fetch("/github/login", {
+      const res = await fetch("/_control/github/login", {
         method: "POST",
         headers: { Accept: "application/json" }
       });

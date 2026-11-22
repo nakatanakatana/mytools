@@ -62,22 +62,16 @@ func TestPreviewHandler_HTTPAndHeaders(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 
-	// Valid request -> proxied with headers and Set-Cookie
+	// Valid GET request -> sets cookie and redirects to root-relative path with query
 	req = httptest.NewRequest(http.MethodGet, "/preview/dev-1/3000/hello?x=1", nil)
 	req.Header.Set(HeaderTailscaleUserLogin, "alice@example.com")
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "proxied-ok", rec.Body.String())
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, "/hello?x=1", rec.Header().Get("Location"))
 	assert.Equal(t, "dev-1", ensurer.calledWith)
-	assert.Equal(t, "/hello", gotPath)
-	assert.Equal(t, "x=1", gotQuery)
-	assert.Equal(t, "dev-1", gotID)
-	assert.Equal(t, "sandbox", gotNamespace)
-	assert.Equal(t, "3000", gotPort)
-	assert.Equal(t, "alice@example.com", gotEmail)
 
 	cookies := rec.Result().Cookies()
 	require.Len(t, cookies, 1)
@@ -87,6 +81,21 @@ func TestPreviewHandler_HTTPAndHeaders(t *testing.T) {
 	assert.True(t, cookies[0].HttpOnly)
 	assert.True(t, cookies[0].Secure)
 	assert.Equal(t, http.SameSiteLaxMode, cookies[0].SameSite)
+
+	// Valid POST request -> proxies directly with headers and Set-Cookie
+	req = httptest.NewRequest(http.MethodPost, "/preview/dev-1/3000/hello?x=1", nil)
+	req.Header.Set(HeaderTailscaleUserLogin, "alice@example.com")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "proxied-ok", rec.Body.String())
+	assert.Equal(t, "/hello", gotPath)
+	assert.Equal(t, "x=1", gotQuery)
+	assert.Equal(t, "dev-1", gotID)
+	assert.Equal(t, "sandbox", gotNamespace)
+	assert.Equal(t, "3000", gotPort)
+	assert.Equal(t, "alice@example.com", gotEmail)
 
 	// Out-of-range port -> 400
 	req = httptest.NewRequest(http.MethodGet, "/preview/dev-1/80/", nil)
@@ -130,10 +139,19 @@ func TestPreviewHandler_FallbackCookieAndSSE(t *testing.T) {
 	h, err := NewPreviewHandler(router.URL, "sandbox", false, ensurer)
 	require.NoError(t, err)
 
-	// Missing cookie -> 404
-	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	// Missing cookie on GET / -> 302 redirect to /_control
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set(HeaderTailscaleUserLogin, "alice@example.com")
 	rec := httptest.NewRecorder()
+	h.ServeFallback(rec, req)
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, ControlBasePath, rec.Header().Get("Location"))
+	assert.Equal(t, 0, proxiedCount)
+
+	// Missing cookie on non-root path -> 404
+	req = httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set(HeaderTailscaleUserLogin, "alice@example.com")
+	rec = httptest.NewRecorder()
 	h.ServeFallback(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	assert.Equal(t, 0, proxiedCount)

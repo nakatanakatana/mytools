@@ -21,6 +21,7 @@ const (
 	HeaderSandboxUserEmail   = "X-Sandbox-User-Email"
 
 	PreviewTargetCookieName = "sandbox_preview_target"
+	ControlBasePath         = "/_control"
 
 	MinPreviewPort = 3000
 	MaxPreviewPort = 9999
@@ -123,7 +124,31 @@ func (h *PreviewHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Secure:   isHTTPSRequest(r),
 	})
 
+	// WebSocket upgrades and non-GET/HEAD requests proxy directly; browser GET/HEAD navigations
+	// redirect to root-relative paths so SPAs (e.g. OpenCode SolidJS Router) see window.location.pathname at "/".
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		location := restPath
+		if r.URL.RawQuery != "" {
+			location += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, location, http.StatusFound)
+		return
+	}
+
 	h.proxyToSandbox(w, r, targetSandbox, port, restPath, userLogin)
+}
+
+// ClearPreviewCookie expires the sandbox_preview_target cookie.
+func ClearPreviewCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     PreviewTargetCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   isHTTPSRequest(r),
+	})
 }
 
 // ServeFallback proxies unmatched root-relative SPA/dev-server requests using the
@@ -131,6 +156,10 @@ func (h *PreviewHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *PreviewHandler) ServeFallback(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(PreviewTargetCookieName)
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		if r.Method == http.MethodGet && r.URL.Path == "/" {
+			http.Redirect(w, r, ControlBasePath, http.StatusFound)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
