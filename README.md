@@ -33,6 +33,9 @@ A feed filtering proxy server that allows filtering and modifying RSS/Atom feeds
 ### 7. [litestream-controller](file:///home/tanaka/repos/github.com/nakatanakatana/mytools/cmd/litestream-controller/README.md)
 A Kubernetes controller and admission webhook that runs [Litestream](https://litestream.io) alongside your application Pods, restoring and continuously replicating SQLite databases without baking Litestream into your application's image.
 
+### 8. [sandbox-control](cmd/sandbox-control/README.md)
+A single-binary Web UI, Tailscale-authenticated dev-server preview reverse proxy, and embedded SSH gateway for managing `kubernetes-sigs/agent-sandbox` sandboxes and `VolumeSnapshot` checkpoints.
+
 ## Development and Build
 
 This repository uses [aqua](https://aquaproj.github.io/) to manage development tools (Go, GolangCI-Lint, GoReleaser, etc.).
@@ -100,6 +103,9 @@ docker build --target ff -t ff .
 
 # For litestream-controller only
 docker build --target litestream-controller -t litestream-controller .
+
+# For sandbox-control only
+docker build --target sandbox-control -t sandbox-control .
 ```
 
 ### Build All Tools Image

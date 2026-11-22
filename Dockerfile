@@ -53,6 +53,12 @@ FROM base AS litestream-controller
 COPY --from=builder-from /app/output/litestream-controller /app/
 ENTRYPOINT ["/app/litestream-controller"]
 
+# sandbox-control image
+FROM base AS sandbox-control
+COPY --from=builder-from /app/output/sandbox-control /app/
+USER 1000:1000
+ENTRYPOINT ["/app/sandbox-control"]
+
 # all apps image
 FROM base AS mytools
 COPY --from=builder-from /app/output /app

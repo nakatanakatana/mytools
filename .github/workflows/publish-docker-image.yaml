@@ -104,6 +104,9 @@ jobs:
           - name: litestream-controller
             context: .
             target: litestream-controller
+          - name: sandbox-control
+            context: .
+            target: sandbox-control
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - name: Prepare
@@ -166,6 +169,7 @@ jobs:
           - nostr-bridge
           - ff
           - litestream-controller
+          - sandbox-control
     runs-on: ubuntu-latest
     steps:
       - name: Download digests
