@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.13.1](https://github.com/nakatanakatana/mytools/compare/v0.13.0...v0.13.1) - 2026-11-22
+
+### Maintenance & Others
+- feat(sandbox-control): add GitHub App Device Flow authentication by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/414
+
 ## [v0.13.0](https://github.com/nakatanakatana/mytools/compare/v0.12.6...v0.13.0) - 2026-11-22
 
 ### Maintenance & Others
