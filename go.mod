@@ -9,7 +9,7 @@ require (
 	github.com/benbjohnson/litestream v0.5.18
 	github.com/caarlos0/env/v11 v11.4.2
 	github.com/charmbracelet/ssh v0.4.3
-	github.com/charmbracelet/wish v1.4.7
+	github.com/charmbracelet/wish/v2 v2.0.5
 	github.com/coder/websocket v1.8.15
 	github.com/fasthttp/websocket v1.5.12
 	github.com/godbus/dbus/v5 v5.2.4
