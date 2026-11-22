@@ -28,6 +28,7 @@ const (
 	DefaultResumeTimeout          = 2 * time.Minute
 	DefaultSSHGitLabBaseURL       = "https://gitlab.com"
 	DefaultSSHKeysRefreshInterval = 15 * time.Minute
+	DefaultEgressProxyAdminURL    = "http://egress-proxy-admin.proxy.svc.cluster.local:3129"
 )
 
 var (
@@ -59,6 +60,8 @@ type Config struct {
 	SSHKeysRefreshInterval      time.Duration
 	InsecureAllowAnySSHKey      bool
 	AllowUnauthenticatedPreview bool
+	GitHubAppClientID           string
+	EgressProxyAdminURL         string
 	Kubeconfig                  string
 }
 
@@ -87,6 +90,8 @@ func Default() Config {
 		SSHKeysRefreshInterval:      envDurationOrDefault("SSH_KEYS_REFRESH_INTERVAL", DefaultSSHKeysRefreshInterval),
 		InsecureAllowAnySSHKey:      envBoolOrDefault("INSECURE_ALLOW_ANY_SSH_KEY", false),
 		AllowUnauthenticatedPreview: envBoolOrDefault("ALLOW_UNAUTHENTICATED_PREVIEW", false),
+		GitHubAppClientID:           os.Getenv("GITHUB_APP_CLIENT_ID"),
+		EgressProxyAdminURL:         envOrDefault("EGRESS_PROXY_ADMIN_URL", DefaultEgressProxyAdminURL),
 		Kubeconfig:                  os.Getenv("KUBECONFIG"),
 	}
 }
@@ -120,6 +125,8 @@ func Parse(args []string) (Config, error) {
 	fs.DurationVar(&cfg.SSHKeysRefreshInterval, "ssh-keys-refresh-interval", cfg.SSHKeysRefreshInterval, "Interval for refreshing remote SSH public keys.")
 	fs.BoolVar(&cfg.InsecureAllowAnySSHKey, "insecure-allow-any-ssh-key", cfg.InsecureAllowAnySSHKey, "Allow any SSH public key (development only).")
 	fs.BoolVar(&cfg.AllowUnauthenticatedPreview, "allow-unauthenticated-preview", cfg.AllowUnauthenticatedPreview, "Allow preview proxy requests without Tailscale-User-Login header (development only).")
+	fs.StringVar(&cfg.GitHubAppClientID, "github-app-client-id", cfg.GitHubAppClientID, "GitHub App Client ID for Device Flow authentication (disabled when empty).")
+	fs.StringVar(&cfg.EgressProxyAdminURL, "egress-proxy-admin-url", cfg.EgressProxyAdminURL, "Base URL of the egress-proxy internal admin API.")
 	fs.StringVar(&cfg.Kubeconfig, "kubeconfig", cfg.Kubeconfig, "Path to kubeconfig file (uses in-cluster config if empty).")
 
 	if err := fs.Parse(args); err != nil {
@@ -146,6 +153,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid namespace %q: must be a valid DNS-1123 label", c.Namespace)
 	}
 	if err := validateHTTPURL("router-url", c.RouterURL); err != nil {
+		return err
+	}
+	if err := validateHTTPURL("egress-proxy-admin-url", c.EgressProxyAdminURL); err != nil {
 		return err
 	}
 	if strings.TrimSpace(c.SnapshotClassName) == "" {

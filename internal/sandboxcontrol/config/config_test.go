@@ -32,6 +32,8 @@ func TestParse_EnvOverrides(t *testing.T) {
 	t.Setenv("SSH_GITHUB_USERS", "alice, bob")
 	t.Setenv("SSH_GITLAB_USERS", "charlie")
 	t.Setenv("RESUME_TIMEOUT", "45s")
+	t.Setenv("GITHUB_APP_CLIENT_ID", "Iv1.abcdef")
+	t.Setenv("EGRESS_PROXY_ADMIN_URL", "http://egress-proxy-admin.proxy.svc:3129")
 
 	cfg, err := Parse(nil)
 	require.NoError(t, err)
@@ -43,6 +45,8 @@ func TestParse_EnvOverrides(t *testing.T) {
 	assert.Equal(t, []string{"alice", "bob"}, cfg.SSHGitHubUsers)
 	assert.Equal(t, []string{"charlie"}, cfg.SSHGitLabUsers)
 	assert.Equal(t, 45*time.Second, cfg.ResumeTimeout)
+	assert.Equal(t, "Iv1.abcdef", cfg.GitHubAppClientID)
+	assert.Equal(t, "http://egress-proxy-admin.proxy.svc:3129", cfg.EgressProxyAdminURL)
 }
 
 func TestParse_ValidationErrors(t *testing.T) {
@@ -61,6 +65,10 @@ func TestParse_ValidationErrors(t *testing.T) {
 		{
 			name: "invalid router url",
 			args: []string{"--router-url=ftp://bad", "--insecure-allow-any-ssh-key"},
+		},
+		{
+			name: "invalid egress proxy admin url",
+			args: []string{"--egress-proxy-admin-url=ftp://bad", "--insecure-allow-any-ssh-key"},
 		},
 		{
 			name: "invalid github username",

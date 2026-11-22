@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/config"
+	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/githubauth"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/proxy"
 	"github.com/nakatanakatana/mytools/internal/sandboxcontrol/service"
 )
@@ -35,9 +36,18 @@ type ControlService interface {
 	GetLogs(ctx context.Context, sandboxName string, tailLines int64) (string, error)
 }
 
+// GitHubAuthService abstracts GitHub App Device Flow and egress-proxy-admin status operations.
+type GitHubAuthService interface {
+	Enabled() bool
+	Status(ctx context.Context) githubauth.StatusSnapshot
+	StartDeviceFlow(ctx context.Context) (githubauth.FlowStatus, <-chan githubauth.FlowStatus, error)
+	Logout(ctx context.Context) (*githubauth.ProxyStatus, error)
+}
+
 // Server serves the Web UI, health probes, JSON API, and preview reverse proxy.
 type Server struct {
 	svc     ControlService
+	ghAuth  GitHubAuthService
 	preview http.Handler
 	tmpl    *template.Template
 	mux     *http.ServeMux
@@ -45,6 +55,8 @@ type Server struct {
 
 type dashboardView struct {
 	Data               *service.DashboardData
+	GitHubAuth         *githubauth.StatusSnapshot
+	GitHubTokenExpires string
 	UserLogin          string
 	EphemeralTemplate  string
 	PersistentTemplate string
@@ -54,7 +66,7 @@ type dashboardView struct {
 }
 
 // NewServer creates the HTTP handler tree for sandbox-control.
-func NewServer(svc ControlService) (*Server, error) {
+func NewServer(svc ControlService, ghAuth GitHubAuthService) (*Server, error) {
 	cfg := svc.Config()
 	previewHandler, err := proxy.NewPreviewHandler(
 		cfg.RouterURL,
@@ -72,6 +84,7 @@ func NewServer(svc ControlService) (*Server, error) {
 
 	s := &Server{
 		svc:     svc,
+		ghAuth:  ghAuth,
 		preview: previewHandler,
 		tmpl:    tmpl,
 		mux:     http.NewServeMux(),
@@ -85,6 +98,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.HandleFunc("GET /{$}", s.handleDashboard)
 	s.mux.HandleFunc("GET /api/overview", s.handleOverviewJSON)
+	s.mux.HandleFunc("GET /api/github/status", s.handleGitHubStatus)
+	s.mux.HandleFunc("POST /github/login", s.handleGitHubLogin)
+	s.mux.HandleFunc("POST /github/logout", s.handleGitHubLogout)
 	s.mux.HandleFunc("POST /sandboxes", s.handleCreateSandbox)
 	s.mux.HandleFunc("POST /sandboxes/{name}/suspend", s.handleSuspend)
 	s.mux.HandleFunc("POST /sandboxes/{name}/resume", s.handleResume)
@@ -133,6 +149,13 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Message:            r.URL.Query().Get("msg"),
 		Error:              r.URL.Query().Get("err"),
 	}
+	if s.ghAuth != nil {
+		snap := s.ghAuth.Status(r.Context())
+		view.GitHubAuth = &snap
+		if snap.Proxy != nil && snap.Proxy.UserTokenExpiresAt != nil {
+			view.GitHubTokenExpires = time.Unix(*snap.Proxy.UserTokenExpiresAt, 0).UTC().Format("2006-01-02 15:04 UTC")
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, view); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -147,6 +170,72 @@ func (s *Server) handleOverviewJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+func (s *Server) handleGitHubStatus(w http.ResponseWriter, r *http.Request) {
+	if s.ghAuth == nil {
+		http.Error(w, "github auth not configured", http.StatusNotFound)
+		return
+	}
+	snap := s.ghAuth.Status(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(snap)
+}
+
+func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
+	if s.ghAuth == nil || !s.ghAuth.Enabled() {
+		if wantsJSON(r) {
+			http.Error(w, "github device flow is disabled", http.StatusBadRequest)
+			return
+		}
+		redirectWithError(w, r, "GitHub Device Flow is disabled (GITHUB_APP_CLIENT_ID is not set)")
+		return
+	}
+	flow, _, err := s.ghAuth.StartDeviceFlow(r.Context())
+	if err != nil {
+		if wantsJSON(r) {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		redirectWithError(w, r, err.Error())
+		return
+	}
+	if wantsJSON(r) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(flow)
+		return
+	}
+	redirectWithMessage(w, r, fmt.Sprintf("GitHub Device Flow started. Enter code %s at %s", flow.UserCode, flow.VerificationURI))
+}
+
+func (s *Server) handleGitHubLogout(w http.ResponseWriter, r *http.Request) {
+	if s.ghAuth == nil {
+		if wantsJSON(r) {
+			http.Error(w, "github auth not configured", http.StatusNotFound)
+			return
+		}
+		redirectWithError(w, r, "GitHub auth is not configured")
+		return
+	}
+	st, err := s.ghAuth.Logout(r.Context())
+	if err != nil {
+		if wantsJSON(r) {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		redirectWithError(w, r, err.Error())
+		return
+	}
+	if wantsJSON(r) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(st)
+		return
+	}
+	redirectWithMessage(w, r, fmt.Sprintf("Logged out GitHub user token (mode: %s)", st.Mode))
+}
+
+func wantsJSON(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "application/json")
 }
 
 func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {

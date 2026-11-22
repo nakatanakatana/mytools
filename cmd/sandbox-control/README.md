@@ -16,8 +16,11 @@ A single-binary Kubernetes control plane, Tailscale-authenticated dev-server pre
    - Proxies to `sandbox-router` with `X-Sandbox-ID`, `X-Sandbox-Namespace`, and `X-Sandbox-Port` headers.
 3. **Embedded SSH Gateway (`:2222`, mapped from `Service/sandbox-control-ssh` port `22 -> targetPort: ssh`)**
    - Authorizes SSH public keys fetched from GitHub (`https://github.com/<user>.keys`), GitLab (`<base>/<user>.keys`), and/or static `authorized_keys`.
-   - Management commands: `ssh sandbox-ctl ls | new | checkpoint | suspend | resume | rm`.
+   - Management commands: `ssh sandbox-ctl ls | new | checkpoint | suspend | resume | rm | github status | github login | github logout`.
    - Direct shell: `ssh <sandbox-name>@sandbox-ctl` auto-resumes suspended sandboxes and attaches via Kubernetes `pods/exec` with TTY resize support.
+4. **GitHub App Device Flow Authentication**
+   - Displays `egress-proxy-admin` GitHub auth mode (`user_oauth`, `app_installation`, `unconfigured`) and user token expiry in the Web UI and via `ssh sandbox-ctl github status`.
+   - When `--github-app-client-id` (`GITHUB_APP_CLIENT_ID`) is set, enables Device Flow login/logout from both the Web UI and SSH gateway, registering tokens via `egress-proxy-admin` without writing secrets to disk or logs.
 
 ## Configuration
 
@@ -35,6 +38,8 @@ A single-binary Kubernetes control plane, Tailscale-authenticated dev-server pre
 | `--ssh-authorized-keys` | `SSH_AUTHORIZED_KEYS` | `""` | Optional inline `authorized_keys` content |
 | `--ssh-keys-refresh-interval` | `SSH_KEYS_REFRESH_INTERVAL` | `15m` | Periodic refresh interval for remote SSH keys |
 | `--ssh-host-key-path` | `SSH_HOST_KEY_PATH` | `""` | Optional PEM host key path (in-memory Ed25519 if omitted) |
+| `--github-app-client-id` | `GITHUB_APP_CLIENT_ID` | `""` | GitHub App Client ID for Device Flow auth (disabled when empty) |
+| `--egress-proxy-admin-url` | `EGRESS_PROXY_ADMIN_URL` | `http://egress-proxy-admin.proxy.svc.cluster.local:3129` | Base URL of the `egress-proxy` internal admin API |
 
 ## Container Hardening
 
