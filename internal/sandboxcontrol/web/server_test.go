@@ -144,14 +144,20 @@ func TestServer_HealthDashboardAndActions(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	fs.pingErr = nil
 
-	// Dashboard HTML
+	// Dashboard HTML at /_control
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/_control", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "opencode-ephemeral-pool")
 	assert.Contains(t, rec.Body.String(), "dev-1")
 	assert.Contains(t, rec.Body.String(), "/preview/dev-1/4096/")
 	assert.Contains(t, rec.Body.String(), "cp-1")
+
+	// GET / without preview cookie redirects to /_control
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, proxy.ControlBasePath, rec.Header().Get("Location"))
 
 	// Create form POST
 	form := url.Values{
@@ -159,7 +165,7 @@ func TestServer_HealthDashboardAndActions(t *testing.T) {
 		"template": {"opencode-ephemeral"},
 		"ttl":      {"2h"},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/sandboxes", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/_control/sandboxes", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -169,43 +175,50 @@ func TestServer_HealthDashboardAndActions(t *testing.T) {
 
 	// Suspend / Resume / Checkpoint / Delete
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sandboxes/dev-1/suspend", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/_control/sandboxes/dev-1/suspend", nil))
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.Equal(t, "dev-1", fs.suspendedName)
 
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sandboxes/dev-1/resume", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/_control/sandboxes/dev-1/resume", nil))
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.Equal(t, "dev-1", fs.resumedName)
 
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sandboxes/dev-1/checkpoint", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/_control/sandboxes/dev-1/checkpoint", nil))
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.Equal(t, "dev-1", fs.cpSandbox)
 
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sandboxes/dev-1/delete", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/_control/sandboxes/dev-1/delete", nil))
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.Equal(t, "dev-1", fs.deletedName)
 
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/checkpoints/cp-1/delete", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/_control/checkpoints/cp-1/delete", nil))
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.Equal(t, "cp-1", fs.deletedCP)
 
+	// Clear preview cookie
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/_control/preview/clear", nil))
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	require.Len(t, rec.Result().Cookies(), 1)
+	assert.Equal(t, -1, rec.Result().Cookies()[0].MaxAge)
+
 	// Logs raw text
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sandboxes/dev-1/logs?format=text", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/_control/sandboxes/dev-1/logs?format=text", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "line1\nline2\n", rec.Body.String())
 
 	// GitHub Auth status JSON, Device Flow login JSON, and logout
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/github/status", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/_control/api/github/status", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"user_oauth"`)
 
-	loginReq := httptest.NewRequest(http.MethodPost, "/github/login", nil)
+	loginReq := httptest.NewRequest(http.MethodPost, "/_control/github/login", nil)
 	loginReq.Header.Set("Accept", "application/json")
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, loginReq)
@@ -213,7 +226,7 @@ func TestServer_HealthDashboardAndActions(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"WXYZ-9999"`)
 
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/github/logout", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/_control/github/logout", nil))
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.True(t, gh.logoutCalled)
 }
@@ -247,15 +260,16 @@ func TestServer_PreviewCookieFallbackDoesNotHijackManagementRoutes(t *testing.T)
 
 	previewCookie := &http.Cookie{Name: proxy.PreviewTargetCookieName, Value: "dev-1:4096"}
 
-	// Management routes must NOT be hijacked even when preview cookie is present.
+	// Management routes under /_control and health probes must NOT be hijacked even when preview cookie is present.
 	for _, tc := range []struct {
 		method string
 		path   string
 		status int
 	}{
-		{http.MethodGet, "/", http.StatusOK},
-		{http.MethodGet, "/api/overview", http.StatusOK},
-		{http.MethodGet, "/api/github/status", http.StatusOK},
+		{http.MethodGet, "/_control", http.StatusOK},
+		{http.MethodGet, "/_control/", http.StatusOK},
+		{http.MethodGet, "/_control/api/overview", http.StatusOK},
+		{http.MethodGet, "/_control/api/github/status", http.StatusOK},
 		{http.MethodGet, "/healthz", http.StatusOK},
 		{http.MethodGet, "/readyz", http.StatusOK},
 	} {
@@ -268,7 +282,7 @@ func TestServer_PreviewCookieFallbackDoesNotHijackManagementRoutes(t *testing.T)
 	}
 
 	form := url.Values{"name": {"sb-test"}, "template": {"opencode-ephemeral"}}
-	postReq := httptest.NewRequest(http.MethodPost, "/sandboxes", strings.NewReader(form.Encode()))
+	postReq := httptest.NewRequest(http.MethodPost, "/_control/sandboxes", strings.NewReader(form.Encode()))
 	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	postReq.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
 	postReq.AddCookie(previewCookie)
@@ -277,18 +291,18 @@ func TestServer_PreviewCookieFallbackDoesNotHijackManagementRoutes(t *testing.T)
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.Empty(t, proxiedPaths)
 
-	// /preview/dev-1/4096/ sets the preview cookie and proxies "/".
+	// /preview/dev-1/4096/ sets the preview cookie and redirects to "/".
 	req := httptest.NewRequest(http.MethodGet, "/preview/dev-1/4096/", nil)
 	req.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "from-router:/", rec.Body.String())
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, "/", rec.Header().Get("Location"))
 	require.Len(t, rec.Result().Cookies(), 1)
 	assert.Equal(t, "dev-1:4096", rec.Result().Cookies()[0].Value)
 
-	// Root-relative SPA paths with cookie proxy through fallback.
-	for _, spaPath := range []string{"/assets/app.js", "/global/event"} {
+	// Root "/" and root-relative SPA paths with cookie proxy through fallback.
+	for _, spaPath := range []string{"/", "/_assets/app.js", "/global/event"} {
 		req = httptest.NewRequest(http.MethodGet, spaPath, nil)
 		req.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
 		req.AddCookie(previewCookie)
@@ -298,10 +312,17 @@ func TestServer_PreviewCookieFallbackDoesNotHijackManagementRoutes(t *testing.T)
 		assert.Equal(t, "from-router:"+spaPath, rec.Body.String())
 	}
 
-	// Unknown path without cookie -> 404.
-	req = httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	// Unknown path without cookie -> 404; GET / without cookie -> 302 /_control.
+	req = httptest.NewRequest(http.MethodGet, "/_assets/app.js", nil)
 	req.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(proxy.HeaderTailscaleUserLogin, "alice@example.com")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, proxy.ControlBasePath, rec.Header().Get("Location"))
 }

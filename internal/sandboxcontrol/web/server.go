@@ -57,6 +57,7 @@ type dashboardView struct {
 	Data               *service.DashboardData
 	GitHubAuth         *githubauth.StatusSnapshot
 	GitHubTokenExpires string
+	ActivePreview      string
 	UserLogin          string
 	EphemeralTemplate  string
 	PersistentTemplate string
@@ -96,18 +97,20 @@ func NewServer(svc ControlService, ghAuth GitHubAuthService) (*Server, error) {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
-	s.mux.HandleFunc("GET /{$}", s.handleDashboard)
-	s.mux.HandleFunc("GET /api/overview", s.handleOverviewJSON)
-	s.mux.HandleFunc("GET /api/github/status", s.handleGitHubStatus)
-	s.mux.HandleFunc("POST /github/login", s.handleGitHubLogin)
-	s.mux.HandleFunc("POST /github/logout", s.handleGitHubLogout)
-	s.mux.HandleFunc("POST /sandboxes", s.handleCreateSandbox)
-	s.mux.HandleFunc("POST /sandboxes/{name}/suspend", s.handleSuspend)
-	s.mux.HandleFunc("POST /sandboxes/{name}/resume", s.handleResume)
-	s.mux.HandleFunc("POST /sandboxes/{name}/delete", s.handleDeleteSandbox)
-	s.mux.HandleFunc("POST /sandboxes/{name}/checkpoint", s.handleCreateCheckpoint)
-	s.mux.HandleFunc("GET /sandboxes/{name}/logs", s.handleLogs)
-	s.mux.HandleFunc("POST /checkpoints/{name}/delete", s.handleDeleteCheckpoint)
+	s.mux.HandleFunc("GET /_control", s.handleDashboard)
+	s.mux.HandleFunc("GET /_control/{$}", s.handleDashboard)
+	s.mux.HandleFunc("GET /_control/api/overview", s.handleOverviewJSON)
+	s.mux.HandleFunc("GET /_control/api/github/status", s.handleGitHubStatus)
+	s.mux.HandleFunc("POST /_control/github/login", s.handleGitHubLogin)
+	s.mux.HandleFunc("POST /_control/github/logout", s.handleGitHubLogout)
+	s.mux.HandleFunc("POST /_control/sandboxes", s.handleCreateSandbox)
+	s.mux.HandleFunc("POST /_control/sandboxes/{name}/suspend", s.handleSuspend)
+	s.mux.HandleFunc("POST /_control/sandboxes/{name}/resume", s.handleResume)
+	s.mux.HandleFunc("POST /_control/sandboxes/{name}/delete", s.handleDeleteSandbox)
+	s.mux.HandleFunc("POST /_control/sandboxes/{name}/checkpoint", s.handleCreateCheckpoint)
+	s.mux.HandleFunc("GET /_control/sandboxes/{name}/logs", s.handleLogs)
+	s.mux.HandleFunc("POST /_control/checkpoints/{name}/delete", s.handleDeleteCheckpoint)
+	s.mux.HandleFunc("POST /_control/preview/clear", s.handleClearPreview)
 	s.mux.Handle("/preview/", s.preview)
 	s.mux.HandleFunc("/", s.preview.ServeFallback)
 }
@@ -149,6 +152,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		OpenCodePort:       cfg.OpenCodePort,
 		Message:            r.URL.Query().Get("msg"),
 		Error:              r.URL.Query().Get("err"),
+	}
+	if c, err := r.Cookie(proxy.PreviewTargetCookieName); err == nil {
+		if sb, port, parseErr := proxy.ParsePreviewTargetCookie(c.Value); parseErr == nil {
+			view.ActivePreview = fmt.Sprintf("%s:%d", sb, port)
+		}
 	}
 	if s.ghAuth != nil {
 		snap := s.ghAuth.Status(r.Context())
@@ -314,6 +322,11 @@ func (s *Server) handleDeleteCheckpoint(w http.ResponseWriter, r *http.Request) 
 	redirectWithMessage(w, r, fmt.Sprintf("Deleted checkpoint %q", name))
 }
 
+func (s *Server) handleClearPreview(w http.ResponseWriter, r *http.Request) {
+	proxy.ClearPreviewCookie(w, r)
+	redirectWithMessage(w, r, "Cleared active preview target")
+}
+
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	tail := int64(200)
@@ -333,7 +346,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Logs: %s</title><style>body{margin:0;padding:1rem;background:#0f172a;color:#e2e8f0;font-family:ui-monospace,monospace}pre{white-space:pre-wrap;word-break:break-word}a{color:#38bdf8}</style></head><body><p><a href="/">Back</a> · <a href="/sandboxes/%s/logs?tail=%d">Refresh</a> · <a href="/sandboxes/%s/logs?tail=%d&format=text">Raw</a></p><pre>%s</pre></body></html>`,
+	_, _ = fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Logs: %s</title><style>body{margin:0;padding:1rem;background:#0f172a;color:#e2e8f0;font-family:ui-monospace,monospace}pre{white-space:pre-wrap;word-break:break-word}a{color:#38bdf8}</style></head><body><p><a href="/_control">Back</a> · <a href="/_control/sandboxes/%s/logs?tail=%d">Refresh</a> · <a href="/_control/sandboxes/%s/logs?tail=%d&format=text">Raw</a></p><pre>%s</pre></body></html>`,
 		template.HTMLEscapeString(name),
 		url.PathEscape(name), tail,
 		url.PathEscape(name), tail,
@@ -342,9 +355,9 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func redirectWithMessage(w http.ResponseWriter, r *http.Request, msg string) {
-	http.Redirect(w, r, "/?msg="+url.QueryEscape(msg), http.StatusSeeOther)
+	http.Redirect(w, r, proxy.ControlBasePath+"?msg="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
 func redirectWithError(w http.ResponseWriter, r *http.Request, msg string) {
-	http.Redirect(w, r, "/?err="+url.QueryEscape(msg), http.StatusSeeOther)
+	http.Redirect(w, r, proxy.ControlBasePath+"?err="+url.QueryEscape(msg), http.StatusSeeOther)
 }
