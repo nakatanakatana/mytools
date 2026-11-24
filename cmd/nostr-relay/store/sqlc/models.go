@@ -19,6 +19,12 @@ type Event struct {
 	EventJson string
 }
 
+type EventTag struct {
+	EventID  string
+	TagName  string
+	TagValue string
+}
+
 type Nip98SeenEvent struct {
 	EventID string
 	SeenAt  int64
@@ -28,4 +34,9 @@ type PublisherAllowlist struct {
 	Pubkey    string
 	Reason    string
 	CreatedAt int64
+}
+
+type RelayMetum struct {
+	Key   string
+	Value string
 }

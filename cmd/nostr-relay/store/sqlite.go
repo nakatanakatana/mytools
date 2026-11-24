@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"iter"
+	"net/url"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"fiatjaf.com/nostr"
@@ -14,44 +17,150 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const eventTagsBackfilledMetaKey = "event_tags_backfilled"
+
 type SQLiteStore struct {
-	db      *sql.DB
-	queries *storesqlc.Queries
+	writeDB      *sql.DB
+	readDB       *sql.DB
+	writeQueries *storesqlc.Queries
+	readQueries  *storesqlc.Queries
 }
 
 var _ Store = (*SQLiteStore)(nil)
+
+func sqliteDSN(databasePath string, readOnly bool) string {
+	params := url.Values{}
+	if readOnly {
+		params.Add("mode", "ro")
+		params.Add("_pragma", "busy_timeout(5000)")
+		params.Add("_pragma", "query_only(ON)")
+	} else {
+		params.Add("_pragma", "journal_mode(WAL)")
+		params.Add("_pragma", "foreign_keys(ON)")
+		params.Add("_pragma", "busy_timeout(5000)")
+		params.Add("_pragma", "synchronous(NORMAL)")
+	}
+	u := url.URL{
+		Scheme:   "file",
+		Path:     filepath.ToSlash(databasePath),
+		RawQuery: params.Encode(),
+	}
+	return u.String()
+}
 
 func Open(databasePath string) (*SQLiteStore, error) {
 	if err := schema.Migrate(context.Background(), databasePath, false); err != nil {
 		return nil, fmt.Errorf("migrate relay database: %w", err)
 	}
-	db, err := sql.Open("sqlite", databasePath)
+
+	writeDB, err := sql.Open("sqlite", sqliteDSN(databasePath, false))
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	for _, statement := range []string{
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA busy_timeout = 5000",
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("initialize relay database: %w", err)
-		}
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
+	if err := writeDB.Ping(); err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("initialize relay write database: %w", err)
 	}
-	return &SQLiteStore{db: db, queries: storesqlc.New(db)}, nil
+
+	writeQueries := storesqlc.New(writeDB)
+	if err := backfillEventTags(context.Background(), writeDB, writeQueries); err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("backfill event tags: %w", err)
+	}
+
+	readDB, err := sql.Open("sqlite", sqliteDSN(databasePath, true))
+	if err != nil {
+		_ = writeDB.Close()
+		return nil, err
+	}
+	poolSize := max(4, runtime.NumCPU())
+	readDB.SetMaxOpenConns(poolSize)
+	readDB.SetMaxIdleConns(poolSize)
+	if err := readDB.Ping(); err != nil {
+		_ = readDB.Close()
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("initialize relay read database: %w", err)
+	}
+
+	return &SQLiteStore{
+		writeDB:      writeDB,
+		readDB:       readDB,
+		writeQueries: writeQueries,
+		readQueries:  storesqlc.New(readDB),
+	}, nil
 }
 
-func (s *SQLiteStore) Close() error { return s.db.Close() }
+func (s *SQLiteStore) Close() error {
+	return errors.Join(s.readDB.Close(), s.writeDB.Close())
+}
 
-func (s *SQLiteStore) SaveEvent(ctx context.Context, event nostr.Event) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+func indexableTags(tags nostr.Tags) [][2]string {
+	var result [][2]string
+	for _, tag := range tags {
+		if len(tag) < 2 || len(tag[0]) != 1 {
+			continue
+		}
+		c := tag[0][0]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			result = append(result, [2]string{tag[0], tag[1]})
+		}
+	}
+	return result
+}
+
+func backfillEventTags(ctx context.Context, writeDB *sql.DB, writeQueries *storesqlc.Queries) error {
+	val, err := writeQueries.MetaValue(ctx, eventTagsBackfilledMetaKey)
+	if err == nil && val == "1" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	tx, err := writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := saveEventTx(ctx, s.queries.WithTx(tx), event); err != nil {
+
+	q := writeQueries.WithTx(tx)
+	rows, err := q.ListEventsForTagBackfill(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		var event nostr.Event
+		if err := json.Unmarshal([]byte(row.EventJson), &event); err != nil {
+			return fmt.Errorf("decode stored event %s: %w", row.ID, err)
+		}
+		for _, tag := range indexableTags(event.Tags) {
+			if err := q.InsertEventTag(ctx, storesqlc.InsertEventTagParams{
+				EventID:  row.ID,
+				TagName:  tag[0],
+				TagValue: tag[1],
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	if err := q.SetMetaValue(ctx, storesqlc.SetMetaValueParams{
+		Key:   eventTagsBackfilledMetaKey,
+		Value: "1",
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) SaveEvent(ctx context.Context, event nostr.Event) error {
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := saveEventTx(ctx, s.writeQueries.WithTx(tx), event); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -104,21 +213,34 @@ func saveEventTx(ctx context.Context, queries *storesqlc.Queries, event nostr.Ev
 	if err != nil {
 		return err
 	}
-	return queries.InsertEvent(ctx, storesqlc.InsertEventParams{
-		ID: event.ID.Hex(), Pubkey: event.PubKey.Hex(), CreatedAt: int64(event.CreatedAt),
+	eventID := event.ID.Hex()
+	if err := queries.InsertEvent(ctx, storesqlc.InsertEventParams{
+		ID: eventID, Pubkey: event.PubKey.Hex(), CreatedAt: int64(event.CreatedAt),
 		Kind: int64(event.Kind), EventJson: string(encoded),
-	})
+	}); err != nil {
+		return err
+	}
+	for _, tag := range indexableTags(event.Tags) {
+		if err := queries.InsertEventTag(ctx, storesqlc.InsertEventTagParams{
+			EventID:  eventID,
+			TagName:  tag[0],
+			TagValue: tag[1],
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SaveEventAndApplyDeletion persists an event and applies its owned kind-5
 // targets in one transaction, so an error cannot expose a partial deletion.
 func (s *SQLiteStore) SaveEventAndApplyDeletion(ctx context.Context, event nostr.Event) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	queries := s.queries.WithTx(tx)
+	queries := s.writeQueries.WithTx(tx)
 	if err := saveEventTx(ctx, queries, event); err != nil {
 		return err
 	}
@@ -149,60 +271,12 @@ func (s *SQLiteStore) SaveEventAndApplyDeletion(ctx context.Context, event nostr
 	return tx.Commit()
 }
 
-func (s *SQLiteStore) QueryEvents(ctx context.Context, filter nostr.Filter) (iter.Seq[nostr.Event], error) {
-	if filter.LimitZero {
-		return func(func(nostr.Event) bool) {}, nil
-	}
-	idsJSON, err := json.Marshal(filter.IDs)
-	if err != nil {
-		return nil, err
-	}
-	authorsJSON, err := json.Marshal(filter.Authors)
-	if err != nil {
-		return nil, err
-	}
-	kindsJSON, err := json.Marshal(filter.Kinds)
-	if err != nil {
-		return nil, err
-	}
-	tagsJSON, err := json.Marshal(filter.Tags)
-	if err != nil {
-		return nil, err
-	}
-	encodedEvents, err := s.queries.AllEvents(ctx, storesqlc.AllEventsParams{
-		HasIds: filter.IDs != nil, IdsJson: string(idsJSON),
-		HasAuthors: filter.Authors != nil, AuthorsJson: string(authorsJSON),
-		HasKinds: filter.Kinds != nil, KindsJson: string(kindsJSON),
-		HasSince: filter.Since != 0, Since: int64(filter.Since),
-		HasUntil: filter.Until != 0, Until: int64(filter.Until),
-		HasTags: len(filter.Tags) != 0, TagsJson: string(tagsJSON), ResultLimit: filter.Limit,
-	})
-	if err != nil {
-		return nil, err
-	}
-	events := make([]nostr.Event, 0, len(encodedEvents))
-	for _, encoded := range encodedEvents {
-		var event nostr.Event
-		if err := json.Unmarshal([]byte(encoded), &event); err != nil {
-			return nil, fmt.Errorf("decode stored event: %w", err)
-		}
-		events = append(events, event)
-	}
-	return func(yield func(nostr.Event) bool) {
-		for _, event := range events {
-			if !yield(event) {
-				return
-			}
-		}
-	}, nil
-}
-
 func (s *SQLiteStore) DeleteEvent(ctx context.Context, id nostr.ID) error {
-	return s.queries.DeleteEventByID(ctx, id.Hex())
+	return s.writeQueries.DeleteEventByID(ctx, id.Hex())
 }
 
 func (s *SQLiteStore) Event(ctx context.Context, id nostr.ID) (nostr.Event, error) {
-	encoded, err := s.queries.EventByID(ctx, id.Hex())
+	encoded, err := s.readQueries.EventByID(ctx, id.Hex())
 	if err != nil {
 		return nostr.Event{}, err
 	}
@@ -214,21 +288,21 @@ func (s *SQLiteStore) Event(ctx context.Context, id nostr.ID) (nostr.Event, erro
 }
 
 func (s *SQLiteStore) AllowPublisher(ctx context.Context, publisher Publisher) error {
-	return s.queries.AllowPublisher(ctx, storesqlc.AllowPublisherParams{
+	return s.writeQueries.AllowPublisher(ctx, storesqlc.AllowPublisherParams{
 		Pubkey: publisher.PubKey.Hex(), Reason: publisher.Reason, CreatedAt: publisher.CreatedAt.Unix(),
 	})
 }
 
 func (s *SQLiteStore) UnallowPublisher(ctx context.Context, pubkey nostr.PubKey) error {
-	return s.queries.UnallowPublisher(ctx, pubkey.Hex())
+	return s.writeQueries.UnallowPublisher(ctx, pubkey.Hex())
 }
 
 func (s *SQLiteStore) PublisherAllowed(ctx context.Context, pubkey nostr.PubKey) (bool, error) {
-	return s.queries.PublisherAllowed(ctx, pubkey.Hex())
+	return s.readQueries.PublisherAllowed(ctx, pubkey.Hex())
 }
 
 func (s *SQLiteStore) ListPublishers(ctx context.Context) ([]Publisher, error) {
-	rows, err := s.queries.ListPublishers(ctx)
+	rows, err := s.readQueries.ListPublishers(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +320,7 @@ func (s *SQLiteStore) ListPublishers(ctx context.Context) ([]Publisher, error) {
 // ConsumeNIP98Event atomically records a management authorization event.
 // A duplicate remains rejected across processes and restarts.
 func (s *SQLiteStore) ConsumeNIP98Event(ctx context.Context, id nostr.ID, now time.Time, retention time.Duration) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -254,7 +328,7 @@ func (s *SQLiteStore) ConsumeNIP98Event(ctx context.Context, id nostr.ID, now ti
 	if retention <= 0 {
 		retention = 60 * time.Second
 	}
-	queries := s.queries.WithTx(tx)
+	queries := s.writeQueries.WithTx(tx)
 	if err := queries.DeleteExpiredNIP98Events(ctx, now.Add(-retention).Unix()); err != nil {
 		return err
 	}

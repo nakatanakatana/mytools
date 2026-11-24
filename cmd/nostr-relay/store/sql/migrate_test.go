@@ -1,7 +1,6 @@
 package schema
 
 import (
-	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -11,7 +10,7 @@ import (
 
 func TestMigrateCreatesRelaySchema(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "relay.db")
-	if err := Migrate(context.Background(), databasePath, false); err != nil {
+	if err := Migrate(t.Context(), databasePath, false); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 
@@ -21,7 +20,7 @@ func TestMigrateCreatesRelaySchema(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	for _, table := range []string{"events", "publisher_allowlist", "deletion_tombstones", "nip98_seen_events"} {
+	for _, table := range []string{"events", "event_tags", "relay_meta", "publisher_allowlist", "deletion_tombstones", "nip98_seen_events"} {
 		var count int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
 			t.Fatalf("query table %q: %v", table, err)
@@ -34,7 +33,7 @@ func TestMigrateCreatesRelaySchema(t *testing.T) {
 
 func TestMigrateIsIdempotent(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "relay.db")
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := Migrate(ctx, databasePath, false); err != nil {
 		t.Fatalf("initial Migrate() error = %v", err)
 	}
@@ -45,7 +44,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 
 func TestMigrateAddsMissingRelayIndex(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "relay.db")
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := Migrate(ctx, databasePath, false); err != nil {
 		t.Fatalf("initial Migrate() error = %v", err)
 	}
@@ -54,7 +53,7 @@ func TestMigrateAddsMissingRelayIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open relay database: %v", err)
 	}
-	if _, err := db.Exec(`DROP INDEX events_created_at_idx`); err != nil {
+	if _, err := db.Exec(`DROP INDEX events_created_at_id_idx`); err != nil {
 		_ = db.Close()
 		t.Fatalf("drop relay index: %v", err)
 	}
@@ -72,10 +71,10 @@ func TestMigrateAddsMissingRelayIndex(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_schema WHERE type = 'index' AND name = 'events_created_at_idx'`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_schema WHERE type = 'index' AND name = 'events_created_at_id_idx'`).Scan(&count); err != nil {
 		t.Fatalf("query relay index: %v", err)
 	}
 	if count != 1 {
-		t.Errorf("events_created_at_idx count = %d, want 1", count)
+		t.Errorf("events_created_at_id_idx count = %d, want 1", count)
 	}
 }
