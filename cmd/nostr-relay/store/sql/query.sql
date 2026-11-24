@@ -25,30 +25,6 @@ VALUES (?, ?, ?, ?);
 -- name: DeleteOwnedEvent :exec
 DELETE FROM events WHERE id = ? AND pubkey = ?;
 
--- name: AllEvents :many
-SELECT event_json
-FROM events
-WHERE
-    (NOT sqlc.arg(has_ids) OR id IN (SELECT value FROM json_each(sqlc.arg(ids_json))))
-    AND (NOT sqlc.arg(has_authors) OR pubkey IN (SELECT value FROM json_each(sqlc.arg(authors_json))))
-    AND (NOT sqlc.arg(has_kinds) OR kind IN (SELECT value FROM json_each(sqlc.arg(kinds_json))))
-    AND (NOT sqlc.arg(has_since) OR created_at >= sqlc.arg(since))
-    AND (NOT sqlc.arg(has_until) OR created_at <= sqlc.arg(until))
-    AND (NOT sqlc.arg(has_tags) OR NOT EXISTS (
-        SELECT 1
-        FROM json_each(sqlc.arg(tags_json)) AS requested_tag
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM json_each(json_extract(events.event_json, '$.tags')) AS event_tag
-            WHERE json_extract(event_tag.value, '$[0]') = requested_tag.key
-              AND json_extract(event_tag.value, '$[1]') IN (
-                  SELECT value FROM json_each(requested_tag.value)
-              )
-        )
-    ))
-ORDER BY created_at DESC, id ASC
-LIMIT CASE WHEN sqlc.arg(result_limit) > 0 THEN sqlc.arg(result_limit) ELSE -1 END;
-
 -- name: EventByID :one
 SELECT event_json FROM events WHERE id = ?;
 
@@ -74,3 +50,18 @@ DELETE FROM nip98_seen_events WHERE seen_at < ?;
 
 -- name: ConsumeNIP98Event :execresult
 INSERT OR IGNORE INTO nip98_seen_events(event_id, seen_at) VALUES(?, ?);
+
+-- name: InsertEventTag :exec
+INSERT OR IGNORE INTO event_tags (event_id, tag_name, tag_value)
+VALUES (?, ?, ?);
+
+-- name: MetaValue :one
+SELECT value FROM relay_meta WHERE key = ?;
+
+-- name: SetMetaValue :exec
+INSERT INTO relay_meta (key, value)
+VALUES (?, ?)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+
+-- name: ListEventsForTagBackfill :many
+SELECT id, event_json FROM events;

@@ -10,84 +10,6 @@ import (
 	"database/sql"
 )
 
-const allEvents = `-- name: AllEvents :many
-SELECT event_json
-FROM events
-WHERE
-    (NOT ?1 OR id IN (SELECT value FROM json_each(?2)))
-    AND (NOT ?3 OR pubkey IN (SELECT value FROM json_each(?4)))
-    AND (NOT ?5 OR kind IN (SELECT value FROM json_each(?6)))
-    AND (NOT ?7 OR created_at >= ?8)
-    AND (NOT ?9 OR created_at <= ?10)
-    AND (NOT ?11 OR NOT EXISTS (
-        SELECT 1
-        FROM json_each(?12) AS requested_tag
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM json_each(json_extract(events.event_json, '$.tags')) AS event_tag
-            WHERE json_extract(event_tag.value, '$[0]') = requested_tag.key
-              AND json_extract(event_tag.value, '$[1]') IN (
-                  SELECT value FROM json_each(requested_tag.value)
-              )
-        )
-    ))
-ORDER BY created_at DESC, id ASC
-LIMIT CASE WHEN ?13 > 0 THEN ?13 ELSE -1 END
-`
-
-type AllEventsParams struct {
-	HasIds      interface{}
-	IdsJson     interface{}
-	HasAuthors  interface{}
-	AuthorsJson interface{}
-	HasKinds    interface{}
-	KindsJson   interface{}
-	HasSince    interface{}
-	Since       int64
-	HasUntil    interface{}
-	Until       int64
-	HasTags     interface{}
-	TagsJson    interface{}
-	ResultLimit interface{}
-}
-
-func (q *Queries) AllEvents(ctx context.Context, arg AllEventsParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, allEvents,
-		arg.HasIds,
-		arg.IdsJson,
-		arg.HasAuthors,
-		arg.AuthorsJson,
-		arg.HasKinds,
-		arg.KindsJson,
-		arg.HasSince,
-		arg.Since,
-		arg.HasUntil,
-		arg.Until,
-		arg.HasTags,
-		arg.TagsJson,
-		arg.ResultLimit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var event_json string
-		if err := rows.Scan(&event_json); err != nil {
-			return nil, err
-		}
-		items = append(items, event_json)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const allowPublisher = `-- name: AllowPublisher :exec
 INSERT INTO publisher_allowlist (pubkey, reason, created_at)
 VALUES (?, ?, ?)
@@ -268,6 +190,54 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 	return err
 }
 
+const insertEventTag = `-- name: InsertEventTag :exec
+INSERT OR IGNORE INTO event_tags (event_id, tag_name, tag_value)
+VALUES (?, ?, ?)
+`
+
+type InsertEventTagParams struct {
+	EventID  string
+	TagName  string
+	TagValue string
+}
+
+func (q *Queries) InsertEventTag(ctx context.Context, arg InsertEventTagParams) error {
+	_, err := q.db.ExecContext(ctx, insertEventTag, arg.EventID, arg.TagName, arg.TagValue)
+	return err
+}
+
+const listEventsForTagBackfill = `-- name: ListEventsForTagBackfill :many
+SELECT id, event_json FROM events
+`
+
+type ListEventsForTagBackfillRow struct {
+	ID        string
+	EventJson string
+}
+
+func (q *Queries) ListEventsForTagBackfill(ctx context.Context) ([]ListEventsForTagBackfillRow, error) {
+	rows, err := q.db.QueryContext(ctx, listEventsForTagBackfill)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEventsForTagBackfillRow
+	for rows.Next() {
+		var i ListEventsForTagBackfillRow
+		if err := rows.Scan(&i.ID, &i.EventJson); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPublishers = `-- name: ListPublishers :many
 SELECT pubkey, reason, created_at
 FROM publisher_allowlist
@@ -297,6 +267,17 @@ func (q *Queries) ListPublishers(ctx context.Context) ([]PublisherAllowlist, err
 	return items, nil
 }
 
+const metaValue = `-- name: MetaValue :one
+SELECT value FROM relay_meta WHERE key = ?
+`
+
+func (q *Queries) MetaValue(ctx context.Context, key string) (string, error) {
+	row := q.db.QueryRowContext(ctx, metaValue, key)
+	var value string
+	err := row.Scan(&value)
+	return value, err
+}
+
 const publisherAllowed = `-- name: PublisherAllowed :one
 SELECT EXISTS(SELECT 1 FROM publisher_allowlist WHERE pubkey = ?)
 `
@@ -306,6 +287,22 @@ func (q *Queries) PublisherAllowed(ctx context.Context, pubkey string) (bool, er
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const setMetaValue = `-- name: SetMetaValue :exec
+INSERT INTO relay_meta (key, value)
+VALUES (?, ?)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value
+`
+
+type SetMetaValueParams struct {
+	Key   string
+	Value string
+}
+
+func (q *Queries) SetMetaValue(ctx context.Context, arg SetMetaValueParams) error {
+	_, err := q.db.ExecContext(ctx, setMetaValue, arg.Key, arg.Value)
+	return err
 }
 
 const unallowPublisher = `-- name: UnallowPublisher :exec
