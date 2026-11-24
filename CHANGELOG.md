@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.14.0](https://github.com/nakatanakatana/mytools/compare/v0.13.3...v0.14.0) - 2026-11-24
+
+### Maintenance & Others
+- chore(deps): update aquaproj/aqua-installer action to v4.1.2 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/422
+- chore(deps): update gcr.io/distroless/static docker digest to 4c2cd1d by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/421
+- chore(deps): update dependency aquaproj/aqua-registry to v4.592.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/424
+- perf(nostr-relay): split SQLite read/write pools and index event tags by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/425
+
 ## [v0.13.3](https://github.com/nakatanakatana/mytools/compare/v0.13.2...v0.13.3) - 2026-11-22
 
 ### Maintenance & Others
