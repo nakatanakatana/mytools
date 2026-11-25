@@ -36,6 +36,10 @@ bin/
 docs/superpowers/plans/
 docs/superpowers/specs/
 
+# sqletch derived outputs (commit .sqletch/cache/)
+.sqletch/explain/
+.sqletch/expanded/
+
 # Editor/IDE
 # .idea/
 # .vscode/

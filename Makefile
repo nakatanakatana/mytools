@@ -1,9 +1,10 @@
-.PHONY: build test lint clean gen-sqlc check-sqlc generate manifests check-litestream-manifests
+.PHONY: build test lint clean gen-sqlc check-sqlc gen-sqletch check-sqletch generate manifests check-litestream-manifests
 
 BINARY_NAME=mytools
 BUILD_DIR=dist
 
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
+SQLETCH ?= go run github.com/moznion/go-sqletch/cmd/sqletch@v0.0.9
 
 build:
 	mkdir -p $(BUILD_DIR)
@@ -29,6 +30,19 @@ check-sqlc: gen-sqlc
 		exit 1; \
 	fi
 	git diff --exit-code -- cmd/nostr-bridge/store/sqlc cmd/nostr-relay/store/sqlc
+
+gen-sqletch:
+	$(SQLETCH) generate
+
+check-sqletch: gen-sqletch
+	$(SQLETCH) check
+	@untracked="$$(git ls-files --others --exclude-standard -- cmd/nostr-relay/store/sqletch .sqletch/cache)"; \
+	if [ -n "$$untracked" ]; then \
+		echo "Untracked sqletch generated files:" >&2; \
+		printf '%s\n' "$$untracked" >&2; \
+		exit 1; \
+	fi
+	git diff --exit-code -- cmd/nostr-relay/store/sqletch .sqletch/cache
 
 generate:
 	$(CONTROLLER_GEN) object paths=./api/litestream/...

@@ -7,37 +7,57 @@ import (
 	"iter"
 	"maps"
 	"slices"
-	"strings"
 
 	"fiatjaf.com/nostr"
+	"github.com/moznion/go-sqletch"
+	"github.com/moznion/go-sqletch/runtime"
+	storesqletch "github.com/nakatanakatana/mytools/cmd/nostr-relay/store/sqletch"
 )
 
-func (s *SQLiteStore) QueryEvents(ctx context.Context, filter nostr.Filter) (iter.Seq[nostr.Event], error) {
-	query, args, empty := buildEventQuery(filter)
-	if empty {
-		return func(func(nostr.Event) bool) {}, nil
-	}
+type preparedEventQuery struct {
+	empty        bool
+	byTag        bool
+	eventsParams storesqletch.QueryEventsParams
+	byTagParams  storesqletch.QueryEventsByTagParams
+}
 
-	rows, err := s.readDB.QueryContext(ctx, query, args...)
+func (s *SQLiteStore) QueryEvents(ctx context.Context, filter nostr.Filter) (iter.Seq[nostr.Event], error) {
+	prepared, err := prepareEventQuery(filter)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	if prepared.empty {
+		return func(func(nostr.Event) bool) {}, nil
+	}
 
-	var events []nostr.Event
-	for rows.Next() {
-		var encoded string
-		if err := rows.Scan(&encoded); err != nil {
+	var encodedEvents []string
+	if prepared.byTag {
+		rows, err := s.eventQueries.QueryEventsByTag(ctx, prepared.byTagParams)
+		if err != nil {
 			return nil, err
 		}
+		encodedEvents = make([]string, len(rows))
+		for i, row := range rows {
+			encodedEvents[i] = row.EventJSON
+		}
+	} else {
+		rows, err := s.eventQueries.QueryEvents(ctx, prepared.eventsParams)
+		if err != nil {
+			return nil, err
+		}
+		encodedEvents = make([]string, len(rows))
+		for i, row := range rows {
+			encodedEvents[i] = row.EventJSON
+		}
+	}
+
+	events := make([]nostr.Event, 0, len(encodedEvents))
+	for _, encoded := range encodedEvents {
 		var event nostr.Event
 		if err := json.Unmarshal([]byte(encoded), &event); err != nil {
 			return nil, fmt.Errorf("decode stored event: %w", err)
 		}
 		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	return func(yield func(nostr.Event) bool) {
@@ -49,118 +69,143 @@ func (s *SQLiteStore) QueryEvents(ctx context.Context, filter nostr.Filter) (ite
 	}, nil
 }
 
-// buildEventQuery builds a parameterized SQL query for the given filter.
-// It returns empty == true when the filter cannot match any event.
-func buildEventQuery(filter nostr.Filter) (string, []any, bool) {
+func (s *SQLiteStore) explainEventQuery(ctx context.Context, filter nostr.Filter) (string, error) {
+	prepared, err := prepareEventQuery(filter)
+	if err != nil {
+		return "", err
+	}
+	if prepared.empty {
+		return "", nil
+	}
+	if prepared.byTag {
+		plan, err := s.eventQueries.ExplainQueryEventsByTag(ctx, prepared.byTagParams, runtime.ExplainOptions{})
+		if err != nil {
+			return "", err
+		}
+		return plan.Output, nil
+	}
+	plan, err := s.eventQueries.ExplainQueryEvents(ctx, prepared.eventsParams, runtime.ExplainOptions{})
+	if err != nil {
+		return "", err
+	}
+	return plan.Output, nil
+}
+
+func prepareEventQuery(filter nostr.Filter) (preparedEventQuery, error) {
 	if filter.LimitZero ||
 		(filter.IDs != nil && len(filter.IDs) == 0) ||
 		(filter.Authors != nil && len(filter.Authors) == 0) ||
 		(filter.Kinds != nil && len(filter.Kinds) == 0) ||
 		(filter.Since != 0 && filter.Until != 0 && filter.Since > filter.Until) {
-		return "", nil, true
+		return preparedEventQuery{empty: true}, nil
 	}
 
 	tagNames := slices.Sorted(maps.Keys(filter.Tags))
 	for _, tagName := range tagNames {
 		if len(filter.Tags[tagName]) == 0 {
-			return "", nil, true
+			return preparedEventQuery{empty: true}, nil
 		}
 	}
 
-	var query strings.Builder
-	var args []any
+	var authorsJSON sqletch.Omittable[string]
+	if len(filter.Authors) > 0 {
+		encoded, err := json.Marshal(filter.Authors)
+		if err != nil {
+			return preparedEventQuery{}, err
+		}
+		authorsJSON = sqletch.Present(string(encoded))
+	}
 
-	query.WriteString("SELECT events.event_json FROM ")
-	remainingTags := tagNames
+	var kindsJSON sqletch.Omittable[string]
+	if len(filter.Kinds) > 0 {
+		encoded, err := json.Marshal(filter.Kinds)
+		if err != nil {
+			return preparedEventQuery{}, err
+		}
+		kindsJSON = sqletch.Present(string(encoded))
+	}
+
+	var since sqletch.Omittable[int64]
+	if filter.Since != 0 {
+		since = sqletch.Present(int64(filter.Since))
+	}
+
+	var until sqletch.Omittable[int64]
+	if filter.Until != 0 {
+		until = sqletch.Present(int64(filter.Until))
+	}
+
+	resultLimit := int64(-1)
+	if filter.Limit > 0 {
+		resultLimit = int64(filter.Limit)
+	}
+
 	if len(filter.IDs) == 0 && len(tagNames) > 0 {
 		firstTag := tagNames[0]
-		firstValues := filter.Tags[firstTag]
-		query.WriteString("(SELECT DISTINCT event_id FROM event_tags WHERE tag_name = ? AND tag_value IN (")
-		writePlaceholders(&query, len(firstValues))
-		query.WriteString(")) AS matched_tags CROSS JOIN events ON events.id = matched_tags.event_id")
-		args = appendTagFilterArgs(args, firstTag, firstValues)
-		remainingTags = tagNames[1:]
-	} else {
-		query.WriteString("events")
+		firstValues, err := json.Marshal(filter.Tags[firstTag])
+		if err != nil {
+			return preparedEventQuery{}, err
+		}
+		extraTags, err := buildExtraTagTree(tagNames[1:], filter.Tags, storesqletch.QueryEventsByTagTagMatch)
+		if err != nil {
+			return preparedEventQuery{}, err
+		}
+		return preparedEventQuery{
+			byTag: true,
+			byTagParams: storesqletch.QueryEventsByTagParams{
+				TagName:       firstTag,
+				TagValuesJSON: string(firstValues),
+				AuthorsJSON:   authorsJSON,
+				KindsJSON:     kindsJSON,
+				Since:         since,
+				Until:         until,
+				ResultLimit:   resultLimit,
+				ExtraTags:     extraTags,
+			},
+		}, nil
 	}
 
-	hasWhere := false
+	var idsJSON sqletch.Omittable[string]
 	if len(filter.IDs) > 0 {
-		appendInClause(&query, &hasWhere, "events.id", len(filter.IDs))
-		for _, id := range filter.IDs {
-			args = append(args, id.Hex())
+		encoded, err := json.Marshal(filter.IDs)
+		if err != nil {
+			return preparedEventQuery{}, err
 		}
-	}
-	if len(filter.Authors) > 0 {
-		appendInClause(&query, &hasWhere, "events.pubkey", len(filter.Authors))
-		for _, author := range filter.Authors {
-			args = append(args, author.Hex())
-		}
-	}
-	if len(filter.Kinds) > 0 {
-		appendInClause(&query, &hasWhere, "events.kind", len(filter.Kinds))
-		for _, kind := range filter.Kinds {
-			args = append(args, int64(kind))
-		}
-	}
-	if filter.Since != 0 {
-		writeWhereOrAnd(&query, &hasWhere)
-		query.WriteString("events.created_at >= ?")
-		args = append(args, int64(filter.Since))
-	}
-	if filter.Until != 0 {
-		writeWhereOrAnd(&query, &hasWhere)
-		query.WriteString("events.created_at <= ?")
-		args = append(args, int64(filter.Until))
-	}
-	for _, tagName := range remainingTags {
-		values := filter.Tags[tagName]
-		writeWhereOrAnd(&query, &hasWhere)
-		query.WriteString("events.id IN (SELECT event_id FROM event_tags WHERE tag_name = ? AND tag_value IN (")
-		writePlaceholders(&query, len(values))
-		query.WriteString("))")
-		args = appendTagFilterArgs(args, tagName, values)
+		idsJSON = sqletch.Present(string(encoded))
 	}
 
-	query.WriteString(" ORDER BY events.created_at DESC, events.id ASC")
-	if filter.Limit > 0 {
-		query.WriteString(" LIMIT ?")
-		args = append(args, filter.Limit)
+	extraTags, err := buildExtraTagTree(tagNames, filter.Tags, storesqletch.QueryEventsTagMatch)
+	if err != nil {
+		return preparedEventQuery{}, err
 	}
 
-	return query.String(), args, false
+	return preparedEventQuery{
+		eventsParams: storesqletch.QueryEventsParams{
+			IdsJSON:     idsJSON,
+			AuthorsJSON: authorsJSON,
+			KindsJSON:   kindsJSON,
+			Since:       since,
+			Until:       until,
+			ResultLimit: resultLimit,
+			ExtraTags:   extraTags,
+		},
+	}, nil
 }
 
-func appendInClause(b *strings.Builder, hasWhere *bool, column string, count int) {
-	writeWhereOrAnd(b, hasWhere)
-	b.WriteString(column)
-	b.WriteString(" IN (")
-	writePlaceholders(b, count)
-	b.WriteByte(')')
-}
-
-func writeWhereOrAnd(b *strings.Builder, hasWhere *bool) {
-	if *hasWhere {
-		b.WriteString(" AND ")
-		return
+func buildExtraTagTree(tagNames []string, tags nostr.TagMap, leafFn func(string, string) runtime.Tree) (runtime.Tree, error) {
+	if len(tagNames) == 0 {
+		return runtime.Tree{}, nil
 	}
-	b.WriteString(" WHERE ")
-	*hasWhere = true
-}
-
-func writePlaceholders(b *strings.Builder, count int) {
-	for i := range count {
-		if i > 0 {
-			b.WriteString(", ")
+	leaves := make([]runtime.Tree, 0, len(tagNames))
+	for _, tagName := range tagNames {
+		encoded, err := json.Marshal(tags[tagName])
+		if err != nil {
+			return runtime.Tree{}, err
 		}
-		b.WriteByte('?')
+		leaves = append(leaves, leafFn(tagName, string(encoded)))
 	}
-}
-
-func appendTagFilterArgs(args []any, tagName string, values []string) []any {
-	args = append(args, tagName)
-	for _, v := range values {
-		args = append(args, v)
+	if len(leaves) == 1 {
+		return leaves[0], nil
 	}
-	return args
+	return storesqletch.And(leaves...), nil
 }

@@ -62,6 +62,7 @@ jobs:
           restore-keys: |
             go-build-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-
       - run: make check-sqlc
+      - run: make check-sqletch
       - run: make check-litestream-manifests
       - run: node --check cmd/nostr-bridge/web/static/app.js
       - run: node --check cmd/nostr-bridge/web/static/sw.js

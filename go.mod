@@ -1,6 +1,6 @@
 module github.com/nakatanakatana/mytools
 
-go 1.26.8
+go 1.27.0
 
 require (
 	charm.land/ssh v0.4.3
@@ -16,6 +16,7 @@ require (
 	github.com/gorilla/feeds v1.2.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/mmcdole/gofeed v1.5.0
+	github.com/moznion/go-sqletch v0.0.9
 	github.com/ncruces/go-sqlite3 v0.38.0
 	github.com/sqldef/sqldef/v3 v3.11.30
 	github.com/stretchr/testify v1.12.1
@@ -127,7 +128,7 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/templexxx/cpu v0.0.1 // indirect
 	github.com/templexxx/xhex v0.0.0-20200614015412-aed53437177b // indirect
-	github.com/tetratelabs/wazero v1.11.0 // indirect
+	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
@@ -137,7 +138,7 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xo/terminfo v1.2.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.27.1 // indirect
+	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
@@ -147,7 +148,7 @@ require (
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
-	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/apiextensions-apiserver v0.37.0 // indirect
