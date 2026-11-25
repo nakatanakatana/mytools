@@ -1,9 +1,7 @@
 package store
 
 import (
-	"database/sql"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -11,150 +9,107 @@ import (
 	"fiatjaf.com/nostr"
 )
 
-func TestBuildEventQuery(t *testing.T) {
+func TestPrepareEventQuery(t *testing.T) {
 	t.Parallel()
 
 	id1 := nostr.ID{1}
 	id2 := nostr.ID{2}
 	pk1 := nostr.PubKey{1}
 
-	tests := []struct {
-		name      string
-		filter    nostr.Filter
-		wantSQL   string
-		wantArgs  []any
-		wantEmpty bool
-	}{
-		{
-			name:      "limit zero short circuits",
-			filter:    nostr.Filter{LimitZero: true},
-			wantEmpty: true,
-		},
-		{
-			name:      "empty ids slice short circuits",
-			filter:    nostr.Filter{IDs: []nostr.ID{}},
-			wantEmpty: true,
-		},
-		{
-			name:      "empty authors slice short circuits",
-			filter:    nostr.Filter{Authors: []nostr.PubKey{}},
-			wantEmpty: true,
-		},
-		{
-			name:      "empty kinds slice short circuits",
-			filter:    nostr.Filter{Kinds: []nostr.Kind{}},
-			wantEmpty: true,
-		},
-		{
-			name:      "since greater than until short circuits",
-			filter:    nostr.Filter{Since: 20, Until: 10},
-			wantEmpty: true,
-		},
-		{
-			name:      "empty tag values slice short circuits",
-			filter:    nostr.Filter{Tags: nostr.TagMap{"e": {}}},
-			wantEmpty: true,
-		},
-		{
-			name:     "ids only",
-			filter:   nostr.Filter{IDs: []nostr.ID{id1, id2}},
-			wantSQL:  "SELECT events.event_json FROM events WHERE events.id IN (?, ?) ORDER BY events.created_at DESC, events.id ASC",
-			wantArgs: []any{id1.Hex(), id2.Hex()},
-		},
-		{
-			name: "authors kinds since until limit",
-			filter: nostr.Filter{
-				Authors: []nostr.PubKey{pk1},
-				Kinds:   []nostr.Kind{1, 6},
-				Since:   100,
-				Until:   200,
-				Limit:   50,
-			},
-			wantSQL:  "SELECT events.event_json FROM events WHERE events.pubkey IN (?) AND events.kind IN (?, ?) AND events.created_at >= ? AND events.created_at <= ? ORDER BY events.created_at DESC, events.id ASC LIMIT ?",
-			wantArgs: []any{pk1.Hex(), int64(1), int64(6), int64(100), int64(200), 50},
-		},
-		{
-			name: "tag driven query with authors and kinds",
-			filter: nostr.Filter{
-				Authors: []nostr.PubKey{pk1},
-				Kinds:   []nostr.Kind{6, 7},
-				Tags:    nostr.TagMap{"e": {id1.Hex()}},
-			},
-			wantSQL:  "SELECT events.event_json FROM (SELECT DISTINCT event_id FROM event_tags WHERE tag_name = ? AND tag_value IN (?)) AS matched_tags CROSS JOIN events ON events.id = matched_tags.event_id WHERE events.pubkey IN (?) AND events.kind IN (?, ?) ORDER BY events.created_at DESC, events.id ASC",
-			wantArgs: []any{"e", id1.Hex(), pk1.Hex(), int64(6), int64(7)},
-		},
-		{
-			name: "multiple tags sorted deterministically",
-			filter: nostr.Filter{
-				Tags: nostr.TagMap{
-					"p": {pk1.Hex()},
-					"e": {id1.Hex(), id2.Hex()},
-				},
-			},
-			wantSQL:  "SELECT events.event_json FROM (SELECT DISTINCT event_id FROM event_tags WHERE tag_name = ? AND tag_value IN (?, ?)) AS matched_tags CROSS JOIN events ON events.id = matched_tags.event_id WHERE events.id IN (SELECT event_id FROM event_tags WHERE tag_name = ? AND tag_value IN (?)) ORDER BY events.created_at DESC, events.id ASC",
-			wantArgs: []any{"e", id1.Hex(), id2.Hex(), "p", pk1.Hex()},
-		},
-		{
-			name: "ids plus tag drives from events primary key",
-			filter: nostr.Filter{
-				IDs:  []nostr.ID{id1},
-				Tags: nostr.TagMap{"e": {id2.Hex()}},
-			},
-			wantSQL:  "SELECT events.event_json FROM events WHERE events.id IN (?) AND events.id IN (SELECT event_id FROM event_tags WHERE tag_name = ? AND tag_value IN (?)) ORDER BY events.created_at DESC, events.id ASC",
-			wantArgs: []any{id1.Hex(), "e", id2.Hex()},
-		},
-		{
-			name:    "empty filter",
-			filter:  nostr.Filter{},
-			wantSQL: "SELECT events.event_json FROM events ORDER BY events.created_at DESC, events.id ASC",
-		},
-	}
+	t.Run("short circuits impossible filters", func(t *testing.T) {
+		t.Parallel()
+		filters := []nostr.Filter{
+			{LimitZero: true},
+			{IDs: []nostr.ID{}},
+			{Authors: []nostr.PubKey{}},
+			{Kinds: []nostr.Kind{}},
+			{Since: 20, Until: 10},
+			{Tags: nostr.TagMap{"e": {}}},
+		}
+		for _, filter := range filters {
+			got, err := prepareEventQuery(filter)
+			if err != nil {
+				t.Fatalf("prepareEventQuery(%#v) error = %v", filter, err)
+			}
+			if !got.empty {
+				t.Errorf("prepareEventQuery(%#v) empty = false, want true", filter)
+			}
+		}
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			gotSQL, gotArgs, gotEmpty := buildEventQuery(tt.filter)
-			if gotEmpty != tt.wantEmpty {
-				t.Fatalf("buildEventQuery() empty = %v, want %v", gotEmpty, tt.wantEmpty)
-			}
-			if gotSQL != tt.wantSQL {
-				t.Fatalf("buildEventQuery() sql =\n  %q\nwant\n  %q", gotSQL, tt.wantSQL)
-			}
-			if len(gotArgs) == 0 && len(tt.wantArgs) == 0 {
-				return
-			}
-			if !reflect.DeepEqual(gotArgs, tt.wantArgs) {
-				t.Fatalf("buildEventQuery() args = %#v, want %#v", gotArgs, tt.wantArgs)
-			}
+	t.Run("ids only dispatches to QueryEvents", func(t *testing.T) {
+		t.Parallel()
+		got, err := prepareEventQuery(nostr.Filter{IDs: []nostr.ID{id1, id2}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.empty || got.byTag {
+			t.Fatalf("got empty=%v byTag=%v, want false/false", got.empty, got.byTag)
+		}
+		if !got.eventsParams.IdsJSON.IsPresent() {
+			t.Fatal("IdsJSON should be present")
+		}
+		if got.eventsParams.ResultLimit != -1 {
+			t.Errorf("ResultLimit = %d, want -1", got.eventsParams.ResultLimit)
+		}
+	})
+
+	t.Run("tag without ids dispatches to QueryEventsByTag with sorted primary tag", func(t *testing.T) {
+		t.Parallel()
+		got, err := prepareEventQuery(nostr.Filter{
+			Authors: []nostr.PubKey{pk1},
+			Kinds:   []nostr.Kind{6, 7},
+			Tags: nostr.TagMap{
+				"p": {pk1.Hex()},
+				"e": {id1.Hex(), id2.Hex()},
+			},
+			Limit: 50,
 		})
-	}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.empty || !got.byTag {
+			t.Fatalf("got empty=%v byTag=%v, want false/true", got.empty, got.byTag)
+		}
+		if got.byTagParams.TagName != "e" {
+			t.Errorf("TagName = %q, want %q", got.byTagParams.TagName, "e")
+		}
+		if !got.byTagParams.AuthorsJSON.IsPresent() || !got.byTagParams.KindsJSON.IsPresent() {
+			t.Errorf("AuthorsJSON/KindsJSON should be present")
+		}
+		if got.byTagParams.ResultLimit != 50 {
+			t.Errorf("ResultLimit = %d, want 50", got.byTagParams.ResultLimit)
+		}
+		if got.byTagParams.ExtraTags.Encode() == "" {
+			t.Errorf("ExtraTags should contain remaining tag predicate")
+		}
+	})
+
+	t.Run("ids plus tag dispatches to QueryEvents", func(t *testing.T) {
+		t.Parallel()
+		got, err := prepareEventQuery(nostr.Filter{
+			IDs:  []nostr.ID{id1},
+			Tags: nostr.TagMap{"e": {id2.Hex()}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.empty || got.byTag {
+			t.Fatalf("got empty=%v byTag=%v, want false/false", got.empty, got.byTag)
+		}
+		if !got.eventsParams.IdsJSON.IsPresent() || got.eventsParams.ExtraTags.Encode() == "" {
+			t.Errorf("expected IdsJSON present and ExtraTags non-empty")
+		}
+	})
 }
 
-func explainQueryPlan(t *testing.T, db *sql.DB, filter nostr.Filter) string {
+func explainQueryPlan(t *testing.T, s *SQLiteStore, filter nostr.Filter) string {
 	t.Helper()
-	query, args, empty := buildEventQuery(filter)
-	if empty {
-		t.Fatalf("buildEventQuery(%#v) unexpectedly returned empty", filter)
-	}
-	rows, err := db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+query, args...)
+	plan, err := s.explainEventQuery(t.Context(), filter)
 	if err != nil {
-		t.Fatalf("EXPLAIN QUERY PLAN failed: %v", err)
+		t.Fatalf("explainEventQuery failed: %v", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var lines []string
-	for rows.Next() {
-		var id, parent, notused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
-			t.Fatalf("scan EXPLAIN QUERY PLAN row: %v", err)
-		}
-		lines = append(lines, detail)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate EXPLAIN QUERY PLAN rows: %v", err)
-	}
-	return strings.Join(lines, "\n")
+	return plan
 }
 
 func TestQueryEventsExplainQueryPlan(t *testing.T) {
@@ -230,7 +185,7 @@ func TestQueryEventsExplainQueryPlan(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plan := explainQueryPlan(t, s.readDB, tt.filter)
+			plan := explainQueryPlan(t, s, tt.filter)
 			t.Logf("plan:\n%s", plan)
 			for _, want := range tt.wantContains {
 				if !strings.Contains(plan, want) {

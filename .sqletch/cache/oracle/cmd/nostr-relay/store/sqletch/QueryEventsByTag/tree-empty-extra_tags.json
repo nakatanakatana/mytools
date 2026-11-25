@@ -1,0 +1,44 @@
+{
+  "format": 2,
+  "schema_fp": "5a4a9f65a9457a3ee3f0aad59674e275bfcba6992d4e0e99ae26f23a8165b028",
+  "rendered_sql": "\n-- @param tag_name: text\n-- @param tag_values_json: text\n-- @param authors_json: text\n-- @param kinds_json: text\n-- @param since: integer\n-- @param until: integer\n-- @param extra_tag_name: text\n-- @param extra_tag_values_json: text\n-- @param result_limit: integer\nSELECT events.event_json\nFROM (\n    SELECT DISTINCT event_id\n    FROM event_tags\n    WHERE tag_name = ?\n      AND tag_value IN (SELECT value FROM json_each(?))\n) AS matched_tags\nCROSS JOIN events ON events.id = matched_tags.event_id\nWHERE TRUE\n\nAND (events.pubkey IN (SELECT value FROM json_each(?)))\n\nAND (events.kind IN (SELECT value FROM json_each(?)))\n\nAND (events.created_at \u003e= ?)\n\nAND (events.created_at \u003c= ?)\n  AND TRUE\nORDER BY events.created_at DESC, events.id ASC\nLIMIT ?;\n",
+  "params": [
+    {
+      "oid": 0,
+      "name": ""
+    },
+    {
+      "oid": 0,
+      "name": ""
+    },
+    {
+      "oid": 0,
+      "name": ""
+    },
+    {
+      "oid": 0,
+      "name": ""
+    },
+    {
+      "oid": 0,
+      "name": ""
+    },
+    {
+      "oid": 0,
+      "name": ""
+    },
+    {
+      "oid": 0,
+      "name": ""
+    }
+  ],
+  "columns": [
+    {
+      "name": "event_json",
+      "oid": 3,
+      "type_name": "text",
+      "src_rel": 3,
+      "src_att": 5
+    }
+  ]
+}

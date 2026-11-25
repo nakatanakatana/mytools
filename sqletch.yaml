@@ -1,0 +1,13 @@
+version: 1
+dialect: sqlite
+server_version: "3"
+schema:
+  files:
+    - cmd/nostr-relay/store/sql/schema.sql
+targets:
+  - queries:
+      - cmd/nostr-relay/store/sql/query_events.sql
+    output:
+      package: storesqletch
+      path: cmd/nostr-relay/store/sqletch
+lint: true

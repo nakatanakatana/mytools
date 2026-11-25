@@ -14,6 +14,7 @@ import (
 	"fiatjaf.com/nostr"
 	schema "github.com/nakatanakatana/mytools/cmd/nostr-relay/store/sql"
 	storesqlc "github.com/nakatanakatana/mytools/cmd/nostr-relay/store/sqlc"
+	storesqletch "github.com/nakatanakatana/mytools/cmd/nostr-relay/store/sqletch"
 	_ "modernc.org/sqlite"
 )
 
@@ -24,6 +25,7 @@ type SQLiteStore struct {
 	readDB       *sql.DB
 	writeQueries *storesqlc.Queries
 	readQueries  *storesqlc.Queries
+	eventQueries *storesqletch.Queries
 }
 
 var _ Store = (*SQLiteStore)(nil)
@@ -89,6 +91,7 @@ func Open(databasePath string) (*SQLiteStore, error) {
 		readDB:       readDB,
 		writeQueries: writeQueries,
 		readQueries:  storesqlc.New(readDB),
+		eventQueries: storesqletch.New(readDB),
 	}, nil
 }
 

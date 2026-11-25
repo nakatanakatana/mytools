@@ -1,0 +1,200 @@
+{
+  "format": 2,
+  "schema_fp": "5a4a9f65a9457a3ee3f0aad59674e275bfcba6992d4e0e99ae26f23a8165b028",
+  "tables": [
+    {
+      "schema": "main",
+      "name": "deletion_tombstones",
+      "oid": 1,
+      "cols": [
+        {
+          "name": "owner_pubkey",
+          "att": 1,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": false
+        },
+        {
+          "name": "target_event_id",
+          "att": 2,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": false
+        },
+        {
+          "name": "deletion_event_id",
+          "att": 3,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "att": 4,
+          "type_oid": 1,
+          "type_name": "INTEGER",
+          "not_null": true,
+          "has_default": false
+        }
+      ]
+    },
+    {
+      "schema": "main",
+      "name": "event_tags",
+      "oid": 2,
+      "cols": [
+        {
+          "name": "event_id",
+          "att": 1,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": false
+        },
+        {
+          "name": "tag_name",
+          "att": 2,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": false
+        },
+        {
+          "name": "tag_value",
+          "att": 3,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": false
+        }
+      ]
+    },
+    {
+      "schema": "main",
+      "name": "events",
+      "oid": 3,
+      "cols": [
+        {
+          "name": "id",
+          "att": 1,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": false,
+          "has_default": false
+        },
+        {
+          "name": "pubkey",
+          "att": 2,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "att": 3,
+          "type_oid": 1,
+          "type_name": "INTEGER",
+          "not_null": true,
+          "has_default": false
+        },
+        {
+          "name": "kind",
+          "att": 4,
+          "type_oid": 1,
+          "type_name": "INTEGER",
+          "not_null": true,
+          "has_default": false
+        },
+        {
+          "name": "event_json",
+          "att": 5,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": false
+        }
+      ]
+    },
+    {
+      "schema": "main",
+      "name": "nip98_seen_events",
+      "oid": 4,
+      "cols": [
+        {
+          "name": "event_id",
+          "att": 1,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": false,
+          "has_default": false
+        },
+        {
+          "name": "seen_at",
+          "att": 2,
+          "type_oid": 1,
+          "type_name": "INTEGER",
+          "not_null": true,
+          "has_default": false
+        }
+      ]
+    },
+    {
+      "schema": "main",
+      "name": "publisher_allowlist",
+      "oid": 5,
+      "cols": [
+        {
+          "name": "pubkey",
+          "att": 1,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": false,
+          "has_default": false
+        },
+        {
+          "name": "reason",
+          "att": 2,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "att": 3,
+          "type_oid": 1,
+          "type_name": "INTEGER",
+          "not_null": true,
+          "has_default": false
+        }
+      ]
+    },
+    {
+      "schema": "main",
+      "name": "relay_meta",
+      "oid": 6,
+      "cols": [
+        {
+          "name": "key",
+          "att": 1,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": false,
+          "has_default": false
+        },
+        {
+          "name": "value",
+          "att": 2,
+          "type_oid": 3,
+          "type_name": "TEXT",
+          "not_null": true,
+          "has_default": false
+        }
+      ]
+    }
+  ]
+}

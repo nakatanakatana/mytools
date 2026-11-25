@@ -25,18 +25,21 @@ func TestSQLiteStoreUsesGeneratedQueries(t *testing.T) {
 	if !ok {
 		t.Fatal("locate sqlite_test.go")
 	}
-	source, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "sqlite.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, forbidden := range []string{"ExecContext", "QueryContext", "QueryRowContext"} {
-		if regexp.MustCompile(`\b` + forbidden + `\b`).Match(source) {
-			t.Errorf("sqlite.go contains forbidden database call %s", forbidden)
-		}
-	}
+	dir := filepath.Dir(filename)
 	rawSQL := regexp.MustCompile(`(?i)[\x60\x22][^\x60\x22]*(SELECT|INSERT|UPDATE|DELETE)\b`)
-	if match := rawSQL.Find(source); match != nil {
-		t.Errorf("sqlite.go contains raw SQL string %q", match)
+	for _, name := range []string{"sqlite.go", "query_events.go"} {
+		source, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"ExecContext", "QueryContext", "QueryRowContext"} {
+			if regexp.MustCompile(`\b` + forbidden + `\b`).Match(source) {
+				t.Errorf("%s contains forbidden database call %s", name, forbidden)
+			}
+		}
+		if match := rawSQL.Find(source); match != nil {
+			t.Errorf("%s contains raw SQL string %q", name, match)
+		}
 	}
 }
 
