@@ -17,7 +17,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/mmcdole/gofeed v1.5.0
 	github.com/moznion/go-sqletch v0.0.9
-	github.com/ncruces/go-sqlite3 v0.38.0
+	github.com/ncruces/go-sqlite3 v0.38.1
 	github.com/sqldef/sqldef/v3 v3.11.30
 	github.com/stretchr/testify v1.12.1
 	github.com/superfly/ltx v0.5.3
