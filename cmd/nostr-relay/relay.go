@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -11,6 +12,8 @@ import (
 	"fiatjaf.com/nostr/eventstore/slicestore"
 	"fiatjaf.com/nostr/khatru"
 	relaystore "github.com/nakatanakatana/mytools/cmd/nostr-relay/store"
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const softwareURL = "https://github.com/nakatanakatana/mytools"
@@ -41,7 +44,8 @@ func newPublicMemoryRelay(cfg Config) (RelayResources, error) {
 	}
 	relay := configuredRelay(cfg, []int{1, 11})
 	relay.UseEventstore(store, cfg.MaxQueryLimit)
-	return RelayResources{Relay: relay, Handler: relay, ProtocolHandler: relay, Close: func() error { store.Close(); return nil }}, nil
+	instrumented := appotel.NewHTTPHandler(relay, "nostr-relay")
+	return RelayResources{Relay: relay, Handler: instrumented, ProtocolHandler: instrumented, Close: func() error { store.Close(); return nil }}, nil
 }
 
 func newPrivateSQLiteRelay(cfg Config) (RelayResources, error) {
@@ -72,6 +76,7 @@ func newPrivateSQLiteRelay(cfg Config) (RelayResources, error) {
 		return false, ""
 	}
 	relay.OnEvent = func(ctx context.Context, event nostr.Event) (bool, string) {
+		ctx = withConnectionTraceContext(ctx)
 		if !event.CheckID() || !event.VerifySignature() {
 			return true, "invalid: event signature is invalid"
 		}
@@ -85,22 +90,26 @@ func newPrivateSQLiteRelay(cfg Config) (RelayResources, error) {
 		return false, ""
 	}
 	relay.StoreEvent = func(ctx context.Context, event nostr.Event) error {
-		return persistEventAndApplyDeletion(ctx, store, event)
+		return persistEventAndApplyDeletion(withConnectionTraceContext(ctx), store, event)
 	}
-	relay.ReplaceEvent = store.SaveEvent
+	relay.ReplaceEvent = func(ctx context.Context, event nostr.Event) error {
+		return store.SaveEvent(withConnectionTraceContext(ctx), event)
+	}
 	relay.QueryStored = func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
+		ctx = withConnectionTraceContext(ctx)
 		if cfg.MaxQueryLimit > 0 && (filter.Limit == 0 || filter.Limit > cfg.MaxQueryLimit) {
 			filter.Limit = cfg.MaxQueryLimit
 		}
 		events, err := store.QueryEvents(ctx, filter)
 		if err != nil {
-			relay.Log.Printf("query stored events: %v", err)
+			slog.ErrorContext(ctx, "query stored events", "error", err)
 			return func(func(nostr.Event) bool) {}
 		}
 		return events
 	}
+	protocolHandler := appotel.NewHTTPHandler(relay, "nostr-relay")
 	if cfg.AdminPubkey == "" {
-		return RelayResources{Relay: relay, Handler: relay, ProtocolHandler: relay, Close: store.Close}, nil
+		return RelayResources{Relay: relay, Handler: protocolHandler, ProtocolHandler: protocolHandler, Close: store.Close}, nil
 	}
 	admin, err := nostr.PubKeyFromHex(cfg.AdminPubkey)
 	if err != nil {
@@ -108,9 +117,9 @@ func newPrivateSQLiteRelay(cfg Config) (RelayResources, error) {
 		return RelayResources{}, fmt.Errorf("decode admin pubkey: %w", err)
 	}
 	auth := NIP98Validator{AdminPubKey: admin, ExpectedURL: cfg.ServiceURL, ReplayStore: store}
-	handler := NewManagementHandler(relay, store, auth)
-	management := NewManagementHandler(http.NotFoundHandler(), store, auth)
-	return RelayResources{Relay: relay, Handler: handler, ProtocolHandler: relay, ManagementHandler: management, Close: store.Close}, nil
+	handler := appotel.NewHTTPHandler(NewManagementHandler(relay, store, auth), "nostr-relay")
+	management := appotel.NewHTTPHandler(NewManagementHandler(http.NotFoundHandler(), store, auth), "nostr-relay-management")
+	return RelayResources{Relay: relay, Handler: handler, ProtocolHandler: protocolHandler, ManagementHandler: management, Close: store.Close}, nil
 }
 
 func configuredRelay(cfg Config, nips []int) *khatru.Relay {
@@ -126,4 +135,16 @@ func configuredRelay(cfg Config, nips []int) *khatru.Relay {
 	}
 	relay.Info.AddSupportedNIPs(strNIPs)
 	return relay
+}
+
+func withConnectionTraceContext(ctx context.Context) context.Context {
+	if trace.SpanContextFromContext(ctx).IsValid() {
+		return ctx
+	}
+	if conn := khatru.GetConnection(ctx); conn != nil && conn.Request != nil {
+		if spanCtx := trace.SpanContextFromContext(conn.Request.Context()); spanCtx.IsValid() {
+			return trace.ContextWithSpanContext(ctx, spanCtx)
+		}
+	}
+	return ctx
 }

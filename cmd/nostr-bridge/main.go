@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/relayclient"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 	bridgeweb "github.com/nakatanakatana/mytools/cmd/nostr-bridge/web"
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
 	"github.com/nakatanakatana/mytools/internal/webpush"
 )
 
@@ -106,6 +108,9 @@ type databaseCloser interface {
 
 // newNotificationWorker is a seam for constructing the notification worker.
 var newNotificationWorker = notification.NewWorker
+
+// setupOTel is a seam for initializing OpenTelemetry tracing.
+var setupOTel = appotel.Setup
 
 // newRuntimeResources is a seam for constructing the process-lifetime integrations.
 var newRuntimeResources = func(cfg Config) (res runtimeResources, retErr error) {
@@ -218,7 +223,7 @@ var newRuntimeResources = func(cfg Config) (res runtimeResources, retErr error) 
 		return resolvedKeys.PublicKey
 	})
 	mux.Handle("/", bridgeweb.Handler())
-	resources.httpServer = &http.Server{Addr: ServerAddress(cfg), Handler: mux}
+	resources.httpServer = &http.Server{Addr: ServerAddress(cfg), Handler: appotel.NewHTTPHandler(mux, "nostr-bridge")}
 
 	return resources, nil
 }
@@ -259,7 +264,7 @@ func newOAuthClients(
 			return nil, nil, fmt.Errorf("decode Mastodon OAuth encryption key: %w", decodeErr)
 		}
 		account := normalizedMastodonAccount(cfg.Mastodon.Account, cfg.Mastodon.BaseURL)
-		m, err = mastodon.NewOAuthClient(mastodon.OAuthOptions{Scope: bridgestore.SourceScope{Provider: "mastodon", Account: account}, Store: store, BaseURL: cfg.Mastodon.BaseURL, Account: account, ClientID: cfg.Mastodon.OAuthClientID, ClientSecret: cfg.Mastodon.OAuthClientSecret, RedirectURL: cfg.Mastodon.OAuthCallbackURL, SuccessRedirectURL: cfg.Shared.UIURL, OnAuthorizationStatusChanged: mastodonAuthorizationObserver, EncryptionKey: key})
+		m, err = mastodon.NewOAuthClient(mastodon.OAuthOptions{Scope: bridgestore.SourceScope{Provider: "mastodon", Account: account}, Store: store, HTTPClient: appotel.NewHTTPClient(nil), BaseURL: cfg.Mastodon.BaseURL, Account: account, ClientID: cfg.Mastodon.OAuthClientID, ClientSecret: cfg.Mastodon.OAuthClientSecret, RedirectURL: cfg.Mastodon.OAuthCallbackURL, SuccessRedirectURL: cfg.Shared.UIURL, OnAuthorizationStatusChanged: mastodonAuthorizationObserver, EncryptionKey: key})
 		if err != nil {
 			return nil, nil, fmt.Errorf("construct Mastodon OAuth client: %w", err)
 		}
@@ -420,7 +425,19 @@ func (o healthRelayObserver) RelayDelivered(at time.Time) {
 
 // Run owns the process-lifetime resources. Service behavior is added in later
 // tasks; for now it only constructs and reliably shuts down those resources.
-func Run(ctx context.Context, cfg Config) error {
+func Run(ctx context.Context, cfg Config) (runErr error) {
+	slog.SetDefault(appotel.NewLogger(os.Stdout, appotel.ParseLogLevel(os.Getenv("LOG_LEVEL"))))
+
+	otelShutdown, err := setupOTel(ctx, "nostr-bridge")
+	if err != nil {
+		return fmt.Errorf("initialize OpenTelemetry: %w", err)
+	}
+	defer func() {
+		if err := appotel.ShutdownWithTimeout(otelShutdown, appotel.DefaultShutdownTimeout); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("shut down OpenTelemetry: %w", err))
+		}
+	}()
+
 	resources, err := newRuntimeResources(cfg)
 	if err != nil {
 		return fmt.Errorf("construct runtime resources: %w", err)

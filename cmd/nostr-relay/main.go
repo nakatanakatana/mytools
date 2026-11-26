@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
 )
 
 func main() {
@@ -44,6 +46,7 @@ func run(ctx context.Context, cfg Config) (runErr error) {
 		newServer: func(addr string, handler http.Handler) relayServer {
 			return &http.Server{Addr: addr, Handler: handler}
 		},
+		setupOTel: appotel.Setup,
 	})
 }
 
@@ -56,11 +59,26 @@ type relayServer interface {
 type runtimeDependencies struct {
 	newRelay  func(context.Context, Config) (RelayResources, error)
 	newServer func(string, http.Handler) relayServer
+	setupOTel func(context.Context, string) (func(context.Context) error, error)
 }
 
 func runWithDependencies(ctx context.Context, cfg Config, deps runtimeDependencies) (runErr error) {
 	logger := setupLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
+
+	setupOTel := deps.setupOTel
+	if setupOTel == nil {
+		setupOTel = appotel.Setup
+	}
+	otelShutdown, err := setupOTel(ctx, "nostr-relay")
+	if err != nil {
+		return fmt.Errorf("failed to initialize OpenTelemetry: %w", err)
+	}
+	defer func() {
+		if err := appotel.ShutdownWithTimeout(otelShutdown, appotel.DefaultShutdownTimeout); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("failed to shut down OpenTelemetry: %w", err))
+		}
+	}()
 
 	resources, err := deps.newRelay(ctx, cfg)
 	if err != nil {
@@ -138,16 +156,5 @@ func runWithDependencies(ctx context.Context, cfg Config, deps runtimeDependenci
 }
 
 func setupLogger(level string) *slog.Logger {
-	var slogLevel slog.Level
-	switch level {
-	case "debug":
-		slogLevel = slog.LevelDebug
-	case "warn":
-		slogLevel = slog.LevelWarn
-	case "error":
-		slogLevel = slog.LevelError
-	default:
-		slogLevel = slog.LevelInfo
-	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slogLevel}))
+	return appotel.NewLogger(os.Stdout, appotel.ParseLogLevel(level))
 }

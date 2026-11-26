@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	bridgeoauth "github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauth"
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
 )
 
 // SourceClient is the Bluesky read API needed by the bridge.
@@ -176,7 +177,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 		provider = fixedTokenProvider{token: options.Token}
 	}
 	if options.HTTPClient == nil {
-		options.HTTPClient = http.DefaultClient
+		options.HTTPClient = appotel.NewHTTPClient(nil)
 	}
 	return &Client{
 		httpClient: options.HTTPClient,

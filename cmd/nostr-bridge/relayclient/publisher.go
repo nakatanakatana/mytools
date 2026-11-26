@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
 	"fiatjaf.com/nostr"
 	"github.com/coder/websocket"
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const publisherResponseLimit = 64 << 10
@@ -36,7 +41,7 @@ type WebSocketPublisher struct {
 	Dial     func(context.Context, string) (Conn, error)
 }
 
-func (p *WebSocketPublisher) Publish(ctx context.Context, event nostr.Event) error {
+func (p *WebSocketPublisher) Publish(ctx context.Context, event nostr.Event) (publishErr error) {
 	if p == nil || !validRelayURL(p.RelayURL) {
 		return errors.New("invalid relay publisher configuration")
 	}
@@ -44,10 +49,21 @@ func (p *WebSocketPublisher) Publish(ctx context.Context, event nostr.Event) err
 		return errors.New("invalid relay event")
 	}
 
+	ctx, span := otel.Tracer("nostr-bridge/relayclient").Start(ctx, "nostr.publish", trace.WithSpanKind(trace.SpanKindClient))
+	defer func() {
+		if publishErr != nil {
+			span.RecordError(publishErr)
+			span.SetStatus(codes.Error, publishErr.Error())
+		}
+		span.End()
+	}()
+
 	dial := p.Dial
 	if dial == nil {
 		dial = func(ctx context.Context, relayURL string) (Conn, error) {
-			conn, _, err := websocket.Dial(ctx, relayURL, nil)
+			headers := make(http.Header)
+			appotel.InjectHeaders(ctx, headers)
+			conn, _, err := websocket.Dial(ctx, relayURL, &websocket.DialOptions{HTTPHeader: headers})
 			return conn, err
 		}
 	}
