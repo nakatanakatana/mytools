@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
 )
 
 // ErrSubscriptionExpired indicates that the push subscription has expired or unsubscribed (HTTP 404 or 410).
@@ -178,6 +180,7 @@ func NewClient(opts ClientOptions) *Client {
 	hc := opts.HTTPClient
 	if hc == nil {
 		hc = newDefaultHTTPClient()
+		hc.Transport = appotel.NewHTTPTransport(hc.Transport)
 	}
 	return &Client{
 		httpClient: hc,

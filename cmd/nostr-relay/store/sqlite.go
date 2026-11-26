@@ -15,6 +15,7 @@ import (
 	schema "github.com/nakatanakatana/mytools/cmd/nostr-relay/store/sql"
 	storesqlc "github.com/nakatanakatana/mytools/cmd/nostr-relay/store/sqlc"
 	storesqletch "github.com/nakatanakatana/mytools/cmd/nostr-relay/store/sqletch"
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
 	_ "modernc.org/sqlite"
 )
 
@@ -55,13 +56,13 @@ func Open(databasePath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("migrate relay database: %w", err)
 	}
 
-	writeDB, err := sql.Open("sqlite", sqliteDSN(databasePath, false))
+	writeDB, err := appotel.OpenSQLite(sqliteDSN(databasePath, false))
 	if err != nil {
 		return nil, err
 	}
 	writeDB.SetMaxOpenConns(1)
 	writeDB.SetMaxIdleConns(1)
-	if err := writeDB.Ping(); err != nil {
+	if err := writeDB.PingContext(context.Background()); err != nil {
 		_ = writeDB.Close()
 		return nil, fmt.Errorf("initialize relay write database: %w", err)
 	}
@@ -72,7 +73,7 @@ func Open(databasePath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("backfill event tags: %w", err)
 	}
 
-	readDB, err := sql.Open("sqlite", sqliteDSN(databasePath, true))
+	readDB, err := appotel.OpenSQLite(sqliteDSN(databasePath, true))
 	if err != nil {
 		_ = writeDB.Close()
 		return nil, err
@@ -80,7 +81,7 @@ func Open(databasePath string) (*SQLiteStore, error) {
 	poolSize := max(4, runtime.NumCPU())
 	readDB.SetMaxOpenConns(poolSize)
 	readDB.SetMaxIdleConns(poolSize)
-	if err := readDB.Ping(); err != nil {
+	if err := readDB.PingContext(context.Background()); err != nil {
 		_ = readDB.Close()
 		_ = writeDB.Close()
 		return nil, fmt.Errorf("initialize relay read database: %w", err)

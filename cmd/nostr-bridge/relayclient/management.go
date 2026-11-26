@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
 )
 
 const (
@@ -106,7 +107,7 @@ func (c *HTTPManagementClient) call(ctx context.Context, method string, params [
 	req.Header.Set("Authorization", authorization)
 	httpClient := c.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = appotel.NewHTTPClient(nil)
 	}
 	response, err := httpClient.Do(req)
 	if err != nil {

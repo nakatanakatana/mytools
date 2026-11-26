@@ -16,6 +16,7 @@ import (
 	"fiatjaf.com/nostr"
 	schema "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store/sql"
 	storesqlc "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store/sqlc"
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
 	_ "modernc.org/sqlite"
 )
 
@@ -34,7 +35,7 @@ func Open(ctx context.Context, databasePath string) (SQLiteStore, io.Closer, err
 	if err := schema.Migrate(ctx, databasePath, false); err != nil {
 		return SQLiteStore{}, nil, fmt.Errorf("migrate bridge SQLite schema: %w", err)
 	}
-	db, err := sql.Open("sqlite", databasePath+"?_pragma=busy_timeout%3d5000")
+	db, err := appotel.OpenSQLite(databasePath + "?_pragma=busy_timeout%3d5000")
 	if err != nil {
 		return SQLiteStore{}, nil, fmt.Errorf("open SQLite database: %w", err)
 	}

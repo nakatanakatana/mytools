@@ -19,6 +19,7 @@ import (
 	neutral "github.com/nakatanakatana/mytools/cmd/nostr-bridge/source"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/syncer"
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
 	"github.com/nakatanakatana/mytools/internal/webpush"
 )
 
@@ -461,7 +462,7 @@ func (r *runtimeSync) runMastodon(ctx context.Context, cfg Config, seed []byte, 
 			var profiles []neutral.Profile
 			attemptErr := withProviderPending(health, "mastodon", func() error {
 				var err error
-				client, err = mastodon.NewClient(mastodon.ClientOptions{BaseURL: cfg.Mastodon.BaseURL, Tokens: oauthClient})
+				client, err = mastodon.NewClient(mastodon.ClientOptions{BaseURL: cfg.Mastodon.BaseURL, Tokens: oauthClient, HTTPClient: appotel.NewHTTPClient(nil)})
 				if err != nil {
 					reportMastodonFailure("client construction", err)
 					return err

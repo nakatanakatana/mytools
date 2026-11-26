@@ -23,6 +23,7 @@ import (
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/oauthredirect"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/secretbox"
 	bridgestore "github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
+	appotel "github.com/nakatanakatana/mytools/internal/otel"
 )
 
 const (
@@ -113,7 +114,7 @@ func NewClient(options Options) (*Client, error) {
 		return nil, errors.New("OAuth client requires authorization server, client ID, and redirect URL")
 	}
 	if options.HTTPClient == nil {
-		options.HTTPClient = http.DefaultClient
+		options.HTTPClient = appotel.NewHTTPClient(nil)
 	}
 	if options.Now == nil {
 		options.Now = time.Now

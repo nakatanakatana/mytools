@@ -11,6 +11,10 @@ import (
 	"fiatjaf.com/nostr"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/relayclient"
 	"github.com/nakatanakatana/mytools/cmd/nostr-bridge/store"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const maxStoredError = 256
@@ -63,7 +67,17 @@ func (d *Dispatcher) DispatchOne(ctx context.Context) (bool, error) {
 		deliveryTimeout = 15 * time.Second
 	}
 	deliveryCtx, cancelDelivery := context.WithTimeout(ctx, deliveryTimeout)
+	deliveryCtx, span := otel.Tracer("nostr-bridge/outbox").Start(
+		deliveryCtx,
+		"outbox.deliver",
+		trace.WithAttributes(attribute.String("outbox.operation", string(item.Operation))),
+	)
 	err = d.deliver(deliveryCtx, item)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
 	cancelDelivery()
 	if err != nil {
 		var notAllowed *relayclient.PublisherNotAllowedError

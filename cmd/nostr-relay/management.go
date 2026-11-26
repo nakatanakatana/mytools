@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -92,6 +93,7 @@ func dispatchManagement(r *http.Request, store relaystore.Store, request managem
 			return nil, err
 		}
 		if err := store.AllowPublisher(r.Context(), relaystore.Publisher{PubKey: pubkey, Reason: reason, CreatedAt: time.Now()}); err != nil {
+			slog.ErrorContext(r.Context(), "allow publisher failed", "error", err)
 			return nil, errors.New("management operation failed")
 		}
 		return true, nil
@@ -101,6 +103,7 @@ func dispatchManagement(r *http.Request, store relaystore.Store, request managem
 			return nil, err
 		}
 		if err := store.UnallowPublisher(r.Context(), pubkey); err != nil {
+			slog.ErrorContext(r.Context(), "unallow publisher failed", "error", err)
 			return nil, errors.New("management operation failed")
 		}
 		return true, nil
@@ -110,6 +113,7 @@ func dispatchManagement(r *http.Request, store relaystore.Store, request managem
 		}
 		publishers, err := store.ListPublishers(r.Context())
 		if err != nil {
+			slog.ErrorContext(r.Context(), "list publishers failed", "error", err)
 			return nil, errors.New("management operation failed")
 		}
 		result := make([]allowedPubKey, len(publishers))
