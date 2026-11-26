@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.15.0](https://github.com/nakatanakatana/mytools/compare/v0.14.0...v0.15.0) - 2026-11-26
+
+### Maintenance & Others
+- Update dependency aquaproj/aqua-registry to v4.593.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/427
+- refactor(nostr-relay): use go-sqletch for dynamic QueryEvents queries by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/429
+- Update golang:1.27 Docker digest to 5f1b98f by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/426
+- Update module charm.land/wish/v2 to v2.0.6 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/431
+- Update kubernetes monorepo to v0.37.3 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/430
+- Update module github.com/ncruces/go-sqlite3 to v0.38.1 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/432
+- Update dependency aquaproj/aqua-registry to v4.594.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/433
+- feat(otel): add OpenTelemetry tracing to nostr-bridge and nostr-relay by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/434
+
 ## [v0.14.0](https://github.com/nakatanakatana/mytools/compare/v0.13.3...v0.14.0) - 2026-11-24
 
 ### Maintenance & Others
