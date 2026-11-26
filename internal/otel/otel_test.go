@@ -277,7 +277,7 @@ func TestOpenSQLiteRecordsPlaceholderSQLWithoutBindValues(t *testing.T) {
 	}
 
 	var got string
-	if err := db.QueryRowContext(parentCtx, `SELECT secret FROM items WHERE id = ?`, 1).Scan(&got); err != nil {
+	if err := db.QueryRowContext(parentCtx, "-- name: GetItemSecret :one\nSELECT secret FROM items WHERE id = ?", 1).Scan(&got); err != nil {
 		t.Fatal(err)
 	}
 	if got != secretValue {
@@ -295,6 +295,8 @@ func TestOpenSQLiteRecordsPlaceholderSQLWithoutBindValues(t *testing.T) {
 			t.Errorf("SQL span %q did not inherit parent trace ID", sp.Name())
 		}
 		hasSQLiteSystem := false
+		var queryText, querySummary string
+		hasSummary := false
 		for _, attr := range sp.Attributes() {
 			if (attr.Key == "db.system.name" || attr.Key == "db.system") && attr.Value.AsString() == "sqlite" {
 				hasSQLiteSystem = true
@@ -304,20 +306,52 @@ func TestOpenSQLiteRecordsPlaceholderSQLWithoutBindValues(t *testing.T) {
 				t.Fatalf("SQL span %q leaked raw bind value in attribute %s=%q", sp.Name(), attr.Key, val)
 			}
 			if attr.Key == "db.query.text" || attr.Key == "db.statement" {
-				if strings.Contains(val, "INSERT INTO items (id, secret) VALUES (?, ?)") {
-					foundInsert = true
-				}
-				if strings.Contains(val, "SELECT secret FROM items WHERE id = ?") {
-					foundSelect = true
-				}
+				queryText = val
+			}
+			if attr.Key == "db.query.summary" {
+				hasSummary = true
+				querySummary = val
 			}
 		}
 		if !hasSQLiteSystem {
 			t.Errorf("SQL span %q missing db.system.name=sqlite attribute", sp.Name())
 		}
+		if strings.Contains(queryText, "INSERT INTO items (id, secret) VALUES (?, ?)") {
+			foundInsert = true
+			if hasSummary {
+				t.Errorf("INSERT span without sqlc comment unexpectedly had db.query.summary=%q", querySummary)
+			}
+		}
+		if strings.Contains(queryText, "SELECT secret FROM items WHERE id = ?") {
+			foundSelect = true
+			if querySummary != "GetItemSecret" {
+				t.Errorf("SELECT span db.query.summary = %q, want %q", querySummary, "GetItemSecret")
+			}
+			if sp.Name() != "GetItemSecret" {
+				t.Errorf("SELECT span name = %q, want %q", sp.Name(), "GetItemSecret")
+			}
+		}
 	}
 	if !foundInsert || !foundSelect {
 		t.Fatalf("expected placeholder INSERT (found=%v) and SELECT (found=%v) spans", foundInsert, foundSelect)
+	}
+}
+
+func TestSQLQuerySummary(t *testing.T) {
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{query: "-- name: AllowPublisher :exec\nINSERT INTO publishers (pubkey) VALUES (?)", want: "AllowPublisher"},
+		{query: "\n  -- name: EventByID :one\nSELECT id FROM events WHERE id = ?", want: "EventByID"},
+		{query: "SELECT id FROM events WHERE id = ?", want: ""},
+		{query: "-- plain comment\nSELECT 1", want: ""},
+		{query: "-- name:  \nSELECT 1", want: ""},
+	}
+	for _, tt := range tests {
+		if got := SQLQuerySummary(tt.query); got != tt.want {
+			t.Errorf("SQLQuerySummary(%q) = %q, want %q", tt.query, got, tt.want)
+		}
 	}
 }
 
