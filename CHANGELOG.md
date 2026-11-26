@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.15.1](https://github.com/nakatanakatana/mytools/compare/v0.15.0...v0.15.1) - 2026-11-26
+
+### Maintenance & Others
+- fix(otel): record http.route and span name from ServeMux pattern by @nakatanakatana in https://github.com/nakatanakatana/mytools/pull/435
+
 ## [v0.15.0](https://github.com/nakatanakatana/mytools/compare/v0.14.0...v0.15.0) - 2026-11-26
 
 ### Maintenance & Others
