@@ -299,7 +299,7 @@ func TestOpenSQLiteRecordsPlaceholderSQLWithoutBindValues(t *testing.T) {
 			if (attr.Key == "db.system.name" || attr.Key == "db.system") && attr.Value.AsString() == "sqlite" {
 				hasSQLiteSystem = true
 			}
-			val := attr.Value.Emit()
+			val := attr.Value.String()
 			if strings.Contains(val, secretValue) {
 				t.Fatalf("SQL span %q leaked raw bind value in attribute %s=%q", sp.Name(), attr.Key, val)
 			}

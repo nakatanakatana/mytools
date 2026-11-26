@@ -180,7 +180,7 @@ func TestBridgeToRelayManagementTracePropagationAndSQLiteSpans(t *testing.T) {
 			sawServerSpan = true
 		}
 		for _, attr := range sp.Attributes() {
-			if strings.Contains(attr.Value.Emit(), secretReason) {
+			if strings.Contains(attr.Value.String(), secretReason) {
 				t.Fatalf("span %q leaked bind parameter value in %s", sp.Name(), attr.Key)
 			}
 			if (attr.Key == "db.system.name" || attr.Key == "db.system") && attr.Value.AsString() == "sqlite" {

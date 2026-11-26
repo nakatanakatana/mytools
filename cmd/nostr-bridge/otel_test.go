@@ -141,7 +141,7 @@ func TestBridgeStoreRecordsSQLitePlaceholderSpans(t *testing.T) {
 			continue
 		}
 		for _, attr := range sp.Attributes() {
-			if strings.Contains(attr.Value.Emit(), secretPubkey) {
+			if strings.Contains(attr.Value.String(), secretPubkey) {
 				t.Fatalf("SQL span %q leaked bind value in attribute %s", sp.Name(), attr.Key)
 			}
 			if (attr.Key == "db.system.name" || attr.Key == "db.system") && attr.Value.AsString() == "sqlite" {
