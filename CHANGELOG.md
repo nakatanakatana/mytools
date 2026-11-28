@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.15.2](https://github.com/nakatanakatana/mytools/compare/v0.15.1...v0.15.2) - 2026-11-28
+
+### Maintenance & Others
+- Update dependency aquaproj/aqua-registry to v4.595.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/437
+- Update module github.com/sqldef/sqldef/v3 to v3.11.31 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/439
+- Update dependency aquaproj/aqua-registry to v4.596.0 by @renovate[bot] in https://github.com/nakatanakatana/mytools/pull/440
+
 ## [v0.15.1](https://github.com/nakatanakatana/mytools/compare/v0.15.0...v0.15.1) - 2026-11-26
 
 ### Maintenance & Others
